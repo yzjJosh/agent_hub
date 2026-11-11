@@ -1,0 +1,45 @@
+services:
+  agent_hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent_hub:local
+    container_name: agent_hub
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./.worktrees:/worktrees
+      - ./tests/__init__.py:/app/tests/__init__.py
+      - ./tests/app:/app/tests/app
+      - ./.env:/app/.env
+      - ./models:/app/models
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./log:/root/log
+      - ./supervisor.conf:/etc/supervisor/conf.d/supervisor.conf
+      - ./data/cloakbrowser:/root/.config/google-chrome-ai
+      - ./data:/app/data
+    ports:
+      - "8315:80"
+      - "5900:5900"
+      - "6080:6080"
+      - "9222:9223"
+    environment:
+      - DISPLAY=:99
+      - MODELS_DIR=/app/models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1', 80)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    tmpfs:
+      - /dev/shm:rw,nosuid,size=1g

@@ -1,0 +1,42 @@
+:root{
+  --bg-app:#f7f8fa;--bg-sidebar:#ffffff;--bg-inset:#f0f2f5;--bg-terminal:#eef1f4;
+  --bg-hover:#e9edf2;--bg-active:#dde8f8;--bg-elevated:#ffffff;
+  --border:#e2e6ec;--border-strong:#c7cfd9;
+  --text-primary:#1a2332;--text-secondary:#45536a;--text-tertiary:#566578;
+  --accent:#1a5fd6;--on-accent:#ffffff;
+  --running:#1a5fd6;--completed:#116b34;--failed:#c4202b;--cancelled:#57606a;--media:#6d28d9;
+  --warn:#8a5a00;--ok:#116b34;
+  --log-tag:#44618c;--log-info:#374353;
+  --scrollbar:#c9d1dc;--shadow:0 4px 16px rgba(24,38,58,.16);
+  --pulse-c:color-mix(in srgb,var(--running) 45%,transparent);
+  --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  /* text sizes for a wide screen, phone sizes are further down */
+  --text-xs:11px;--text-sm:12px;--text-base:14px;--text-md:16px;--text-lg:18px;--text-xl:20px;--text-2xl:24px;
+  --text-log:13px;--text-code:13px;--text-data:13px;
+  --lh-sm:1.5;--lh-base:1.5;--lh-md:1.6;--lh-log:1.65;--lh-code:1.65;
+ }
+:root[data-theme="dark"]{
+  --bg-app:#0b0e14;--bg-sidebar:#0d1119;--bg-inset:#0d1117;--bg-terminal:#0a0d12;
+  --bg-hover:#151b27;--bg-active:#1a2332;--bg-elevated:#161d2b;
+  --border:#1d2531;--border-strong:#2a3444;
+  --text-primary:#e4eaf2;--text-secondary:#9aa7ba;--text-tertiary:#7d8ba0;
+  --accent:#4c9aff;--on-accent:#0b0e14;
+  --running:#4c9aff;--completed:#3ecf8e;--failed:#f0566a;--cancelled:#8b95a7;--media:#a78bfa;
+  --warn:#e0b341;--ok:#3ecf8e;
+  --log-tag:#6b8db4;--log-info:#9aa7ba;
+  --scrollbar:#232c3b;--shadow:0 4px 16px rgba(0,0,0,.45);
+  --pulse-c:color-mix(in srgb,var(--running) 45%,transparent);
+  --text-xs:11px;--text-sm:12px;--text-base:14px;--text-md:16px;--text-lg:18px;--text-xl:20px;--text-2xl:24px;
+  --text-log:13px;--text-code:13px;--text-data:13px;
+  --lh-sm:1.5;--lh-base:1.5;--lh-md:1.6;--lh-log:1.65;--lh-code:1.65;
+ }
+ /* phone text sizes */
+ @media (max-width:767px){
+  :root,:root[data-theme="dark"]{
+   --text-xs:12px;--text-sm:13px;--text-base:15px;--text-2xl:22px;
+   --text-log:16px;--text-code:14px;--text-data:14px;
+   --lh-log:1.6;--lh-code:1.6;
+  }
+ }
+

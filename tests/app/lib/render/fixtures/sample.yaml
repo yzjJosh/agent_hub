@@ -1,0 +1,7 @@
+service: viewer
+ports:
+  - 80
+  - 443
+database:
+  host: db
+  port: 5432

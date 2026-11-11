@@ -1,0 +1,469 @@
+/* The styles the /view pages and the console share.
+   The /view pages load no app.css, so their rules live under .view-page and bring
+   their own reset. Colors come from the theme, apart from the dark image stage. */
+
+/* ============ standalone page shell ============ */
+body.view-page{margin:0;height:100vh;height:100dvh;overflow:hidden;display:flex;flex-direction:column;background:var(--bg-app);color:var(--text-primary);font:var(--text-base)/var(--lh-base) var(--font-ui);-webkit-font-smoothing:antialiased}
+.view-page *{margin:0;padding:0;box-sizing:border-box}
+.view-page a{color:inherit;text-decoration:none}
+.view-page button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.view-page :focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:4px}
+.view-page ::-webkit-scrollbar{width:10px;height:10px}
+.view-page ::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:5px;border:2px solid var(--bg-app)}
+.view-page ::-webkit-scrollbar-track{background:transparent}
+.view-page .mono{font-family:var(--font-mono)}
+.view-page .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border-radius:4px;font-size:var(--text-base);font-weight:500;flex:none}
+.view-page .btn.ghost{border:1px solid var(--border);color:var(--text-secondary)}
+.view-page .btn.ghost:hover{background:var(--bg-hover);color:var(--text-primary)}
+
+.vp-topbar{flex:none;height:48px;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--bg-elevated);border-bottom:1px solid var(--border)}
+.vp-brand{display:flex;align-items:center;gap:7px;min-width:0}
+.vp-brand-mark{width:22px;height:22px;border-radius:5px;background:var(--accent);color:var(--on-accent);display:flex;align-items:center;justify-content:center;flex:none}
+.vp-brand-mark svg{width:12px;height:12px}
+.vp-brand-name{font-size:var(--text-base);font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.vp-brand-sub{font-size:var(--text-sm);color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vp-brand:hover .vp-brand-mark{filter:brightness(.92)}
+.vp-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+.view-page .vp-icon-btn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:4px;background:var(--bg-elevated);color:var(--text-secondary);flex:none}
+.view-page .vp-icon-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
+.vp-icon-btn svg{width:14px;height:14px}
+
+.vp-main{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:28px 32px 40px}
+.vp-doccol{max-width:860px;margin:0 auto}
+
+.vp-footer{flex:none;height:40px;display:flex;align-items:center;justify-content:center;padding:0 16px;background:var(--bg-app);border-top:1px solid var(--border);font-size:var(--text-sm);font-family:var(--font-mono);color:var(--text-tertiary)}
+.vp-footer-note-mobile{display:none}
+
+/* the card that holds the file */
+.vp-well{--well-bg:var(--bg-elevated);position:relative;display:flex;flex-direction:column;margin-top:20px;min-height:120px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.vp-well-doc .md-doc{flex:1;min-height:0;overflow:auto;padding:28px 32px}
+.vp-well-raw .raw-pre{flex:1;min-height:0}
+
+/* pictures, video and frames, wider than the text column */
+.vp-native{position:relative;margin-top:20px;width:calc(100% + 64px);margin-left:-32px;margin-right:-32px}
+.vp-native video{display:block;width:100%;max-height:calc(100vh - 248px);min-height:320px;background:#000}
+.vp-native audio{display:block;width:calc(100% - 48px);margin:20px auto}
+.vp-frame{display:block;width:100%;height:calc(100vh - 228px);min-height:360px;border:none;background:#fff}
+html:has(#vp-thumb-override) .vp-frame{height:100vh}
+
+/* the waiting, failed and unsupported states */
+.vp-converting{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:64px 32px;min-height:420px}
+.vp-convert-failed{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:64px 32px;min-height:420px}
+.vp-convert-failed p{font-size:var(--text-base);font-weight:600}
+.vp-convert-failed .vp-err{font:var(--text-sm)/1.6 var(--font-mono);color:var(--text-tertiary);font-weight:400}
+/* the centered card the failed and unsupported states share */
+.vp-state-actions{display:flex;gap:8px;margin-top:10px}
+.vp-unsupported{display:flex;align-items:center;justify-content:center;min-height:420px;padding:64px 32px}
+.vp-state-card{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;max-width:440px}
+.vp-state-ic{display:flex;color:var(--text-tertiary);margin-bottom:8px}
+.vp-state-ic svg{width:24px;height:24px}
+.vp-state-title{font:600 var(--text-base)/1.35 var(--font-mono);word-break:break-all}
+.vp-state-sub{font-size:var(--text-base);line-height:1.5;color:var(--text-secondary)}
+
+/* expired or bad link */
+.vp-expired{display:flex;align-items:center;justify-content:center;min-height:100%;padding:32px 24px}
+.vp-expired-inner{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;max-width:440px}
+.vp-expired-ic{display:flex;color:var(--failed);margin-bottom:8px}
+.vp-expired-ic svg{width:24px;height:24px}
+.vp-expired-title{font-size:var(--text-base);font-weight:600}
+.vp-expired-sub{font-size:var(--text-base);line-height:1.5;color:var(--text-secondary)}
+.vp-expired-inner .btn{margin-top:10px}
+
+/* ============ solo full screen ============ */
+/* The file fills the whole window. The page itself never scrolls, the well does. */
+.vp-solo .vp-main:not(.vp-expired){padding:0;display:flex}
+.vp-solo .vp-well{flex:1;min-height:0;width:100%;max-width:none;margin:0;border:none;border-radius:0}
+.vp-solo .vp-converting,.vp-solo .vp-convert-failed,.vp-solo .vp-unsupported{flex:1;min-height:0}
+/* the zoom buttons sit at the bottom right, away from the Download pill */
+body.vp-solo .zoom-cluster{top:auto;bottom:12px}
+.vp-solo .vp-native{position:static;display:flex;flex:1;min-height:0;width:auto;margin:0}
+.vp-solo .vp-native video{width:100%;height:100%;max-height:none;min-height:0}
+.vp-solo .vp-native audio{width:min(480px,80%);margin:auto;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px}
+.vp-solo .vp-frame{height:100%;min-height:0}
+/* The image stage is the D2 hugging box: it hugs the image between 240px and
+   90vh and is centered in the page on both viewports. */
+body.vp-solo .img-stage{flex:none;display:flex;width:100%;height:auto;min-height:240px;max-height:90vh;margin:auto;overflow:auto;background:#0a0d12;border:none;border-radius:0}
+.vp-solo-cluster{position:fixed;top:10px;right:12px;z-index:10;display:flex;padding:3px;pointer-events:none;background:color-mix(in srgb,var(--bg-elevated) 70%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:999px;box-shadow:var(--shadow)}
+.vp-solo-cluster a{pointer-events:auto;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:999px;color:var(--text-secondary)}
+.vp-solo-cluster a:hover{background:var(--bg-hover);color:var(--text-primary)}
+.vp-solo-cluster svg{width:15px;height:15px}
+/* The first content row clears the download pill. */
+.vp-solo .vp-well-doc .md-doc{padding-top:56px}
+.vp-solo .vp-well-code .code-block{padding-top:56px}
+.vp-solo .vp-well-raw .raw-pre{padding-top:56px}
+.vp-solo .vp-well-table .csv-table{padding-top:56px}
+.vp-solo .vp-well-table .sheet-title{padding-top:56px}
+.vp-solo .vp-well-plain .plain-pre{padding-top:56px}
+/* The pdf toolbar's actions clear the download pill. */
+.vp-solo .pv-toolbar{padding-right:64px}
+
+/* ============ feed blocks (shared by the console feed and the result page) ============ */
+/* In a document block the text well clamps and scrolls inside. */
+.feedwrap .vp-well{min-height:140px;max-height:560px;overflow-y:auto}
+/* Media hugs its content between 240px and 90vh, downscale only, never cropped. */
+.media-stage{width:100%;min-height:240px;max-height:90vh;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.media-stage img,.media-stage video{display:block;max-width:100%;max-height:90vh;width:auto;height:auto;object-fit:contain}
+.media-stage-audio{min-height:0}
+/* In a pdf or html block the page scrolls inside the clamped well. */
+.vp-well-frame{padding:0}
+.vp-well-frame iframe{display:block;flex:1;min-height:0;width:100%;border:none;background:#fff}
+/* State cards render in place of the well, without its clamp. */
+.feed-state{width:100%;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:28px 20px;background:var(--bg-inset);border:1px solid var(--border);border-radius:8px}
+.feed-state .vp-state-actions{margin-top:4px}
+.vp-body-legacy{display:flex;flex-direction:column;align-items:flex-start;gap:10px}
+.vp-body-legacy .feed-state{align-items:center}
+.vp-legacy-label{font-weight:600}
+.vp-solo .vp-main .feed-state,.vp-solo .vp-main .vp-body-legacy{width:calc(100% - 32px);max-width:640px;margin:auto}
+.mini-state{width:100%;display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;padding:24px 20px;background:var(--bg-inset);border:1px solid var(--border);border-radius:8px}
+.mini-state .vp-state-ic{color:var(--failed)}
+.mini-state-title{color:var(--failed);font-weight:600}
+/* A file block is the head row and, below it, the preview area. */
+.vp-file-block{background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.vp-file-block + .vp-file-block{margin-top:16px}
+.vp-file-head{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;min-width:0}
+.vp-file-id{display:flex;flex-direction:column;flex:1;min-width:0}
+.vp-file-name{font:var(--text-code)/1.4 var(--font-mono);color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The name and its kind chip share one line. */
+.vp-name-row{display:flex;align-items:center;gap:8px;min-width:0}
+.vp-name-row .vp-file-name{min-width:0}
+.vp-file-path{font:var(--text-code)/1.4 var(--font-mono);color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vp-file-meta{font-size:var(--text-xs);line-height:1.4;color:var(--text-tertiary);white-space:nowrap}
+.vp-file-actions{display:flex;gap:6px;flex:none}
+.vp-file-act{display:flex;align-items:center;justify-content:center;width:28px;height:28px;flex:none;border:1px solid var(--border);border-radius:6px;background:var(--bg-elevated);color:var(--text-secondary)}
+.vp-file-act:hover{color:var(--text-primary);border-color:var(--border-strong)}
+.vp-file-act svg{width:14px;height:14px}
+/* Inside a file block the preview area is flush with the card. */
+.vp-file-block .vp-well{margin-top:0;border:none;border-radius:0}
+.vp-file-block .vp-converting,.vp-file-block .vp-convert-failed{min-height:0;padding:28px 16px}
+/* A file that is gone keeps its head, dimmed and without clicks. */
+.vp-file-block:not(.vp-file-present) .vp-file-id,.vp-file-block:not(.vp-file-present) .vp-file-act{opacity:.45}
+.vp-file-block:not(.vp-file-present) .vp-file-act{pointer-events:none}
+/* A file that cannot be rendered is its head row alone, without the path. */
+.vp-file-binary .vp-file-path{display:none}
+/* The line above the feed's file blocks. */
+.vp-feed-files{display:flex;align-items:center;gap:12px;font:600 11px/1 var(--font-mono);letter-spacing:.08em;color:var(--text-tertiary);margin:24px 0 10px}
+.vp-feed-files::after{content:"";flex:1;height:1px;background:var(--border)}
+
+/* presentation page */
+.vp-presentation-head{font-size:var(--text-base);font-weight:600;letter-spacing:-.01em}
+.vp-presentation-sub{font-size:var(--text-sm);line-height:1.5;color:var(--text-tertiary);margin-top:5px}
+.thumb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:18px;align-content:start}
+
+/* the plain document page used for thumbnails */
+.doc-page .vp-main{padding:0}
+.doc-page .vp-doccol{padding:32px}
+.html-frame{width:100%;height:80vh;border:none;display:block;background:#fff}
+html:has(#vp-thumb-override) .html-frame{height:100vh}
+
+/* ============ document text ============ */
+.md-doc{color:var(--text-primary);font:var(--text-md)/var(--lh-md) var(--font-ui);word-wrap:break-word}
+.md-doc h1{font-size:var(--text-2xl);font-weight:600;line-height:1.3;letter-spacing:-.01em;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.md-doc h2{font-size:var(--text-xl);font-weight:600;line-height:1.35;letter-spacing:-.01em;margin:26px 0 10px}
+.md-doc h3{font-size:var(--text-lg);font-weight:600;line-height:1.35;margin:20px 0 8px}
+.md-doc h4,.md-doc h5,.md-doc h6{font-size:var(--text-md);font-weight:600;margin:16px 0 6px}
+.md-doc p{margin:0 0 12px}
+.md-doc ul,.md-doc ol{margin:0 0 12px;padding-left:22px}
+.md-doc li{margin:3px 0}
+.md-doc a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.md-doc strong{font-weight:600}
+.md-doc del{color:var(--text-tertiary)}
+.md-doc code{font:14px/1.5 var(--font-mono);background:var(--bg-inset);border:1px solid var(--border);border-radius:4px;padding:1px 5px;color:var(--text-primary);white-space:normal;overflow-wrap:anywhere}
+.md-doc pre{background:var(--bg-inset);border:1px solid var(--border);border-radius:6px;padding:12px 14px;overflow-x:hidden;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
+.md-doc pre code{background:none;border:none;padding:0;font-size:13.5px;line-height:1.65;white-space:pre-wrap}
+.md-doc table{border-collapse:collapse;width:100%;display:table;margin:0 0 14px;font-size:14px;table-layout:fixed}
+.md-doc th{background:var(--bg-inset);font-weight:600;text-align:left;padding:9px 14px;border:1px solid var(--border);overflow-wrap:anywhere}
+.md-doc td{padding:9px 14px;border:1px solid var(--border);vertical-align:top;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.md-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.md-doc input[type="checkbox"]{margin-right:7px;accent-color:var(--accent);vertical-align:-2px}
+.md-doc blockquote{border-left:3px solid color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 7%,transparent);border-radius:0 4px 4px 0;margin:0 0 12px;padding:9px 14px;color:var(--text-secondary)}
+.md-doc blockquote p:last-child{margin-bottom:0}
+.md-doc hr{border:none;border-top:1px solid var(--border);margin:20px 0}
+.md-doc img{max-width:100%;height:auto}
+.md-doc .footnote{margin-top:24px;padding-top:12px;border-top:1px solid var(--border);font-size:14px;line-height:1.6;color:var(--text-secondary)}
+.md-doc .footnote hr{display:none}
+.md-doc .footnote-ref{color:var(--accent);font-size:13px;vertical-align:super;text-decoration:none}
+.md-doc .footnote-ref:hover{text-decoration:underline}
+.md-doc .footnote-backref{color:var(--accent);text-decoration:none;font-size:13px}
+/* On phones the table keeps its natural width so the scroll wrapper can scroll. */
+@media (max-width:640px){
+  .md-doc table{width:auto;table-layout:auto;min-width:max-content}
+  .md-doc th,.md-doc td{white-space:nowrap}
+}
+
+/* ============ code blocks ============ */
+/* The code arrives with colors of its own. Its background is cleared here so the
+   well shows through. */
+.pv-well .code-block,.vp-well .code-block,.vp-doccol .code-block{background:transparent}
+.code-block{counter-reset:ln;display:block;margin:0;font:var(--text-code)/var(--lh-code) var(--font-mono);color:var(--text-primary);overflow-x:hidden;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;flex:1;min-height:0;padding:12px 16px}
+.cl{counter-increment:ln;white-space:pre-wrap;padding-left:56px}
+.cl::before{content:counter(ln);user-select:none;display:inline-block;width:40px;margin-left:-56px;padding-right:16px;box-sizing:border-box;position:sticky;left:0;text-align:right;font:var(--text-code)/var(--lh-code) var(--font-mono);color:var(--text-tertiary);opacity:.6;background:var(--well-bg,var(--bg-app))}
+.raw-pre{margin:0;font:var(--text-code)/var(--lh-code) var(--font-mono);color:var(--text-primary);padding:14px 16px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow:auto;flex:1;min-height:0}
+.plain-pre{margin:0;font:var(--text-md)/var(--lh-md) var(--font-ui);color:var(--text-primary);padding:14px 16px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow:auto;flex:1;min-height:0}
+
+/* ============ csv table and row bar ============ */
+.csv-table{flex:1;min-height:0;overflow:auto;width:100%;border-collapse:separate;border-spacing:0;font:var(--text-code)/1.5 var(--font-mono);color:var(--text-primary);font-variant-numeric:tabular-nums;table-layout:fixed}
+.csv-table thead th{position:sticky;top:0;z-index:1;background:var(--bg-inset);text-align:left;font-weight:600;padding:10px 16px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
+.csv-table tbody td{padding:10px 16px;border-bottom:1px solid var(--border);text-align:left;overflow-wrap:anywhere}
+.csv-extra{display:none}
+.csv-all .csv-extra{display:table-row}
+.sheet{display:flex;flex-direction:column;flex:1;min-height:0}
+.sheet-title{flex:none;font:600 var(--text-code)/1.4 var(--font-mono);color:var(--text-secondary);padding:12px 16px 4px}
+.sheet .csv-table{flex:1;min-height:0}
+.csv-bar{flex:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border-top:1px solid var(--border);background:var(--bg-elevated);font-size:var(--text-code);color:var(--text-tertiary)}
+.csv-bar svg{width:13px;height:13px;flex:none}
+.csv-bar .csv-chev{transition:transform .18s ease}
+.csv-all .csv-chev{transform:rotate(180deg)}
+.csv-bar button{font:var(--text-code) var(--font-ui);color:inherit;background:none;border:none;cursor:pointer;padding:2px 8px;border-radius:4px}
+.csv-bar button:hover{color:var(--text-primary);background:var(--bg-hover)}
+
+/* ============ image stage and zoom buttons ============ */
+/* The dark stage color is set by hand and stays the same in both themes.
+   The image is centered while it fits, and scrolls once it is bigger. */
+.img-stage{position:relative;flex:1;min-height:0;display:flex;overflow:auto;background:#0a0d12}
+.img-frame{position:relative;margin:auto;flex:none}
+.img-frame img{display:block;width:100%;height:100%}
+/* Keeps a bare image inside the stage before the zoom script runs. */
+.img-stage > img{max-width:100%;max-height:100%;object-fit:contain;margin:auto}
+.zoom-cluster{position:absolute;top:12px;right:12px;z-index:5;display:flex;align-items:center;gap:2px;padding:2px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
+.zoom-cluster button{display:flex;align-items:center;justify-content:center;min-width:28px;height:26px;padding:0 8px;border-radius:6px;color:var(--text-secondary);font:600 12px/1 var(--font-ui)}
+.zoom-cluster button:hover{background:var(--bg-hover);color:var(--text-primary)}
+.zoom-cluster button.active{color:var(--accent)}
+.zoom-cluster button.active:hover{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.zoom-cluster svg{width:14px;height:14px}
+.zoom-cluster .zoom-sep{width:1px;height:14px;background:var(--border);margin:0 4px;flex:none}
+.zoom-cluster .zoom-pct{min-width:38px;text-align:center;font:12px/1 var(--font-mono);color:var(--text-secondary);user-select:none}
+
+/* ============ frame mode ============ */
+.frame-well{background:var(--bg-inset)}
+.frame-well iframe{flex:1;min-height:0;width:100%;border:none;display:block;background:#fff}
+
+/* ============ inline pdf canvas viewer ============ */
+/* The canvas container takes the iframe's place in the frame wells. */
+.vp-frame.vp-pdf{display:flex;flex-direction:column;overflow:hidden}
+.vp-well-frame .vp-pdf,.frame-well .vp-pdf{flex:1;min-height:0;width:100%;display:flex;flex-direction:column;overflow:hidden;background:#fff}
+.pv-toolbar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-elevated);border-bottom:1px solid var(--border);color:var(--text-secondary)}
+.pv-toolbar-page{font:12px/1 var(--font-mono);user-select:none}
+.pv-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:4px}
+.pv-zoom-btn{display:flex;align-items:center;justify-content:center;min-width:28px;height:26px;padding:0 8px;border-radius:6px;color:var(--text-secondary);font:600 12px/1 var(--font-ui)}
+.pv-zoom-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
+.pv-zoom-pct{min-width:38px;text-align:center;font:12px/1 var(--font-mono);color:var(--text-secondary);user-select:none}
+.pv-pages{position:relative;flex:1;min-height:0;overflow:auto;background:#fff;padding:12px 12px 24px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.pv-page{position:relative}
+.pv-page canvas{display:block;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.pv-ann{position:absolute;top:0;left:0;pointer-events:none;transform-origin:0 0}
+.pv-ann section{position:absolute;box-sizing:border-box;transform-origin:0 0;text-align:initial;pointer-events:auto;user-select:none}
+.pv-ann .linkAnnotation>a,.pv-ann .buttonWidgetAnnotation.pushButton>a{position:absolute;top:0;left:0;width:100%;height:100%}
+.pv-ann .linkAnnotation:not(.hasBorder)>a:hover{opacity:.2;background-color:#ffff00}
+.pv-ann .linkAnnotation.hasBorder:hover{background-color:rgba(255,255,0,.2)}
+.pv-ann .hasBorder{background-size:100% 100%}
+.pv-ann .textAnnotation img{position:absolute;top:0;left:0;width:100%;height:100%;cursor:pointer}
+.pv-ann .textWidgetAnnotation input,.pv-ann .textWidgetAnnotation textarea,.pv-ann .choiceWidgetAnnotation select,.pv-ann .buttonWidgetAnnotation.checkBox input,.pv-ann .buttonWidgetAnnotation.radioButton input{width:100%;height:100%;margin:0;border:2px solid transparent;background:rgba(0,54,255,.13);box-sizing:border-box;font:calc(9px*var(--total-scale-factor)) sans-serif;vertical-align:top}
+.pv-ann .textWidgetAnnotation textarea{resize:none}
+.pv-ann .choiceWidgetAnnotation select option{padding:0}
+.pv-ann .textWidgetAnnotation input[disabled],.pv-ann .choiceWidgetAnnotation select[disabled],.pv-ann .buttonWidgetAnnotation input[disabled]{background:none;cursor:not-allowed}
+.pv-ann[data-main-rotation="90"] .norotate{transform:rotate(270deg) translateX(-100%)}
+.pv-ann[data-main-rotation="180"] .norotate{transform:rotate(180deg) translate(-100%,-100%)}
+.pv-ann[data-main-rotation="270"] .norotate{transform:rotate(90deg) translateY(-100%)}
+.pv-error{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:48px 24px;text-align:center;background:#fff;color:var(--text-secondary);font-size:var(--text-sm)}
+.pv-error a{color:var(--accent)}
+
+/* ============ console well ============ */
+.pv-well{--well-bg:var(--bg-elevated);position:relative;flex:1;min-height:0;display:flex;flex-direction:column;margin:16px auto 0;width:100%;max-width:860px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+@media (min-width:768px){
+  .preview-pane:has(>.pv-well){display:flex;flex-direction:column;overflow:hidden}
+}
+.pv-well .md-doc{flex:1;min-height:0;overflow:auto;padding:28px 32px}
+.pv-well .code-block,.pv-well .csv-table,.pv-well .raw-pre{flex:1;min-height:0}
+.pv-well .sheet{flex:1;min-height:0}
+.pv-well .img-stage{flex:1;min-height:0}
+/* For a folder gallery the well is what scrolls, and the grid keeps its row height. */
+.pv-well:has(>.gallery-grid){overflow-y:auto}
+
+.well-topbar{flex:none;display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg-elevated);min-width:0}
+.well-topbar .chip{display:inline-flex;align-items:center;height:22px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:var(--bg-inset);font:var(--text-code)/1 var(--font-mono);color:var(--text-secondary);white-space:nowrap;flex:none}
+.well-topbar .chip.dashed{border-style:dashed;background:transparent;color:var(--text-tertiary)}
+.well-topbar .well-note{font-size:var(--text-sm);color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.well-topbar .icon-btn{border:1px solid var(--border);border-radius:6px;background:var(--bg-elevated)}
+.well-topbar > :last-child{margin-left:auto}
+.well-topbar > .chip:last-child{margin-left:0}
+
+.well-skeleton{position:relative;flex:1;min-height:0;overflow:hidden;background:var(--bg-inset)}
+.well-skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 25%,rgba(255,255,255,.3) 50%,transparent 75%);animation:vp-shimmer 1.4s linear infinite}
+
+@keyframes vp-shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+@keyframes vp-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+@keyframes vp-fadein{from{opacity:0}to{opacity:1}}
+@keyframes vp-skel{from{background-position:200% 0}to{background-position:-200% 0}}
+
+/* the waiting state, shared by the console and the standalone page */
+.converting-well{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:32px}
+.cv-spin{width:28px;height:28px;border-radius:50%;border:2px solid var(--border-strong);border-top-color:var(--accent);animation:vp-spin 1s linear infinite}
+.cv-label{font-size:var(--text-base);font-weight:500;color:var(--text-primary)}
+.cv-elapsed{font:var(--text-sm)/1.4 var(--font-mono);color:var(--text-tertiary)}
+.cv-note{font-size:var(--text-base);line-height:var(--lh-md);color:var(--text-tertiary);max-width:420px}
+.converting-well .btn,.vp-converting .btn{margin-top:8px}
+
+/* ============ gallery ============ */
+.gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;align-content:start;padding-top:16px}
+.thumb-card{position:relative;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease}
+.thumb-card:hover{transform:translateY(-1px);box-shadow:var(--shadow);border-color:var(--border-strong)}
+.gallery-grid .thumb-card{display:flex;flex-direction:column}
+.thumb-1610{position:relative;flex:none;aspect-ratio:16/10;background:var(--bg-inset);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.thumb-glyph{width:26px;height:26px;color:var(--text-tertiary);opacity:.55;display:flex}
+.thumb-glyph svg{width:100%;height:100%}
+.thumb-img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb-img.done{animation:vp-fadein .15s ease-out}
+.thumb-name{font:var(--text-code)/1.4 var(--font-mono);color:var(--text-primary);padding:9px 12px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb-meta{font-size:var(--text-xs);line-height:1.4;color:var(--text-tertiary);padding:2px 12px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb-warn{font:var(--text-sm)/1.4 var(--font-mono);color:var(--warn);padding:0 12px 10px;white-space:normal}
+.thumb-actions{position:absolute;left:10px;bottom:10px;display:flex;gap:4px;opacity:0;transform:translateY(2px);transition:opacity .12s ease,transform .12s ease;pointer-events:none;z-index:2}
+.thumb-card:hover .thumb-actions,.thumb-card:focus-within .thumb-actions{opacity:1;transform:none;pointer-events:auto}
+.thumb-actions a,.thumb-actions button{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);box-shadow:var(--shadow);cursor:pointer;font-size:12px}
+.thumb-actions a:hover,.thumb-actions button:hover{color:var(--text-primary);border-color:var(--border-strong)}
+.thumb-actions .btn{padding:0 10px;width:auto;box-shadow:none}
+.thumb-failed-badge{position:absolute;top:10px;right:10px;width:22px;height:22px;border-radius:50%;background:var(--failed);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;line-height:1;box-shadow:var(--shadow);z-index:2}
+.thumb-preparing{position:absolute;left:10px;bottom:10px;display:inline-flex;align-items:center;padding:4px 10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:999px;font-size:var(--text-xs);line-height:1.3;color:var(--text-secondary);box-shadow:var(--shadow);white-space:nowrap;z-index:2}
+.thumb-card.generating .thumb-1610::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 25%,rgba(255,255,255,.3) 50%,transparent 75%);animation:vp-shimmer 1.4s linear infinite}
+.thumb-card.skeleton,.thumb-card.gone{cursor:default}
+.thumb-card.skeleton:hover,.thumb-card.gone:hover{transform:none;box-shadow:none;border-color:var(--border)}
+.thumb-card.skeleton .thumb-name{height:11px;color:transparent;background:linear-gradient(90deg,var(--bg-inset) 25%,var(--bg-hover) 50%,var(--bg-inset) 75%);background-size:200% 100%;border-radius:4px;animation:vp-skel 1.5s linear infinite}
+.thumb-card.skeleton .thumb-meta{height:9px;color:transparent;background:linear-gradient(90deg,var(--bg-inset) 25%,var(--bg-hover) 50%,var(--bg-inset) 75%);background-size:200% 100%;border-radius:4px;animation:vp-skel 1.5s linear infinite}
+.thumb-card.gone .thumb-actions{display:none}
+.thumb-card.gone .thumb-name{color:var(--text-secondary)}
+.thumb-card.gone .thumb-1610{opacity:.7}
+.gallery-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:72px 24px;color:var(--text-tertiary);text-align:center}
+.gallery-empty svg{width:22px;height:22px;opacity:.35;margin-bottom:4px}
+.gallery-empty .t1{font-size:var(--text-base);font-weight:600;color:var(--text-secondary)}
+.gallery-empty .t2{font-size:var(--text-sm);line-height:var(--lh-md)}
+
+/* On a presentation card the open link covers the whole card. Download sits above the
+   link and keeps its own click. The focus ring is drawn on the card, not on the link. */
+.thumb-grid .thumb-card{display:grid;grid-template-columns:1fr auto;column-gap:8px;align-items:center}
+.thumb-grid .thumb-1610{grid-column:1/-1;align-self:stretch;border-bottom:1px solid var(--border)}
+.thumb-grid .thumb-name{grid-row:1;align-self:start;padding:10px 8px 0 12px}
+.thumb-grid .thumb-meta{grid-row:2;align-self:end;padding:2px 8px 12px 12px}
+.thumb-grid .thumb-actions{grid-row:1/3;grid-column:2;position:relative;left:auto;bottom:auto;z-index:2;display:flex;gap:6px;opacity:1;transform:none;pointer-events:auto}
+.vp-card-open{position:absolute;inset:0;z-index:1}
+.thumb-grid .thumb-card:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.vp-card-open:focus-visible{outline:none}
+.vp-card-gone{cursor:default}
+.vp-card-gone:hover{transform:none;box-shadow:none;border-color:var(--border)}
+.vp-card-gone .thumb-1610{opacity:.7}
+.vp-card-gone .thumb-name{color:var(--text-secondary)}
+.vp-card-gone .thumb-actions{display:none}
+
+/* ============ full screen mode ============ */
+/* In full screen the tree and the status footer are hidden and the well fills the
+   window. Opening the sidebar again does not leave full screen. */
+.full-screen .tree-pane{display:none}
+.full-screen .sidebar-status{display:none}
+html.sb-collapsed body.full-screen .sidebar{width:56px;min-width:56px}
+.full-screen .preview-pane{padding:0}
+/* the well fills the pane under the toolbar */
+.full-screen .pv-well{max-width:none;margin:0;border:none;border-radius:0}
+.fs-toolbar{flex:none;height:48px;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--bg-app);border-bottom:1px solid var(--border);min-width:0}
+/* The name and path share one space and the buttons share another.
+   On a narrow toolbar the path is the part that cuts off. */
+.fs-toolbar .fs-id{display:flex;align-items:baseline;gap:8px;min-width:0}
+.fs-toolbar .fs-name{font:600 var(--text-base)/1.3 var(--font-mono);white-space:nowrap;flex:none}
+.fs-toolbar .fs-sub{min-width:0;font:var(--text-xs)/1.3 var(--font-mono);color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fs-toolbar .fs-cluster{display:flex;align-items:center;gap:10px;flex:none}
+.fs-toolbar .spacer{flex:1}
+
+/* ============ result surface ============ */
+/* the amber note strip */
+.res-note{flex:none;padding:9px 14px;background:color-mix(in srgb,var(--warn) 9%,transparent);border-top:1px solid color-mix(in srgb,var(--warn) 28%,transparent);border-bottom:1px solid color-mix(in srgb,var(--warn) 28%,transparent);font:11.5px/1.5 var(--font-mono);color:var(--warn)}
+/* the strip under a converted sheet */
+.prov-strip{flex:none;padding:8px 16px;border-top:1px solid var(--border);font:11px/1.4 var(--font-mono);color:var(--text-tertiary)}
+/* the audio card */
+.audio-card{display:flex;align-items:center;gap:14px;width:100%;max-width:520px;padding:14px 16px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px}
+.audio-play{flex:none;width:44px;height:44px;border:none;border-radius:50%;background:var(--accent);color:var(--on-accent);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.audio-play:hover{background:color-mix(in srgb,var(--accent) 85%,transparent)}
+.audio-play svg{width:18px;height:18px}
+.audio-name{flex:1;min-width:0;font:var(--text-code)/1.3 var(--font-mono);color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.audio-seek{flex:none;width:132px;height:4px;border-radius:999px;background:var(--border);position:relative;cursor:pointer}
+.audio-seek-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:999px;background:var(--accent)}
+.audio-seek-knob{position:absolute;top:50%;left:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:var(--bg-elevated);border:1px solid var(--accent);box-shadow:var(--shadow)}
+.audio-clock{flex:none;font:var(--text-code)/1 var(--font-mono);color:var(--text-secondary);white-space:nowrap}
+.vp-solo .vp-native .audio-card{width:min(480px,80%);margin:auto}
+/* The audio file block's play bar zone. */
+.vp-file-block:has(.media-stage-audio) .vp-file-head{border-bottom:1px solid var(--border)}
+.vp-file-block .media-stage-audio{padding:16px 16px 18px}
+.vp-file-block .media-stage-audio .audio-card{max-width:none;padding:0;gap:16px;background:none;border:none;border-radius:0}
+.vp-file-block .media-stage-audio .audio-name{display:none}
+.vp-file-block .media-stage-audio .audio-seek{flex:1 1 auto;min-width:120px}
+
+/* ============ mobile ============ */
+@media (max-width:767px){
+  .vp-topbar{height:56px;padding:0 8px 0 12px;gap:6px}
+  .vp-actions{gap:4px}
+  .view-page .vp-icon-btn{width:44px;height:44px;border-radius:8px}
+  .vp-icon-btn svg{width:19px;height:19px}
+  .vp-main{padding:16px 16px 24px}
+  .vp-native{width:calc(100% + 32px);margin-top:14px;margin-left:-16px;margin-right:-16px}
+  .vp-frame{height:calc(100vh - 176px)}
+  .vp-footer-note{display:none}
+  .vp-footer-note-mobile{display:block}
+  .vp-well{min-height:320px}
+  .vp-well-doc .md-doc,.pv-well .md-doc{padding:20px 16px}
+  .pv-well{width:auto;max-width:none;margin:12px 16px 0}
+  body.r-preview .preview-pane:has(>.pv-well){display:flex;flex-direction:column;overflow:hidden;padding:0 0 12px}
+  .gallery-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 16px}
+  .gallery-grid .thumb-name{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .thumb-actions{display:none}
+  .thumb-grid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+  .feedwrap .vp-well{min-height:160px;max-height:60vh}
+  .vp-solo .vp-well-doc .md-doc,.vp-solo .vp-well-code .code-block,.vp-solo .vp-well-raw .raw-pre,
+  .vp-solo .vp-well-table .csv-table,.vp-solo .vp-well-table .sheet-title,
+  .vp-solo .vp-well-plain .plain-pre{padding-top:70px}
+  .vp-solo-cluster a{width:44px;height:44px}
+  .vp-solo .pv-toolbar{padding-right:80px}
+  .vp-file-id{flex-direction:row;align-items:baseline;gap:8px}
+  .vp-file-name{flex:1 1 auto}
+  .vp-file-path,.vp-file-meta .vp-file-mtime{display:none}
+  .vp-file-act{width:44px;height:44px}
+  .vp-file-act svg{width:17px;height:17px}
+  .vp-file-block .media-stage-audio{padding:14px 12px 16px}
+  .vp-file-block .media-stage-audio .audio-card{gap:12px}
+  .vp-file-head .badge.media{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .well-skeleton::after{animation:none}
+  .thumb-card.generating .thumb-1610::after{animation:none}
+  .thumb-card.skeleton .thumb-name,.thumb-card.skeleton .thumb-meta{animation:none}
+  .thumb-card,.thumb-actions{transition:none}
+  .cv-spin{animation:none}
+}
+
+/* ============ presentation body (the email page) ============ */
+/* The title leads the page as the email subject. */
+.vp-presentation-title{font-size:var(--text-xl);font-weight:600;line-height:1.3;letter-spacing:-.01em}
+/* The content well follows the header, above the files section. */
+.vp-presentation-body{margin-top:18px}
+/* The toolbar's icon buttons sit at the right end of the row. */
+.well-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none}
+/* The capped frame for html content. The white is deliberate and
+   theme-independent, like every other frame in the product. */
+.frame-body{display:block;width:100%;height:480px;border:none;background:#fff}
+/* The pdf viewer in the body keeps the html frame's cap. */
+.vp-presentation-body .vp-pdf{height:480px}
+/* The body stage follows the image it holds, capped at 520px. The image itself
+   carries the cap, because a percentage height against an auto stage is none. */
+.vp-presentation-body .img-stage{height:auto;min-height:0;max-height:520px;border:none;border-radius:0}
+.vp-presentation-body .img-stage > img{width:auto;height:auto;max-height:520px}
+/* The audio card centers in the body. */
+.vp-presentation-body .audio-card{align-self:center;margin-top:20px}
+/* The body's gone state. */
+.vp-body-gone{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:44px 24px}
+.vp-body-gone .vp-state-ic{opacity:.6;margin-bottom:6px}
+.vp-body-gone-title{font-size:var(--text-base);font-weight:600}
+.vp-body-gone-sub{font-size:var(--text-base);line-height:1.5;color:var(--text-secondary)}
+/* The grid after the files divider does not add its own gap. */
+.thumb-grid.after-divider{margin-top:0}
+@media (max-width:767px){
+  .frame-body{height:360px}
+  .vp-presentation-body .vp-pdf{height:360px}
+  .vp-presentation-body .well-topbar{padding:8px 10px}
+  /* The body stage keeps following small images on phones too. */
+  .vp-presentation-body .img-stage{min-height:0}
+}

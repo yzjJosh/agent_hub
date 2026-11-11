@@ -1,0 +1,625 @@
+#!/usr/bin/env python3
+"""Command line client for the live Agent Hub MCP server.
+
+Usage:
+    agent_cli tools list
+    agent_cli tools show <tool>
+    agent_cli tools call <tool> --param value [--param2 value2]
+    agent_cli tools gc [--days N]
+    agent_cli resources list
+    agent_cli resources read <uri>
+    agent_cli resources upload <local_path> <resource_path>
+    agent_cli resources delete <resource_path>
+    agent_cli resources gc [--days N]
+
+The server URL defaults to http://127.0.0.1:8315/mcp. Set the
+MCP_URL environment variable to talk to another server.
+
+For tools call, a value that names a resource already on the server is sent
+as it is. A value that names a local file is uploaded to the upload folder of
+the share first, under a new random name that keeps the file suffix, and the
+tool gets that path. The upload is deleted once the call ends, whether it
+worked or not. A delete that fails only prints a warning, and the exit status
+stays the same.
+
+An array parameter takes a JSON array, a comma separated list, or the word
+null, which is sent as a null value. Each item in the list is looked up the
+same way as a single resource value.
+
+resources upload writes the local file to the share path and prints that
+path. resources delete removes the share path and prints it. The server
+decides what may be written or removed, and a refused request exits 1 with
+the status and message the server sent.
+
+resources gc removes files nobody has read or changed for N days, 30 by
+default. It runs inside the Agent Hub Docker container and cleans that
+container's own resources folder.
+
+tools gc removes run records and run folders older than N days, 30 by
+default. It runs inside the Agent Hub Docker container too.
+
+Text output ends every item with a newline. Content from resources read is
+written byte for byte with no newline added. Errors go to stderr and exit
+with status 1.
+"""
+
+import argparse
+import asyncio
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+import textwrap
+import uuid
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from typing import Protocol
+from urllib.parse import urlparse
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.types import (
+    BlobResourceContents,
+    CallToolResult,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
+
+_DEFAULT_URL = "http://127.0.0.1:8315/mcp"
+_URL_ENV = "MCP_URL"
+_UPLOAD_DIR = "upload"
+_UPLOAD_TIMEOUT = 600.0
+_WRAP_WIDTH = 100
+_SUMMARY_LINES = 2
+_DEFAULT_GC_DAYS = 30
+_GC_CONTAINER = "agent_hub"
+_GC_SNIPPET = (
+    "import sys\n"
+    "from app.lib.gc.resources import sweep\n"
+    "from app.lib.shared import paths\n"
+    "for path in sweep(paths.resources_dir(), int(sys.argv[1])):\n"
+    "    print(path, flush=True)\n"
+)
+
+
+class _CliError(Exception):
+    """An error the user should see, like a bad argument or a failed call."""
+
+
+@asynccontextmanager
+async def _connect(url: str) -> AsyncIterator[ClientSession]:
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
+class _Value(Protocol):
+    """A value the tool takes for one param."""
+
+
+def _matches_type(value: _Value, expected: str) -> bool:
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "string":
+        return isinstance(value, str)
+    return True
+
+
+def _effective_types(prop: dict) -> list[str]:
+    """Get the type names a parameter takes, leaving out null."""
+    types: list[str] = []
+    declared = prop.get("type")
+    if isinstance(declared, str):
+        types = [declared]
+    elif isinstance(declared, list):
+        types = [t for t in declared if t != "null"]
+    for branch in prop.get("anyOf", []):
+        t = branch.get("type")
+        if isinstance(t, str) and t != "null":
+            types.append(t)
+    return types or ["string"]
+
+
+def _coerce_array(key: str, raw: str) -> list[str] | None:
+    """Read a list value written as a JSON array, a comma separated list, or null."""
+    stripped = raw.strip()
+    if not stripped:
+        return []
+    if stripped == "null":
+        return None
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise _CliError(f"parameter --{key} list value must be a JSON array: {exc}")
+        if not isinstance(parsed, list):
+            raise _CliError(f"parameter --{key} list value must be a JSON array")
+        return [str(item) for item in parsed]
+    return [item.strip() for item in stripped.split(",") if item.strip()]
+
+
+def _coerce_value(key: str, raw: str, prop: dict) -> _Value:
+    types = _effective_types(prop)
+    if "array" in types:
+        return _coerce_array(key, raw)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        value = raw
+    if not any(_matches_type(value, t) for t in types):
+        value = raw
+    if not any(_matches_type(value, t) for t in types):
+        raise _CliError(f"parameter --{key} expects {'/'.join(types)}, got {raw!r}")
+    return value
+
+
+def _is_resource_param(key: str, prop: dict) -> bool:
+    """Say whether a parameter holds a resource path.
+
+    Args:
+        key: The parameter name.
+        prop: The schema of that parameter.
+
+    Returns:
+        True for the resource_path parameter and for any list parameter.
+    """
+    if key == "resource_path":
+        return True
+    return "array" in _effective_types(prop)
+
+
+def _expand_tokens(tokens: list[str]) -> list[str]:
+    expanded = []
+    for token in tokens:
+        if token.startswith("--") and "=" in token:
+            key, _, value = token.partition("=")
+            expanded.append(key)
+            expanded.append(value)
+        else:
+            expanded.append(token)
+    return expanded
+
+
+def _parse_params(tokens: list[str], schema: dict) -> dict:
+    tokens = _expand_tokens(tokens)
+    if len(tokens) % 2 != 0:
+        raise _CliError(f"each --name needs a value: {tokens!r}")
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    params = {}
+    for i in range(0, len(tokens), 2):
+        key_token = tokens[i]
+        if not key_token.startswith("--"):
+            raise _CliError(f"expected --name value pairs, got {key_token!r}")
+        key = key_token.removeprefix("--")
+        if key not in props:
+            valid = ", ".join(f"--{name}" for name in props) or "none"
+            raise _CliError(f"unknown parameter --{key}; valid parameters: {valid}")
+        if key in params:
+            raise _CliError(f"duplicate parameter --{key}")
+        params[key] = _coerce_value(key, tokens[i + 1], props[key])
+    missing = required - params.keys()
+    if missing:
+        missing_str = ", ".join(f"--{name}" for name in sorted(missing))
+        raise _CliError(f"missing required parameters: {missing_str}")
+    return params
+
+
+async def _find_tool(session: ClientSession, name: str) -> Tool:
+    tools = (await session.list_tools()).tools
+    for tool in tools:
+        if tool.name == name:
+            return tool
+    available = ", ".join(tool.name for tool in tools)
+    raise _CliError(f"unknown tool {name!r}; available tools: {available}")
+
+
+def _dav_base(mcp_url: str) -> str:
+    parsed = urlparse(mcp_url)
+    return f"{parsed.scheme}://{parsed.netloc}/dav"
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _dav_detail(body: str) -> str:
+    match = re.search(r"<p[^>]*>(.*?)</p>", body, flags=re.DOTALL)
+    text = match.group(1) if match else body
+    return " ".join(text.split())
+
+
+def _dav_failure(description: str, response: httpx.Response) -> _CliError:
+    message = f"{description} failed: HTTP {response.status_code}"
+    detail = _dav_detail(response.text)
+    if detail:
+        message = f"{message} {detail}"
+    return _CliError(message)
+
+
+async def _dav_put(mcp_url: str, local_path: str, resource_path: str) -> None:
+    dav_url = f"{_dav_base(mcp_url)}/{resource_path}"
+    payload = await asyncio.to_thread(_read_bytes, local_path)
+    async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+        response = await client.put(dav_url, content=payload)
+    if response.status_code >= 300:
+        raise _dav_failure(f"upload to {dav_url}", response)
+
+
+async def _dav_delete(mcp_url: str, resource_path: str) -> None:
+    dav_url = f"{_dav_base(mcp_url)}/{resource_path}"
+    async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+        response = await client.delete(dav_url)
+    if response.status_code >= 300:
+        raise _dav_failure(f"delete of {dav_url}", response)
+
+
+async def _cleanup_upload(mcp_url: str, resource_path: str) -> None:
+    """Delete a resource this command uploaded.
+
+    A delete that fails only prints a warning.
+
+    Args:
+        mcp_url: The server URL.
+        resource_path: The share path to delete.
+    """
+    try:
+        await _dav_delete(mcp_url, resource_path)
+    except Exception as exc:
+        print(
+            f"⚠️ cleanup of uploaded resource {resource_path} failed: {exc}",
+            file=sys.stderr,
+        )
+        return
+    print(f"Removed uploaded resource {resource_path}", file=sys.stderr)
+
+
+async def _resolve_resource_path(
+    session: ClientSession, mcp_url: str, value: str
+) -> tuple[str, str | None]:
+    """Turn a resource path argument into a value the tool can take.
+
+    A value that names a local file is uploaded to the share first.
+
+    Args:
+        session: The open server session.
+        mcp_url: The server URL.
+        value: The argument value to look at.
+
+    Returns:
+        The value to pass to the tool, and the uploaded share path to clean
+        up later. The second one is None when nothing was uploaded.
+    """
+    uris = [r.uri for r in (await session.list_resources()).resources]
+    if f"resources:///{value}" in uris:
+        return value, None
+    local_path = os.path.expanduser(value)
+    if not os.path.isfile(local_path):
+        return value, None
+    suffix = os.path.splitext(os.path.basename(local_path))[1]
+    destination = f"{_UPLOAD_DIR}/{uuid.uuid4().hex}{suffix}"
+    await _dav_put(mcp_url, local_path, destination)
+    print(f"Uploaded {value} to resource {destination}", file=sys.stderr)
+    return destination, destination
+
+
+def _summary_lines(text: str | None) -> list[str]:
+    wrapped = textwrap.wrap((text or "").strip(), width=_WRAP_WIDTH)
+    if len(wrapped) > _SUMMARY_LINES:
+        wrapped = wrapped[:_SUMMARY_LINES]
+        wrapped[-1] = wrapped[-1].removesuffix(".") + "..."
+    return wrapped
+
+
+def _print_params(schema: dict) -> None:
+    props = schema.get("properties", {})
+    if not props:
+        print("  (none)")
+        return
+    required = set(schema.get("required", []))
+    for pname, prop in props.items():
+        req = "required" if pname in required else "optional"
+        typ = "/".join(_effective_types(prop))
+        default = prop.get("default")
+        default_note = f", default {json.dumps(default)}" if default is not None else ""
+        bound_note = "".join(
+            f", {bound} {json.dumps(prop[bound])}" for bound in ("minimum", "maximum") if bound in prop
+        )
+        print(f"  --{pname} <{typ}>  [{req}{default_note}{bound_note}]")
+        desc = prop.get("description")
+        if desc:
+            wrapped = textwrap.wrap(
+                desc, width=_WRAP_WIDTH, initial_indent="      ", subsequent_indent="      "
+            )
+            print("\n".join(wrapped))
+
+
+def _print_result(result: CallToolResult) -> bool:
+    texts = [c.text for c in result.content if isinstance(c, TextContent)]
+    omitted = [c for c in result.content if not isinstance(c, TextContent)]
+    for text in texts:
+        print(text)
+    for content in omitted:
+        print(f"[{content.type} content omitted]")
+    if not texts and result.structuredContent is not None:
+        print(json.dumps(result.structuredContent, indent=2, ensure_ascii=False))
+    return bool(result.isError)
+
+
+async def _list_tools(url: str, _args: argparse.Namespace) -> None:
+    async with _connect(url) as session:
+        tools = (await session.list_tools()).tools
+    for tool in tools:
+        print(tool.name)
+        for line in _summary_lines(tool.description):
+            print(f"  {line}")
+
+
+async def _show_tool(url: str, args: argparse.Namespace) -> None:
+    async with _connect(url) as session:
+        tool = await _find_tool(session, args.name)
+    print(tool.name)
+    print()
+    print(tool.description)
+    print()
+    print("Parameters:")
+    _print_params(tool.inputSchema)
+
+
+async def _resolve_resource_params(
+    session: ClientSession,
+    url: str,
+    params: dict,
+    schema: dict,
+    uploaded: list[str],
+) -> dict:
+    """Turn every resource path parameter into a value the tool can take.
+
+    A value that names a local file is uploaded to the share first. Each item
+    of a list parameter is looked up the same way. A null value is left alone.
+
+    Args:
+        session: The open server session.
+        url: The server URL.
+        params: The parsed parameters, changed in place.
+        schema: The schema the parameters were parsed from.
+        uploaded: Gets each uploaded share path added to it as it happens.
+
+    Returns:
+        The parameters with their new values.
+    """
+    props = schema.get("properties", {})
+    for key, value in params.items():
+        prop = props.get(key, {})
+        if not _is_resource_param(key, prop) or value is None:
+            continue
+        if isinstance(value, list):
+            resolved: list[str] = []
+            for element in value:
+                new_value, cleanup = await _resolve_resource_path(
+                    session, url, str(element)
+                )
+                resolved.append(new_value)
+                if cleanup is not None:
+                    uploaded.append(cleanup)
+            params[key] = resolved
+        else:
+            params[key], cleanup = await _resolve_resource_path(
+                session, url, str(value)
+            )
+            if cleanup is not None:
+                uploaded.append(cleanup)
+    return params
+
+
+async def _call_tool(url: str, args: argparse.Namespace) -> None:
+    async with _connect(url) as session:
+        tool = await _find_tool(session, args.name)
+        params = _parse_params(args.params, tool.inputSchema)
+        uploaded: list[str] = []
+        try:
+            params = await _resolve_resource_params(
+                session, url, params, tool.inputSchema, uploaded
+            )
+            result = await session.call_tool(tool.name, params)
+        finally:
+            for resource_path in uploaded:
+                await _cleanup_upload(url, resource_path)
+    if _print_result(result):
+        print("❌ tool call failed", file=sys.stderr)
+        sys.exit(1)
+
+
+async def _list_resources(url: str, _args: argparse.Namespace) -> None:
+    async with _connect(url) as session:
+        resources = (await session.list_resources()).resources
+    for resource in resources:
+        print(resource.uri)
+        for line in _summary_lines(resource.description):
+            print(f"  {line}")
+
+
+async def _read_resource(url: str, args: argparse.Namespace) -> None:
+    async with _connect(url) as session:
+        result = await session.read_resource(args.uri)
+    for content in result.contents:
+        if isinstance(content, TextResourceContents):
+            print(content.text)
+        elif isinstance(content, BlobResourceContents):
+            # Blob bytes go out with no newline added.
+            sys.stdout.flush()
+            sys.stdout.buffer.write(base64.b64decode(content.blob))
+    sys.stdout.buffer.flush()
+
+
+def _gc_exec(cmd: list[str]) -> list[str]:
+    """Run a cleanup command in the Agent Hub container and give back the lines it printed."""
+    completed = subprocess.run(cmd, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"exit status {completed.returncode}"
+        raise RuntimeError(f"docker exec {_GC_CONTAINER} failed: {detail}")
+    return completed.stdout.splitlines()
+
+
+def _print_removed(removed: list[str]) -> None:
+    if removed:
+        for path in removed:
+            print(path)
+    else:
+        print("(nothing to remove)")
+
+
+async def _gc_resources(_url: str, args: argparse.Namespace) -> None:
+    if args.days < 1:
+        raise _CliError("--days must be a positive integer")
+    cmd = ["docker", "exec", _GC_CONTAINER, "python", "-c", _GC_SNIPPET, str(args.days)]
+    _print_removed(_gc_exec(cmd))
+
+
+async def _gc_tools(_url: str, args: argparse.Namespace) -> None:
+    if args.days < 1:
+        raise _CliError("--days must be a positive integer")
+    cmd = [
+        "docker",
+        "exec",
+        _GC_CONTAINER,
+        "python",
+        "-m",
+        "app.garbage_collector_cli",
+        "--category",
+        "runs",
+        "--days",
+        str(args.days),
+    ]
+    _print_removed(_gc_exec(cmd))
+
+
+async def _upload_resource(url: str, args: argparse.Namespace) -> None:
+    await _dav_put(url, args.local_path, args.resource_path)
+    print(args.resource_path)
+
+
+async def _delete_resource(url: str, args: argparse.Namespace) -> None:
+    await _dav_delete(url, args.resource_path)
+    print(args.resource_path)
+
+
+def _build_tools_parser(sub: argparse.ArgumentParser) -> None:
+    tools = sub.add_parser("tools", help="List and call MCP tools")
+    tools_sub = tools.add_subparsers(dest="action", required=True)
+
+    p = tools_sub.add_parser("list", help="List all tools with one-line descriptions")
+    p.set_defaults(func=_list_tools)
+
+    p = tools_sub.add_parser("show", help="Print the full MCP documentation for one tool")
+    p.add_argument("name", help="Tool name as shown by 'tools list'")
+    p.set_defaults(func=_show_tool)
+
+    p = tools_sub.add_parser(
+        "call", help="Call a tool with --name value parameters (values may use --name=value)"
+    )
+    p.add_argument("name", help="Tool name as shown by 'tools list'")
+    p.add_argument(
+        "params", nargs=argparse.REMAINDER, help="Free-form --name value parameter pairs"
+    )
+    p.set_defaults(func=_call_tool)
+
+    p = tools_sub.add_parser(
+        "gc", help="Remove run records and run dirs older than --days days"
+    )
+    p.add_argument(
+        "--days",
+        type=int,
+        default=_DEFAULT_GC_DAYS,
+        help=f"Days of age before a run is removed (default {_DEFAULT_GC_DAYS})",
+    )
+    p.set_defaults(func=_gc_tools, uses_mcp=False)
+
+
+def _build_resources_parser(sub: argparse.ArgumentParser) -> None:
+    resources = sub.add_parser(
+        "resources", help="List, read, upload, and delete MCP resources"
+    )
+    resources_sub = resources.add_subparsers(dest="action", required=True)
+
+    p = resources_sub.add_parser("list", help="List all resources with one-line descriptions")
+    p.set_defaults(func=_list_resources)
+
+    p = resources_sub.add_parser("read", help="Read one resource by URI and print its content")
+    p.add_argument("uri", help="Resource URI as shown by 'resources list'")
+    p.set_defaults(func=_read_resource)
+
+    p = resources_sub.add_parser(
+        "upload", help="Upload a local file to a share path via WebDAV"
+    )
+    p.add_argument("local_path", help="Path to the local file to upload")
+    p.add_argument("resource_path", help="Share path to write, e.g. upload/notes.txt")
+    p.set_defaults(func=_upload_resource, uses_mcp=False)
+
+    p = resources_sub.add_parser("delete", help="Delete one share path via WebDAV")
+    p.add_argument("resource_path", help="Share path to delete, e.g. upload/notes.txt")
+    p.set_defaults(func=_delete_resource, uses_mcp=False)
+
+    p = resources_sub.add_parser(
+        "gc", help="Remove resources not explicitly opened or written within --days days"
+    )
+    p.add_argument(
+        "--days",
+        type=int,
+        default=_DEFAULT_GC_DAYS,
+        help=f"Days of inactivity before a file is removed (default {_DEFAULT_GC_DAYS})",
+    )
+    p.set_defaults(func=_gc_resources, uses_mcp=False)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent_cli",
+        description="List and call tools and resources on the live Agent Hub MCP server.",
+    )
+    parser.set_defaults(uses_mcp=True)
+    sub = parser.add_subparsers(dest="command", required=True)
+    _build_tools_parser(sub)
+    _build_resources_parser(sub)
+    return parser
+
+
+def _unwrap(exc: BaseException) -> BaseException:
+    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+        exc = exc.exceptions[0]
+    return exc
+
+
+def main() -> None:
+    """Run the command the user asked for."""
+    args = _build_parser().parse_args()
+    url = os.environ.get(_URL_ENV, _DEFAULT_URL)
+    try:
+        asyncio.run(args.func(url, args))
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as exc:
+        exc = _unwrap(exc)
+        if isinstance(exc, _CliError):
+            print(f"❌ {exc}", file=sys.stderr)
+        elif args.uses_mcp:
+            print(f"❌ ERROR: MCP request to {url} failed: {exc}", file=sys.stderr)
+        else:
+            print(f"❌ ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

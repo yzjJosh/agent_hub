@@ -1,0 +1,9 @@
+# User-approved lint skips. One entry per line: path:line:rules:reason
+# Paths are relative to this file's directory. The linter reports any skip
+# not covered by an entry here (coding.skip-lint is not suppressible by a hint).
+app/lib/browser/browser_manager.py:35:coding.import-private-module:Playwright CDP hack needs the private _connection.Channel module; approved by user 2026-08-23
+app/lib/browser/browser_manager.py:206:coding.reflection,coding.access-private:Playwright CDP hack patches Channel.send via reflection; approved by user 2026-08-23
+app/lib/browser/browser_manager.py:393:coding.access-private:guid capture reads the impl page at track time so the mouse-clamp hook can match its object layer; approved by user 2026-09-24
+tests/app/lib/browser/test_browser_manager.py:2941:coding.access-private:fake channel test builds the impl-style page with the matching guid; approved by user 2026-09-24
+
+app/lib/recognizer/agents/playwright/sync_control.py:36:coding.exported-api-unused:SyncChallenger kept as public API for sync Playwright callers; approved by user 2026-08-23

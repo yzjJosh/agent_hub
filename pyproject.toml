@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=75.8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent_hub"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "a2wsgi",
+    "fastmcp==3.4.0",
+    "fastmcp-slim==3.4.0",
+    "mcp==1.30.0",
+    "openai-agents==0.18.3",
+    "pydantic>=2.13,<3",
+    "starlette<1.0",
+    "uvicorn",
+    "setuptools~=75.8.0",
+    "opencv-python~=4.10.0.84",
+    "imageio~=2.36.1",
+    "ultralytics~=8.3.59",
+    "transformers~=4.48.0",
+    "accelerate>=0.26.0",
+    "playwright==1.61.0",
+    "patchright==1.61.1",
+    "Pillow",
+    "pillow-heif",
+    "onnxruntime",
+    "reverse-geocoder",
+    "pytest-asyncio",
+    "tiktoken",
+    "beautifulsoup4",
+    "httpx",
+    "aiofiles",
+    "magika~=1.0.3",
+    "aiosqlite",
+    "python-docx",
+    "openpyxl",
+    "xlrd",
+    "wsgidav",
+    "websockets",
+    "Pygments~=2.21.0",
+    "markdown-it-py~=4.2.0",
+    "PyYAML~=6.0",
+    "mdit-py-plugins~=0.4",
+    "linkify-it-py~=2.0",
+    "lancedb",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-timeout", "pytest-xdist", "xlwt", "python-pptx"]
+
+[tool.setuptools.packages.find]
+where = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: mark test to run only against a real server or the host environment",
+    "fast_sleeps: stub asyncio.sleep to a no-op so the tool's page settle delays do not cost real time, opt-in, never used by live tests",
+]

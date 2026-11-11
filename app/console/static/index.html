@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Agent Hub</title>
+    <script>
+      (function () {
+        "use strict";
+        var root = document.documentElement;
+        var theme = "light", q = null, s = null, scheme = "light";
+        try { scheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; } catch (e) {}
+        try { q = new URLSearchParams(location.search).get("theme"); } catch (e) {}
+        if (q === "dark" || q === "light") theme = q;
+        else {
+          try { s = JSON.parse(localStorage.getItem("agent-console-theme")); } catch (e) { s = null; }
+          if (s && (s.theme === "dark" || s.theme === "light") && s.scheme === scheme) theme = s.theme;
+          else theme = scheme;
+        }
+        root.setAttribute("data-theme", theme);
+        var sb = "0", ps = null, ls = null;
+        try {
+          ps = new URLSearchParams(location.search).get("sidebar");
+          ls = localStorage.getItem("agent-console-sidebar");
+        } catch (e) {}
+        if (ps === "collapsed" || ps === "expanded") sb = ps === "collapsed" ? "1" : "0";
+        else if (ls === "1" || ls === "0") sb = ls;
+        root.classList.toggle("sb-collapsed", sb === "1");
+      })();
+    </script>
+    <link rel="stylesheet" href="/assets/css/tokens.css">
+    <link rel="stylesheet" href="/assets/css/app.css">
+    <link rel="stylesheet" href="/assets/css/view.css">
+    <link rel="modulepreload" href="/assets/js/screens/tools.js">
+    <link rel="modulepreload" href="/assets/js/screens/task-detail.js">
+    <link rel="modulepreload" href="/assets/js/screens/agent-detail.js">
+    <link rel="modulepreload" href="/assets/js/screens/conversation.js">
+    <link rel="modulepreload" href="/assets/js/crumb.js">
+    <link rel="modulepreload" href="/assets/js/subtask-list.js">
+    <link rel="modulepreload" href="/assets/js/screens/browser.js">
+  </head>
+  <body>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <a class="brand-link" data-spa href="/tools" title="Home">
+          <span class="brand-mark">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 5 4 3-4 3"/><path d="M9 12h4"/></svg>
+          </span>
+          <span class="brand-name">Agent Hub</span>
+        </a>
+        <span class="brand-actions">
+          <button class="icon-btn" id="sb-toggle" title="Collapse sidebar" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 4-4 4 4 4"/></svg>
+          </button>
+          <button class="icon-btn" id="theme-toggle" data-theme-toggle title="Switch theme"></button>
+        </span>
+      </div>
+      <nav class="nav">
+        <a class="nav-item" data-spa data-nav="tools" href="/tools" title="Tools">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>
+          <span class="lbl">Tools</span>
+          <span class="nav-count" id="nav-count" hidden></span>
+        </a>
+        <a class="nav-item" data-spa data-nav="resources" href="/resources" title="Resources">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v5.5c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V4.5Z"/></svg>
+          <span class="lbl">Resources</span>
+        </a>
+        <a class="nav-item" data-spa data-nav="presented" href="/presented" title="Presented by Agent">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2 7 8.5M14 2l-4.5 12-2.5-5.5L2 6 14 2Z"/></svg>
+          <span class="lbl">Presented by Agent</span>
+        </a>
+        <a class="nav-item" data-spa data-nav="browser" href="/browser" title="Browser">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8.5" rx="1"/><path d="M6 14h4M8 11.5V14"/></svg>
+          <span class="lbl">Browser</span>
+        </a>
+      </nav>
+      <div class="sidebar-status" id="sidebar-status" title="">
+        <div class="status-row"><span class="dot ok" id="sb-dot"></span><span class="txt t2" id="sb-text">Service healthy</span></div>
+        <div class="status-row meta" id="sb-meta">— tasks running</div>
+        <div class="status-row meta mono" id="sb-endpoint">v1</div>
+      </div>
+    </aside>
+
+    <header class="appbar" id="appbar">
+      <a class="brand-link" data-spa href="/tools" title="Home">
+        <span class="brand-mark">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 5 4 3-4 3"/><path d="M9 12h4"/></svg>
+        </span>
+        <span class="brand-name">Agent Hub</span>
+      </a>
+      <span class="spacer"></span>
+      <span class="app-status"><span class="dot ok" id="ab-dot"></span><span id="ab-text">Service healthy</span></span>
+      <button class="icon-btn" id="theme-toggle-mobile" data-theme-toggle title="Switch theme"></button>
+    </header>
+
+    <main class="main" id="main">
+      <div class="banner hidden" id="banner">
+        <span class="banner-ic">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v4M8 11.2v.3"/></svg>
+        </span>
+        <span class="banner-text">Cannot reach the Agent Hub service — retrying.</span>
+        <span class="mono banner-detail" id="banner-detail"></span>
+        <span class="stale-chip">stale</span>
+      </div>
+      <div id="view" class="view">
+        <div class="boot-note t3">Loading console…</div>
+      </div>
+    </main>
+
+    <nav class="tabbar" id="tabbar">
+      <div class="tabs">
+        <a class="tab" data-spa data-nav="tools" href="/tools">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>
+          <span class="lbl">Tools</span>
+        </a>
+        <a class="tab" data-spa data-nav="resources" href="/resources">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v5.5c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V4.5Z"/></svg>
+          <span class="lbl">Resources</span>
+        </a>
+        <a class="tab" data-spa data-nav="presented" href="/presented">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2 7 8.5M14 2l-4.5 12-2.5-5.5L2 6 14 2Z"/></svg>
+          <span class="lbl">Presented</span>
+        </a>
+        <a class="tab" data-spa data-nav="browser" href="/browser">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8.5" rx="1"/><path d="M6 14h4M8 11.5V14"/></svg>
+          <span class="lbl">Browser</span>
+        </a>
+      </div>
+    </nav>
+
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+    <script type="module" src="/assets/js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,35 @@
+# Shared constants for captcha solving
+
+__all__ = [
+    "CAPTCHA_ROUTE_REGEX",
+    "CHECKBOX_WAIT",
+    "DETECT_RETRY_MAX",
+    "DETECT_RETRY_TIMEOUT",
+    "GRID_SIZES",
+    "LABEL_TEXT_TIMEOUT",
+    "LABEL_VISIBLE_TIMEOUT",
+    "NETWORK_IDLE_TIMEOUT",
+    "SCREENSHOT_TIMEOUT",
+    "TILE_LOAD_RETRIES",
+    "TILE_LOAD_TIMEOUT",
+    "TOKEN_CHECK_INTERVAL",
+    "TOKEN_CHECK_RETRIES",
+]
+
+import re
+
+LABEL_VISIBLE_TIMEOUT: int = 10000
+TILE_LOAD_TIMEOUT: int = 1000
+TILE_LOAD_RETRIES: int = 30
+NETWORK_IDLE_TIMEOUT: int = 5000
+DETECT_RETRY_TIMEOUT: int = 5000
+DETECT_RETRY_MAX: int = 3
+TOKEN_CHECK_INTERVAL: int = 1000
+SCREENSHOT_TIMEOUT: int = 2000
+TOKEN_CHECK_RETRIES: int = 5
+CHECKBOX_WAIT: int = 2000
+LABEL_TEXT_TIMEOUT: int = 5000
+GRID_SIZES: tuple[int, int] = (9, 16)
+CAPTCHA_ROUTE_REGEX = re.compile(
+    r"(\b(?:google\.com.*(?:reload|userverify)|recaptcha\.net.*(?:reload|userverify))\b)"
+)

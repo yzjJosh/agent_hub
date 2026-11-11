@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Start, stop, and check the Agent Hub preview for this worktree.
+
+The preview listens on a free port between 10000 and 19999, picked inside the
+Agent Hub container. The port is not open on the host, and start prints it.
+
+Each worktree gets its own fresh data and resources folders in the container,
+at /tmp/console-preview-<name>-data and /tmp/console-preview-<name>-resources,
+so two worktrees never share state. The preview never touches the live service
+records, where a start would mark running tasks as failed.
+
+The pid and port are kept on the host under /tmp/agent-console-preview/<name>,
+and PREVIEW_STORE_ROOT changes that root. <name> is the worktree folder name,
+or 'main' for the main checkout. Those two files say what stop and status do.
+The preview process carries a marker in its command line, and stop checks that
+marker before it kills the pid.
+
+The preview answers only from inside the container.
+
+    docker exec agent_hub curl http://127.0.0.1:<port>/
+
+To look at it, noVNC is on host port 6080, and the browser in the container can
+reach 127.0.0.1 on the preview port.
+
+Run this from the host, from this worktree's root.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+_CONTAINER = "agent_hub"
+_DEFAULT_STORE_ROOT = "/tmp/agent-console-preview"
+_HEALTH_TRIES = 30
+_HEALTH_INTERVAL_SECONDS = 2
+
+# Picks a free port between 10000 and 19999 inside the container.
+_PICK_PORT_SNIPPET = """import secrets, socket
+s = socket.socket()
+while True:
+    p = 10000 + secrets.randbelow(10000)
+    try:
+        s.bind(("127.0.0.1", p)); break
+    except OSError:
+        continue
+print(p)"""
+
+
+class _PreviewStore:
+    """Where this worktree's preview pid and port are kept on the host."""
+
+    def __init__(self, name: str) -> None:
+        root = Path(os.environ.get("PREVIEW_STORE_ROOT", _DEFAULT_STORE_ROOT))
+        self.dir = root / name
+        self.marker = f"agent-console-preview-{name}"
+        self.data_dir = f"/tmp/console-preview-{name}-data"
+        self.resources_dir = f"/tmp/console-preview-{name}-resources"
+        self.pid_file = f"/tmp/preview-pid-{name}"
+
+    @property
+    def has_pid(self) -> bool:
+        """True when a pid file is saved."""
+        return (self.dir / "pid").is_file()
+
+    def read(self) -> tuple[str, str]:
+        """Get the saved pid and the saved port."""
+        return (
+            (self.dir / "pid").read_text().strip(),
+            (self.dir / "port").read_text().strip(),
+        )
+
+    def write(self, port: str, pid: str) -> None:
+        """Save the port and the pid."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "port").write_text(f"{port}\n")
+        (self.dir / "pid").write_text(f"{pid}\n")
+
+    def remove(self) -> None:
+        """Delete this worktree's saved pid and port."""
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _git(*args: str) -> str:
+    """Run a git command and give back what it printed, with spaces trimmed."""
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _worktree_context() -> tuple[str, str]:
+    """Find which checkout this was run from.
+
+    Returns:
+        The name of the checkout and the folder it is mounted at in the
+        container. The main checkout gives back 'main' and /app. A worktree
+        under .worktrees gives back its folder name and /worktrees/<name>.
+    """
+    repo_root = Path(_git("rev-parse", "--show-toplevel"))
+    if _git("rev-parse", "--absolute-git-dir") != _git(
+        "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ):
+        return repo_root.name, f"/worktrees/{repo_root.name}"
+    return "main", "/app"
+
+
+def _container_exec(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one command in the Agent Hub container and keep what it printed."""
+    return subprocess.run(["docker", "exec", *args], capture_output=True, text=True)
+
+
+def _pid_alive(store: _PreviewStore, pid: str) -> bool:
+    """True when the process with this pid is still this worktree's preview."""
+    result = _container_exec(
+        _CONTAINER,
+        "bash",
+        "-c",
+        f"tr '\\0' ' ' < /proc/{pid}/cmdline 2>/dev/null | grep -qF '{store.marker}'",
+    )
+    return result.returncode == 0
+
+
+def _port_up(port: str) -> bool:
+    """True when something answers on the port inside the container."""
+    result = _container_exec(
+        _CONTAINER,
+        "python",
+        "-c",
+        f"import socket; socket.create_connection(('127.0.0.1', {port}), 2).close()",
+    )
+    return result.returncode == 0
+
+
+def _pick_free_port() -> str:
+    """Get a free port from inside the container.
+
+    Raises:
+        SystemExit: If no port could be picked.
+    """
+    result = _container_exec(_CONTAINER, "python", "-c", _PICK_PORT_SNIPPET)
+    if result.returncode != 0:
+        print(f"could not pick a free port: {result.stderr.strip()}", file=sys.stderr)
+        raise SystemExit(1)
+    return result.stdout.strip()
+
+
+def _launch(store: _PreviewStore, container_root: str, port: str) -> None:
+    """Start the preview in the background.
+
+    Args:
+        store: Where this worktree's preview files live.
+        container_root: The folder in the container to run from.
+        port: The port the preview listens on.
+    """
+    # The preview writes its own pid to a file in the container.
+    _container_exec(
+        "-d",
+        "-w",
+        container_root,
+        "-e",
+        f"HTTP_PORT={port}",
+        "-e",
+        f"DATA_DIR={store.data_dir}",
+        "-e",
+        f"RESOURCES_DIR={store.resources_dir}",
+        _CONTAINER,
+        "bash",
+        "-lc",
+        f"echo $$ > {store.pid_file}; exec python -m app.main '{store.marker}'",
+    )
+
+
+def _self_reported_pid(store: _PreviewStore) -> str:
+    """Read the pid the preview wrote for itself, or an empty string when it is not there yet."""
+    result = _container_exec(_CONTAINER, "cat", store.pid_file)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _wait_until_up(store: _PreviewStore, port: str) -> str:
+    """Wait for the preview to answer, then read the pid it wrote.
+
+    Args:
+        store: Where this worktree's preview files live.
+        port: The port to watch.
+
+    Returns:
+        The pid of the running preview.
+
+    Raises:
+        SystemExit: If the preview never answers.
+    """
+    for _ in range(_HEALTH_TRIES):
+        if _port_up(port):
+            pid = _self_reported_pid(store)
+            if pid:
+                return pid
+        time.sleep(_HEALTH_INTERVAL_SECONDS)
+    print(f"preview did not come up on :{port}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _start() -> int:
+    """Start this worktree's preview, or report the one already running.
+
+    Returns:
+        The exit code.
+    """
+    name, container_root = _worktree_context()
+    store = _PreviewStore(name)
+    if store.has_pid:
+        pid, port = store.read()
+        if _pid_alive(store, pid):
+            print(f"preview already running on :{port} (pid {pid})")
+            return 0
+    port = _pick_free_port()
+    _launch(store, container_root, port)
+    print(f"starting preview on :{port} ...")
+    pid = _wait_until_up(store, port)
+    store.write(port, pid)
+    print(f"preview up on :{port} (pid {pid})")
+    return 0
+
+
+def _stop() -> int:
+    """Stop this worktree's preview and forget its pid and port.
+
+    Returns:
+        The exit code.
+    """
+    name, _ = _worktree_context()
+    store = _PreviewStore(name)
+    if not store.has_pid:
+        print("preview not running")
+        return 0
+    pid, port = store.read()
+    if _pid_alive(store, pid):
+        _container_exec(_CONTAINER, "bash", "-c", f"kill {pid}")
+        print(f"preview stopped (pid {pid}, was on :{port})")
+    else:
+        print(f"preview not running (stored pid {pid} no longer matches the marker)")
+    store.remove()
+    return 0
+
+
+def _status() -> int:
+    """Say whether this worktree's preview is answering.
+
+    Returns:
+        The exit code. It is 1 when the preview is not running.
+    """
+    name, _ = _worktree_context()
+    store = _PreviewStore(name)
+    if not store.has_pid:
+        print("preview not running")
+        return 1
+    pid, port = store.read()
+    if _port_up(port):
+        print(f"preview up on :{port} (pid {pid})")
+        return 0
+    print(f"preview not running (stored port :{port} not answering)")
+    return 1
+
+
+def main() -> int:
+    """Run start, stop, or status.
+
+    Returns:
+        The exit code. Anything else prints how to use this and gives 2.
+    """
+    handlers = {"start": _start, "stop": _stop, "status": _status}
+    args = sys.argv[1:]
+    handler = handlers.get(args[0] if args else "")
+    if handler is None:
+        print(f"usage: {sys.argv[0]} {{start|stop|status}}")
+        return 2
+    return handler()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
