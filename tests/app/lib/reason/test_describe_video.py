@@ -194,7 +194,7 @@ class TestDescribeVideoNative:
             )
             with patch('asyncio.create_subprocess_exec') as mock_run:
                 mock_run.side_effect = _mock_cli_side_effect(_DURATION_10S)
-                result, status = await describe_video(dummy_video, "User context")
+                result, status = await describe_video(dummy_video)
 
         assert status == 0
         assert result == "native summary"
@@ -205,7 +205,8 @@ class TestDescribeVideoNative:
         content = payload["messages"][1]["content"]
         assert content[1]["type"] == "video_url"
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
-        assert "User context" in content[0]["text"]
+        assert '"description": "..."' in content[0]["text"]
+        assert "User question" not in content[0]["text"]
         assert '{"success": false}' in content[0]["text"]
         assert "actually inspected the video" in content[0]["text"]
 
@@ -230,8 +231,10 @@ class TestDescribeVideoNative:
         '{"success": true, "description": 123}',
         '{"success": true, "description": "summary", "extra": "field"}',
     ])
+    @pytest.mark.parametrize("context", ["", "User context"])
     async def test_native_failure_falls_back_to_frames(
-        self, dummy_video: str, native_content: str, monkeypatch: pytest.MonkeyPatch,
+        self, dummy_video: str, native_content: str, context: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Unconfirmed video replies are replaced by descriptions from frames."""
         monkeypatch.setenv("REASON_BACKEND_URL", "http://video.test")
@@ -248,7 +251,7 @@ class TestDescribeVideoNative:
                         _chat_response("Observed red frames"),
                         _chat_response("Summary of observed red frames"),
                     ]
-                    result, status = await describe_video(dummy_video, "User context")
+                    result, status = await describe_video(dummy_video, context)
 
         assert status == 0
         assert result == "Summary of observed red frames"
@@ -259,10 +262,10 @@ class TestDescribeVideoNative:
         assert native_payload["messages"][1]["content"][1]["type"] == "video_url"
         frames_content = frames_payload["messages"][1]["content"]
         assert [part["type"] for part in frames_content[1:]] == ["image_url"] * 5
-        assert "User context" in frames_content[0]["text"]
+        assert context in frames_content[0]["text"]
         summary_content = summary_payload["messages"][1]["content"]
         assert "Observed red frames" in summary_content
-        assert "User context" in summary_content
+        assert context in summary_content
         assert "response_format" not in frames_payload
         assert "response_format" not in summary_payload
 
@@ -285,6 +288,79 @@ class TestDescribeVideoNative:
         assert status == 1
         assert "503" in result
         assert mock_post.await_count == 2
+
+
+class TestDescribeVideoQuestion:
+    """Test asking a question about the whole video."""
+
+    async def test_empty_context_asks_for_description(self, dummy_video: str) -> None:
+        """With no question, the model is asked to describe the video."""
+        with patch('app.lib.reason.describe_video.reason') as mock_reason:
+            mock_reason.return_value = ('{"success": true, "description": " A summary "}', 0)
+            result, status = await describe_video(dummy_video)
+
+        assert (result, status) == ("A summary", 0)
+        mock_reason.assert_awaited_once()
+        prompt, context = mock_reason.call_args.args
+        assert '"description": "..."' in prompt
+        assert '"answer"' not in prompt
+        assert context == ""
+        assert mock_reason.call_args.kwargs["video_files"] == [dummy_video]
+        assert mock_reason.call_args.kwargs["json_format"] is True
+
+    async def test_question_is_sent_with_video(self, dummy_video: str) -> None:
+        """A question is asked about the video and the answer comes back."""
+        question = "At what time does the yellow square appear?"
+        with patch('app.lib.reason.describe_video.reason') as mock_reason:
+            mock_reason.return_value = (
+                '{"success": true, "answer": " Between 74 and 80 seconds. "}', 0
+            )
+            result, status = await describe_video(dummy_video, f"  {question}  ")
+
+        assert (result, status) == ("Between 74 and 80 seconds.", 0)
+        mock_reason.assert_awaited_once()
+        prompt, context = mock_reason.call_args.args
+        assert prompt.endswith(f"User question: {question}")
+        assert '"answer": "..."' in prompt
+        assert '"description"' not in prompt
+        assert context == ""
+        assert mock_reason.call_args.kwargs["video_files"] == [dummy_video]
+        assert mock_reason.call_args.kwargs["json_format"] is True
+
+    @pytest.mark.parametrize("native_reply", [
+        ('{"success": false}', 0),
+        ('{"success": true, "description": "A general summary"}', 0),
+        ('{"success": true, "answer": ""}', 0),
+        ('{"success": true, "answer": 74}', 0),
+        ('{"success": "true", "answer": "Invented answer"}', 0),
+        ('{"success": true, "answer": "74 seconds", "extra": "field"}', 0),
+        ('The square appears at 74 seconds.', 0),
+        ("Backend unavailable", 1),
+    ])
+    async def test_bad_answer_falls_back_to_frames(
+        self, dummy_video: str, native_reply: tuple[str, int],
+    ) -> None:
+        """An answer that is not a clean success is replaced by one from frames."""
+        question = "When does the yellow square appear?"
+
+        def _reason_side_effect(*_args: str, **kwargs: bool | list[str]) -> tuple[str, int]:
+            if "video_files" in kwargs:
+                return native_reply
+            return ("Frame answer", 0)
+
+        with patch('shutil.which', return_value="/usr/bin/tool"):
+            with patch('asyncio.create_subprocess_exec') as mock_run:
+                mock_run.side_effect = _mock_cli_side_effect(_DURATION_10S)
+                with patch(
+                    'app.lib.reason.describe_video.reason', side_effect=_reason_side_effect,
+                ) as mock_reason:
+                    result, status = await describe_video(dummy_video, question)
+
+        assert (result, status) == ("Frame answer", 0)
+        native_call, *frame_calls = mock_reason.call_args_list
+        assert native_call.kwargs["video_files"] == [dummy_video]
+        assert len(frame_calls) == 2
+        assert all(question in call.args[1] for call in frame_calls)
 
 
 class TestDescribeVideoFrameCount:
@@ -445,3 +521,14 @@ class TestDescribeVideoLive:
 
         assert status == 0
         assert "tablet" in result.lower()
+
+    @pytest.mark.timeout(120)
+    async def test_describe_video_answers_question(self, tmp_path: Path, data_dir: str) -> None:
+        """A real video gets an answer to a question about it."""
+        video_path = self._copy_test_video(tmp_path, data_dir)
+        result, status = await describe_video(
+            video_path, "Which product name is shown at the end of this video?"
+        )
+
+        assert status == 0
+        assert "chromecast" in result.lower()
