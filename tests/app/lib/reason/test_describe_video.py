@@ -528,3 +528,4 @@ class TestDescribeVideoLive:
 
         assert status == 0
         assert "chromecast" in result.lower()
+        assert len(result) < 200
