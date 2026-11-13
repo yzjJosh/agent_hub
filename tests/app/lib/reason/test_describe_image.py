@@ -629,15 +629,13 @@ class TestDescribeImageLive:
 
     @pytest.mark.timeout(120)
     async def test_describe_image_answers_question(self, tmp_path: Path, data_dir: str) -> None:
-        """A photographed document gets a short answer to a question about it."""
-        src = os.path.join(data_dir, "test_image_real.jpg")
-        dst = tmp_path / "test_image_real.jpg"
+        """A photo gets a short answer to a question about the camera that took it."""
+        src = os.path.join(data_dir, "outdoor_photo.jpg")
+        dst = tmp_path / "outdoor_photo.jpg"
         shutil.copy(src, dst)
 
-        result, status = await describe_image(
-            str(dst), "What time is the public hearing on May 19, 2026?"
-        )
+        result, status = await describe_image(str(dst), "Which camera took this photo?")
 
         assert status == 0
-        assert "10:00" in result
+        assert "pixel 8" in result.lower()
         assert len(result) < 200

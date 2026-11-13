@@ -63,7 +63,7 @@ _DEFAULT_BATCH_SIZE = 3
 _SCRATCH_NAME = "images"
 _OCR_TIMEOUT_S = 600
 
-_ANSWER_PROMPT = """Answer the user question below using only the content given above as Additional Context. The content is a transcription or description of a file.
+_ANSWER_PROMPT = """Answer the user question below using only the content above. The content is a transcription or description of a file.
 CRITICAL INSTRUCTIONS:
 1. ANSWER THE QUESTION: Answer exactly what the user asks. Do not describe or summarize the whole content unless the question asks for it.
 2. NOT SHOWN: If the content does not show or contain what the question asks about, say so in the answer instead of guessing. Never fill gaps with general knowledge.
