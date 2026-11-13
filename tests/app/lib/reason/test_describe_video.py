@@ -232,8 +232,7 @@ class TestDescribeVideoNative:
         '{"success": true, "description": "summary", "extra": "field"}',
     ])
     async def test_native_failure_falls_back_to_frames(
-        self, dummy_video: str, native_content: str,
-        monkeypatch: pytest.MonkeyPatch,
+        self, dummy_video: str, native_content: str, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Unconfirmed video replies are replaced by descriptions from frames."""
         monkeypatch.setenv("REASON_BACKEND_URL", "http://video.test")
