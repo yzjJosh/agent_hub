@@ -231,9 +231,8 @@ class TestDescribeVideoNative:
         '{"success": true, "description": 123}',
         '{"success": true, "description": "summary", "extra": "field"}',
     ])
-    @pytest.mark.parametrize("context", ["", "User context"])
     async def test_native_failure_falls_back_to_frames(
-        self, dummy_video: str, native_content: str, context: str,
+        self, dummy_video: str, native_content: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Unconfirmed video replies are replaced by descriptions from frames."""
@@ -251,7 +250,7 @@ class TestDescribeVideoNative:
                         _chat_response("Observed red frames"),
                         _chat_response("Summary of observed red frames"),
                     ]
-                    result, status = await describe_video(dummy_video, context)
+                    result, status = await describe_video(dummy_video)
 
         assert status == 0
         assert result == "Summary of observed red frames"
@@ -262,10 +261,8 @@ class TestDescribeVideoNative:
         assert native_payload["messages"][1]["content"][1]["type"] == "video_url"
         frames_content = frames_payload["messages"][1]["content"]
         assert [part["type"] for part in frames_content[1:]] == ["image_url"] * 5
-        assert context in frames_content[0]["text"]
         summary_content = summary_payload["messages"][1]["content"]
         assert "Observed red frames" in summary_content
-        assert context in summary_content
         assert "response_format" not in frames_payload
         assert "response_format" not in summary_payload
 

@@ -353,8 +353,8 @@ async def _ask_whole_video(video_path: str, context: str) -> str | None:
         context: A question about the video. Empty asks for a description.
 
     Returns:
-        The description or answer, or None when the model did not look at
-        the video.
+        The description or answer, or None when the reply is not a clean
+        success.
     """
     question = context.strip()
     if question:
