@@ -102,7 +102,8 @@ async def _handle_download_result(download_path: str, context: str, verbose: boo
 
     Args:
         download_path: The file that was saved.
-        context: Extra words to help describe pictures and video.
+        context: A question about a picture, a video, a PDF, or slides.
+            Empty asks for a description.
         verbose: True to print what is happening.
         binary_passthrough: True to keep a small binary file for download.
         mime: The file type when it is already known, or None to find it.
@@ -621,7 +622,8 @@ async def resolve_input(text: str, context: str = "", verbose: bool = False, bin
     Args:
         text: A web address, a file path, or plain text. A single dash reads
             from standard input.
-        context: Extra words to help describe pictures and video.
+        context: A question about a picture, a video, a PDF, or slides.
+            Empty asks for a description.
         verbose: True to print what is happening.
         binary_passthrough: True to copy a small binary file to the downloads
             folder and give back the tag and the path of the copy.
@@ -662,7 +664,8 @@ async def _resolve_file(path: str, context: str = "", verbose: bool = False, bin
 
     Args:
         path: The file to read.
-        context: Extra words to help describe pictures and video.
+        context: A question about a picture, a video, a PDF, or slides.
+            Empty asks for a description.
         verbose: True to print what is happening.
         binary_passthrough: True to keep a small binary file for download.
 

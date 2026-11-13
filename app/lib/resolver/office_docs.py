@@ -331,13 +331,13 @@ async def describe_presentation(
 
     Args:
         path: The slide deck to read.
-        context: Extra words to help describe the slides.
+        context: A question about the slides. Empty asks for a description.
         verbose: True to print what is happening.
 
     Returns:
-        The text about the slides, and a status code. Zero means it worked,
-        1 means it went wrong, 2 means the file is missing, and 3 means
-        LibreOffice is not installed.
+        The text about the slides or the answer, and a status code. Zero
+        means it worked, 1 means it went wrong, 2 means the file is missing,
+        and 3 means LibreOffice is not installed.
     """
     if not await asyncio.to_thread(os.path.exists, path):
         return f"Presentation path '{path}' does not exist.", 2

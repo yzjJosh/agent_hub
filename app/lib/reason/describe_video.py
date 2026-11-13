@@ -36,20 +36,42 @@ CRITICAL INSTRUCTIONS:
 """
 
 
-def _parse_native_description(response: str) -> str | None:
-    """Read the description from a successful video reply."""
+_NATIVE_QUESTION_PROMPT = """First determine whether you can actually inspect the supplied video.
+If the video is missing, ignored, unsupported, inaccessible, or cannot be decoded, return {"success": false} with no answer.
+Set success to true only if you actually inspected the video. Never infer its contents from the question, filename, or general knowledge.
+On success, return {"success": true, "answer": "..."}, with a direct answer to the user question below, based only on what you observe in the video.
+CRITICAL INSTRUCTIONS:
+1. ANSWER THE QUESTION: Answer exactly what the user asks. Do not give a general description of the video unless the question asks for one.
+2. TIMES: When the question is about when something happens, or a time makes the answer clearer, give the times in the video.
+3. NOT SHOWN: If the video does not show what the question asks about, say so in the answer instead of guessing.
+4. ON-SCREEN TEXT: Transcribe any visible text, numbers, or signage verbatim when the question asks for it.
+5. AUDIO: Use speech or other significant audio when it helps answer the question.
+6. OUTPUT FORMAT: Output only the JSON object. Include a nonempty answer only when success is true. Write the answer without conversational filler, greetings, or closing remarks.
+"""
+
+
+def _parse_native_reply(response: str, field: str) -> str | None:
+    """Read the text in one field of a successful video reply.
+
+    Args:
+        response: The reply from the model.
+        field: The name of the field that holds the text.
+
+    Returns:
+        The text, or None when the reply is not a clean success.
+    """
     try:
         result = json.loads(response)
     except (json.JSONDecodeError, TypeError, RecursionError):
         return None
     if not isinstance(result, dict) or result.get("success") is not True:
         return None
-    if set(result) != {"success", "description"}:
+    if set(result) != {"success", field}:
         return None
-    description = result["description"]
-    if not isinstance(description, str) or not description.strip():
+    text = result[field]
+    if not isinstance(text, str) or not text.strip():
         return None
-    return description.strip()
+    return text.strip()
 
 
 async def _get_video_duration(video_path: str) -> float:
@@ -300,31 +322,54 @@ OUTPUT FORMAT: No conversational filler, no greetings, no 'here is the descripti
 
 
 async def describe_video(video_path: str, context: str = "", verbose: bool = False) -> Tuple[str, int]:
-    """Describe a video file.
+    """Describe a video file, or answer a question about it.
 
     Args:
         video_path: Path to the video file.
-        context: Extra context for the model.
+        context: A question about the video. Empty asks for a description.
         verbose: If True, prints progress messages.
 
     Returns:
-        The description and a status code. The code is 0 when it worked, 1
-        when the video could not be read, 2 when the file is missing, 3 when
-        a needed tool is not installed, and 4 when the length is unknown.
+        The description or answer and a status code. The code is 0 when it
+        worked, 1 when the video could not be read, 2 when the file is
+        missing, 3 when a needed tool is not installed, and 4 when the length
+        is unknown.
     """
     if not await asyncio.to_thread(os.path.exists, video_path):
         return f"Video path '{video_path}' does not exist.", 2
 
-    native_response, native_status = await reason(
-        _NATIVE_VIDEO_PROMPT, context, thinking=False,
-        json_format=True, video_files=[video_path],
-    )
-    if native_status == 0:
-        native_desc = await asyncio.to_thread(_parse_native_description, native_response)
-        if native_desc is not None:
-            return native_desc, 0
+    native_text = await _ask_whole_video(video_path, context)
+    if native_text is not None:
+        return native_text, 0
 
     return await _describe_video_by_frames(video_path, context, verbose)
+
+
+async def _ask_whole_video(video_path: str, context: str) -> str | None:
+    """Send the whole video to the model and read its reply.
+
+    Args:
+        video_path: Path to the video file.
+        context: A question about the video. Empty asks for a description.
+
+    Returns:
+        The description or answer, or None when the reply is not a clean
+        success.
+    """
+    question = context.strip()
+    if question:
+        prompt = f"{_NATIVE_QUESTION_PROMPT}\nUser question: {question}"
+        prompt_context, field = "", "answer"
+    else:
+        prompt, prompt_context, field = _NATIVE_VIDEO_PROMPT, context, "description"
+
+    response, status = await reason(
+        prompt, prompt_context, thinking=False,
+        json_format=True, video_files=[video_path],
+    )
+    if status != 0:
+        return None
+    return await asyncio.to_thread(_parse_native_reply, response, field)
 
 
 async def _describe_video_by_frames(

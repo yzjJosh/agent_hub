@@ -9,7 +9,7 @@ import uuid
 from typing import Optional, Tuple
 
 from app.lib.cli.cli_runner import run_cli
-from app.lib.reason.describe_image import describe_image
+from app.lib.reason.describe_image import answer_question, describe_image
 from app.lib.shared import paths
 
 
@@ -158,19 +158,20 @@ async def _process_vision_fallback(
 
 
 async def describe_pdf(pdf_path: str, context: str = "", verbose: bool = False) -> Tuple[str, int]:
-    """Describe a PDF file.
+    """Describe a PDF file, or answer a question about it.
 
-    When the PDF holds enough text, that text is returned as it is.
+    When the PDF holds enough text and there is no question, that text is
+    returned as it is.
 
     Args:
         pdf_path: Path to the PDF file.
-        context: Extra context for the model.
+        context: A question about the PDF. Empty asks for its content.
         verbose: If True, prints progress messages.
 
     Returns:
-        The description and a status code. The code is 0 when it worked, 1
-        when the PDF could not be read, 2 when the file is missing, and 3
-        when a needed tool is not installed.
+        The content or the answer, and a status code. The code is 0 when it
+        worked, 1 when the PDF could not be read, 2 when the file is
+        missing, and 3 when a needed tool is not installed.
     """
     if not await asyncio.to_thread(os.path.exists, pdf_path):
         return f"PDF path '{pdf_path}' does not exist.", 2
@@ -189,8 +190,8 @@ async def describe_pdf(pdf_path: str, context: str = "", verbose: bool = False) 
 
     if extracted_text and len(extracted_text.strip()) > 50:
         if verbose:
-            print(f"Successfully extracted {len(extracted_text)} characters of text. Returning raw text.")
-        return extracted_text, 0
+            print(f"Successfully extracted {len(extracted_text)} characters of text.")
+        return await answer_question(extracted_text, context), 0
 
     if verbose:
         print("Direct text extraction yielded insufficient results. Falling back to vision-based processing.")
