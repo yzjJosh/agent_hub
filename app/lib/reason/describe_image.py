@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Describe what is in an image."""
 
-__all__ = ["describe_image"]
+__all__ = ["answer_question", "describe_image"]
 
 import asyncio
 import base64
@@ -62,6 +62,15 @@ pillow_heif.register_heif_opener()
 _DEFAULT_BATCH_SIZE = 3
 _SCRATCH_NAME = "images"
 _OCR_TIMEOUT_S = 600
+
+_ANSWER_PROMPT = """Answer the user question below using only the content given above as Additional Context. The content is a transcription or description of a file.
+CRITICAL INSTRUCTIONS:
+1. ANSWER THE QUESTION: Answer exactly what the user asks. Do not describe or summarize the whole content unless the question asks for it.
+2. NOT SHOWN: If the content does not show or contain what the question asks about, say so in the answer instead of guessing. Never fill gaps with general knowledge.
+3. EXACT TEXT: Copy text, names, and numbers verbatim from the content when the question asks for them or when they are the answer.
+4. METADATA: A line starting with "[Metadata:" gives the camera, date, and place of a photo. Use it when the question asks about these. When the question asks for a general description, start the answer with that line as it is.
+5. OUTPUT FORMAT: Output only the answer, without conversational filler, greetings, or closing remarks.
+"""
 
 
 def _has_sufficient_content(text: str, min_chars: int = 100) -> bool:
@@ -1077,17 +1086,17 @@ async def _do_describe_image(
 async def describe_image(
     image_paths: Union[str, List[str]], context: str = "", verbose: bool = False
 ) -> Tuple[str, int]:
-    """Describe images and join the descriptions into one string.
+    """Describe images, or answer a question about them.
 
     Args:
         image_paths: One path or a list of paths to image files.
-        context: Extra context for the model.
+        context: A question about the images. Empty asks for a description.
         verbose: If True, prints extra messages.
 
     Returns:
-        The joined descriptions and a status code. The code is 0 when it
-        worked, 1 when the model failed, and 2 when an image could not be
-        read.
+        The joined descriptions or the answer, and a status code. The code
+        is 0 when it worked, 1 when the model failed, and 2 when an image
+        could not be read.
     """
     descriptions, status = await _do_describe_image(image_paths, context, verbose=verbose)
 
@@ -1097,4 +1106,26 @@ async def describe_image(
     if len(descriptions) == 0:
         return "No images to process.", 0
 
-    return "\n==================\n".join(descriptions), 0
+    return await answer_question("\n==================\n".join(descriptions), context), 0
+
+
+async def answer_question(content: str, question: str) -> str:
+    """Answer a question using only the given content.
+
+    Args:
+        content: The text of a file, such as a description or a transcription.
+        question: The question. Empty gives back the content as it is.
+
+    Returns:
+        The answer, or the content when there is no question or no answer.
+    """
+    question = question.strip()
+    if not question:
+        return content
+    answer, status = await reason(
+        f"{_ANSWER_PROMPT}\nUser question: {question}", content, thinking=False
+    )
+    if status != 0 or not answer.strip():
+        print(f"[describe_image.answer_question] No answer, giving back the content: {answer[:100]}", file=sys.stderr)
+        return content
+    return answer.strip()

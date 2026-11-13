@@ -10,7 +10,7 @@ from PIL import Image
 from app.lib.reason.describe_image import describe_image
 from tests.app.conftest import is_llm_available
 from tests.app.lib.conftest import mock_cli_proc
-from typing import Self
+from typing import Callable, Self
 from pathlib import Path
 
 
@@ -496,6 +496,91 @@ class TestDescribeImageOcrBackend:
         assert capsys.readouterr().err.count("[config] OCR_BACKEND_URL is not set") == 1
 
 
+def _describe_or_answer(answer_reply: tuple[str, int]) -> Callable[..., tuple[str, int]]:
+    """Build a stand in model that describes images and answers text questions.
+
+    Args:
+        answer_reply: What the model gives back when no image is sent.
+
+    Returns:
+        A stand in for the model call.
+    """
+    def _reply(*_args: str, **kwargs: bool | list[str]) -> tuple[str, int]:
+        if kwargs.get("image_files"):
+            return ("desc one\n===\ndesc two", 0)
+        return answer_reply
+    return _reply
+
+
+class TestDescribeImageQuestion:
+    """Test answering a question about images."""
+
+    @pytest.mark.parametrize("context", ["", "  \n "])
+    async def test_empty_question_gives_description(self, tmp_path: Path, context: str) -> None:
+        """With no question, the images are described with one model call."""
+        test_images = _create_test_images(tmp_path, 2)
+        with patch('app.lib.reason.describe_image.is_document', return_value=False):
+            with patch('app.lib.reason.describe_image.reason',
+                       side_effect=_describe_or_answer(("Unused answer", 0))) as mock_reason:
+                result, status = await describe_image(test_images, context)
+
+        assert (result, status) == ("desc one\n==================\ndesc two", 0)
+        mock_reason.assert_awaited_once()
+        assert mock_reason.call_args.args[1] == context
+        assert len(mock_reason.call_args.kwargs["image_files"]) == 2
+
+    async def test_question_is_answered_from_all_descriptions(self, tmp_path: Path) -> None:
+        """A question gets one answer made from the descriptions of every image."""
+        question = "What color is the bridge?"
+        test_images = _create_test_images(tmp_path, 2)
+        with patch('app.lib.reason.describe_image.is_document', return_value=False):
+            with patch('app.lib.reason.describe_image.reason',
+                       side_effect=_describe_or_answer((" Red. ", 0))) as mock_reason:
+                result, status = await describe_image(test_images, f"  {question}  ")
+
+        assert (result, status) == ("Red.", 0)
+        describe_call, answer_call = mock_reason.call_args_list
+        assert describe_call.args[1] == f"  {question}  "
+        prompt, content = answer_call.args
+        assert prompt.endswith(f"User question: {question}")
+        assert "using only the content" in prompt
+        assert content == "desc one\n==================\ndesc two"
+        assert "image_files" not in answer_call.kwargs
+
+    async def test_question_is_answered_from_ocr_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A question about a document image is answered from the text read off it."""
+        _set_ocr_env(monkeypatch, {"OCR_BACKEND_URL": "http://ocr.test:1"})
+        question = "What is the total?"
+        with patch('app.lib.reason.describe_image.httpx.AsyncClient.post',
+                   new_callable=AsyncMock, return_value=_mock_ocr_response(_OCR_TEXT)):
+            with patch('app.lib.reason.describe_image.is_document', return_value=True):
+                with patch('app.lib.reason.describe_image.reason',
+                           return_value=("The total is 42.", 0)) as mock_reason:
+                    result, status = await describe_image(_create_test_images(tmp_path, 1), question)
+
+        assert (result, status) == ("The total is 42.", 0)
+        mock_reason.assert_awaited_once()
+        prompt, content = mock_reason.call_args.args
+        assert prompt.endswith(f"User question: {question}")
+        assert content == _OCR_TEXT
+
+    @pytest.mark.parametrize("answer_reply", [("", 0), ("  \n", 0), ("Backend unavailable", 1)])
+    async def test_missing_answer_gives_description(
+        self, tmp_path: Path, answer_reply: tuple[str, int],
+    ) -> None:
+        """When no answer comes back, the descriptions are given instead."""
+        test_images = _create_test_images(tmp_path, 2)
+        with patch('app.lib.reason.describe_image.is_document', return_value=False):
+            with patch('app.lib.reason.describe_image.reason',
+                       side_effect=_describe_or_answer(answer_reply)) as mock_reason:
+                result, status = await describe_image(test_images, "What color is the bridge?")
+
+        assert (result, status) == ("desc one\n==================\ndesc two", 0)
+        assert mock_reason.await_count == 2
+
+
 @pytest.mark.skipif(not is_llm_available(), reason="LLM server not available")
 @pytest.mark.live
 class TestDescribeImageLive:
@@ -541,3 +626,18 @@ class TestDescribeImageLive:
         assert "Camera: Google Pixel 8" in result
         assert "Marin County" in result
         assert "bridge" in result.lower()
+
+    @pytest.mark.timeout(120)
+    async def test_describe_image_answers_question(self, tmp_path: Path, data_dir: str) -> None:
+        """A photographed document gets a short answer to a question about it."""
+        src = os.path.join(data_dir, "test_image_real.jpg")
+        dst = tmp_path / "test_image_real.jpg"
+        shutil.copy(src, dst)
+
+        result, status = await describe_image(
+            str(dst), "What time is the public hearing on May 19, 2026?"
+        )
+
+        assert status == 0
+        assert "10:00" in result
+        assert len(result) < 200

@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Callable, Self
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 from PIL import Image
@@ -46,6 +46,44 @@ def _build_mock_cli_side_effect(
             return mock_cli_proc()
         return mock_cli_proc()
     return _mock_run
+
+
+def _write_text_pdf(path: Path, pages: list[list[str]]) -> str:
+    """Write a PDF with a text layer, one list of lines per page.
+
+    Args:
+        path: Where the PDF is written.
+        pages: The lines of text on each page.
+
+    Returns:
+        The path as a string.
+    """
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    kids = []
+    for lines in pages:
+        stream = "BT /F1 12 Tf 72 720 Td 16 TL " + " ".join(f"({line}) Tj T*" for line in lines) + " ET"
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+        objects.append(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {len(objects)} 0 R >>"
+        )
+        kids.append(f"{len(objects)} 0 R")
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    body = b"%PDF-1.4\n"
+    offsets = []
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{number} 0 obj\n{obj}\nendobj\n".encode()
+    xref = len(body)
+    body += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    body += "".join(f"{offset:010d} 00000 n \n" for offset in offsets).encode()
+    body += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    path.write_bytes(body)
+    return str(path)
 
 
 @pytest.fixture
@@ -217,6 +255,66 @@ class TestDescribePdfMultiplePages:
         assert len(images_arg) == 3
 
 
+_REPORT_TEXT = (
+    "Project Falcon report.\nThe budget was signed off by Dana Whitfield.\n\f"
+    "Summary.\nThe approved budget for Project Falcon is 48,250 dollars."
+)
+
+
+async def _describe_report(dummy_pdf: str, context: str, reason_reply: tuple[str, int]) -> tuple[str, int, AsyncMock]:
+    """Run describe_pdf on a two page PDF with a text layer.
+
+    Args:
+        dummy_pdf: Path to the PDF file.
+        context: The question to ask.
+        reason_reply: What the model gives back.
+
+    Returns:
+        The result, the status, and the stand in model call.
+    """
+    with patch('app.lib.reason.describe_pdf.shutil.which', return_value="/usr/bin/tool"):
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=_build_mock_cli_side_effect(page_count=2, text_output=_REPORT_TEXT)):
+            with patch('app.lib.reason.describe_image.reason', return_value=reason_reply) as mock_reason:
+                result, status = await describe_pdf(dummy_pdf, context)
+    return result, status, mock_reason
+
+
+class TestDescribePdfQuestion:
+    """Test answering a question about a PDF with a text layer."""
+
+    @pytest.mark.parametrize("context", ["", "  \n "])
+    async def test_empty_question_gives_text(self, dummy_pdf: str, context: str) -> None:
+        """With no question, the text is given back and the model is not asked."""
+        result, status, mock_reason = await _describe_report(dummy_pdf, context, ("Unused", 0))
+
+        assert (result, status) == (_REPORT_TEXT, 0)
+        mock_reason.assert_not_awaited()
+
+    async def test_question_is_answered_from_whole_text(self, dummy_pdf: str) -> None:
+        """A question gets one answer made from the text of every page."""
+        question = "Who signed off on the budget, and what is the approved amount?"
+        result, status, mock_reason = await _describe_report(
+            dummy_pdf, f"  {question}  ", (" Dana Whitfield, 48,250 dollars. ", 0),
+        )
+
+        assert (result, status) == ("Dana Whitfield, 48,250 dollars.", 0)
+        mock_reason.assert_awaited_once()
+        prompt, content = mock_reason.call_args.args
+        assert prompt.endswith(f"User question: {question}")
+        assert "using only the content" in prompt
+        assert content == _REPORT_TEXT
+        assert "image_files" not in mock_reason.call_args.kwargs
+
+    @pytest.mark.parametrize("reason_reply", [("", 0), ("Backend unavailable", 1)])
+    async def test_missing_answer_gives_text(self, dummy_pdf: str, reason_reply: tuple[str, int]) -> None:
+        """When no answer comes back, the text is given instead."""
+        result, status, mock_reason = await _describe_report(dummy_pdf, "Who signed?", reason_reply)
+
+        assert (result, status) == (_REPORT_TEXT, 0)
+        mock_reason.assert_awaited_once()
+
+
 @pytest.mark.skipif(not is_llm_available(), reason="LLM server not available")
 @pytest.mark.live
 class TestDescribePdfLive:
@@ -250,3 +348,30 @@ class TestDescribePdfLive:
         assert "JANE SAMPLE" in upper
         assert "01/01/1990" in result
         assert "SPECIMEN" in upper
+
+    @pytest.mark.timeout(120)
+    async def test_describe_pdf_answers_question_from_scan(self, tmp_path: Path, data_dir: str) -> None:
+        """A scanned ID card gets a short answer to a question about it."""
+        pdf_path = self._copy_specimen_id(tmp_path, data_dir)
+        result, status = await describe_pdf(pdf_path, "What is the date of birth on this card?")
+
+        assert status == 0
+        assert "01/01/1990" in result
+        assert len(result) < 200
+
+    @pytest.mark.timeout(120)
+    async def test_describe_pdf_answers_question_across_pages(self, tmp_path: Path) -> None:
+        """A question whose answer is spread over two pages gets one short answer."""
+        pdf_path = _write_text_pdf(tmp_path / "report.pdf", [
+            ["Project Falcon quarterly report.", "The team finished the design review this quarter."],
+            ["Schedule and staffing.", "The budget was signed off by Dana Whitfield, the finance lead."],
+            ["Summary.", "The approved budget for Project Falcon is 48,250 dollars."],
+        ])
+        result, status = await describe_pdf(
+            pdf_path, "Who signed off on the budget, and what is the approved amount?"
+        )
+
+        assert status == 0
+        assert "whitfield" in result.lower()
+        assert "48,250" in result
+        assert len(result) < 200
