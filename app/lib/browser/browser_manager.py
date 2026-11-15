@@ -2252,7 +2252,7 @@ async def _clamp_mouse_params(mgr: BrowserManager, target_id: str, params: dict)
 _SCROLL_SETTLE_TIMEOUT_S = 2.0
 _SCROLL_SETTLE_INTERVAL_S = 0.05
 
-# How long one page read for a snapshot may take before it is given up on.
+# How long one page read may take before it is given up on.
 _PAGE_CALL_TIMEOUT_S = 30
 
 
