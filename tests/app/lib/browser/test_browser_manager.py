@@ -3150,6 +3150,69 @@ class TestDetachBounded:
         assert time.monotonic() - t0 < 5, "detach hung past its bound"
 
 
+_TEST_PAGE_CALL_TIMEOUT_S = 0.2
+
+
+async def _never_answer(*_args: str) -> None:
+    """Wait forever, like a frozen tab."""
+    await asyncio.Event().wait()
+
+
+class TestSnapshotPageCallBounded:
+    """Tests that a snapshot of a frozen tab gives up instead of waiting forever."""
+
+    @pytest.fixture(autouse=True)
+    def _short_page_call_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bm_module, "_PAGE_CALL_TIMEOUT_S", _TEST_PAGE_CALL_TIMEOUT_S)
+
+    @pytest.mark.timeout(30)
+    async def test_content_hang_gives_no_snapshot(self: Self) -> None:
+        """A page whose content never comes back gives no snapshot."""
+        mgr, mock_page, tab = await _make_manager()
+        mock_page.content = AsyncMock(side_effect=_never_answer)
+
+        result = await mgr.snapshot(tab)
+
+        assert result is None
+
+    @pytest.mark.timeout(30)
+    async def test_title_hang_gives_empty_title(self: Self) -> None:
+        """A page whose title never comes back gives a snapshot with no title."""
+        mgr, mock_page, tab = await _make_manager()
+        mock_page.title = AsyncMock(side_effect=_never_answer)
+
+        result = await mgr.snapshot(tab)
+
+        assert result.title == ""
+        assert result.html == "<html><body>test</body></html>"
+
+    @pytest.mark.timeout(30)
+    async def test_evaluate_hang_gives_snapshot_without_window_size(self: Self) -> None:
+        """A page whose scripts never answer still gives a snapshot, with no window size."""
+        mgr, mock_page, tab = await _make_manager()
+        mock_page.evaluate = AsyncMock(side_effect=_never_answer)
+
+        result = await mgr.snapshot(tab)
+
+        assert result.html == "<html><body>test</body></html>"
+        assert result.viewport.window_width == 0.0
+        assert result.viewport.window_height == 0.0
+        assert result.viewport.client_width == _VIEWPORT_WIDTH
+        assert result.viewport.client_height == _VIEWPORT_HEIGHT
+
+    @pytest.mark.timeout(30)
+    async def test_layout_read_hang_gives_no_viewport(self: Self) -> None:
+        """A tab whose layout read never answers gives a snapshot with no viewport."""
+        session = _layout_session()
+        mgr, _, tab = await _make_manager(session=session)
+        session.send = AsyncMock(side_effect=_never_answer)
+
+        result = await mgr.snapshot(tab)
+
+        assert result.viewport is None
+        assert result.html == "<html><body>test</body></html>"
+
+
 class TestBrowserManagerRawPageStrings:
     """Tests that title and url give back what the page says, raw."""
 

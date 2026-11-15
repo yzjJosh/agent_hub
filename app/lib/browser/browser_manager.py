@@ -881,14 +881,14 @@ class BrowserManager:
         if session is None:
             return None
         try:
-            result = await session.send("Page.getLayoutMetrics")
+            result = await _await_page_call(session.send("Page.getLayoutMetrics"), "Page.getLayoutMetrics")
             view = result["cssVisualViewport"]
             content = result["cssContentSize"]
         except Exception as e:
             print(f"[BrowserManager.get_page_viewport] Error: {e}", file=sys.stderr)
             return None
         try:
-            window = await page.evaluate(_WINDOW_SIZE_JS)
+            window = await _await_page_call(page.evaluate(_WINDOW_SIZE_JS), "window size")
             window_width, window_height = window[0], window[1]
         except Exception as e:
             print(f"[BrowserManager.get_page_viewport] window size read failed: {e}", file=sys.stderr)
@@ -1548,7 +1548,7 @@ class BrowserManager:
             page: The page to change.
         """
         try:
-            await page.evaluate("""() => {
+            await _await_page_call(page.evaluate("""() => {
               document.querySelectorAll('*').forEach(el => {
                 const s = getComputedStyle(el);
                 const hidden = s.display === 'none' || s.visibility === 'hidden';
@@ -1559,7 +1559,7 @@ class BrowserManager:
                   el.removeAttribute('aria-hidden');
                 }
               });
-            }""")
+            }"""), "aria-hidden update")
         except Exception:
             pass
 
@@ -1574,10 +1574,10 @@ class BrowserManager:
         Returns:
             The snapshot.
         """
-        html = await page.content()
+        html = await _await_page_call(page.content(), "page content")
         current_url = page.url
         try:
-            page_title = await page.title()
+            page_title = await _await_page_call(page.title(), "page title")
         except Exception:
             page_title = ""
         viewport = await self.get_page_viewport(target_id)
@@ -2251,6 +2251,30 @@ async def _clamp_mouse_params(mgr: BrowserManager, target_id: str, params: dict)
 # counted as reached, polling at this interval.
 _SCROLL_SETTLE_TIMEOUT_S = 2.0
 _SCROLL_SETTLE_INTERVAL_S = 0.05
+
+# How long one page read may take before it is given up on.
+_PAGE_CALL_TIMEOUT_S = 30
+
+
+async def _await_page_call[T](call: Awaitable[T], name: str) -> T:
+    """Wait for a page call, but not forever.
+
+    Args:
+        call: The page call to wait for.
+        name: What the call reads, for the log.
+
+    Returns:
+        What the call gives back.
+
+    Raises:
+        TimeoutError: If the page does not answer in time.
+    """
+    try:
+        return await asyncio.wait_for(call, timeout=_PAGE_CALL_TIMEOUT_S)
+    except TimeoutError:
+        message = f"{name} timed out after {_PAGE_CALL_TIMEOUT_S}s"
+        print(f"[browser_manager._await_page_call] Error: {message}", file=sys.stderr)
+        raise TimeoutError(message) from None
 
 
 if TYPE_CHECKING:
