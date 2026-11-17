@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio import CancelledError
 import base64
 import inspect
 import io
@@ -19,7 +20,16 @@ from typing import TYPE_CHECKING, Protocol
 import aiofiles
 from aiofiles.tempfile import TemporaryDirectory
 from agents import Agent as _SdkAgent
-from agents import OpenAIChatCompletionsModel, Runner, ToolOutputFileContent, ToolOutputImage, ToolOutputText, function_tool, set_tracing_disabled
+from agents import (
+    ModelBehaviorError,
+    OpenAIChatCompletionsModel,
+    Runner,
+    ToolOutputFileContent,
+    ToolOutputImage,
+    ToolOutputText,
+    function_tool,
+    set_tracing_disabled,
+)
 from agents.items import TResponseInputItem
 from agents.models import chatcmpl_converter, openai_chatcompletions
 from agents.models.reasoning_content_replay import ShouldReplayReasoningContent
@@ -27,7 +37,8 @@ from agents.run import RunResultStreaming
 from agents.run_config import CallModelInputFilter, RunConfig
 from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
 from agents.tool_context import ToolContext
-from openai import AsyncOpenAI
+import httpx
+from openai import APIError, APIStatusError, AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.responses import (
     ResponseReasoningSummaryTextDeltaEvent,
@@ -59,6 +70,11 @@ _TAIL_POLL = 0.05
 _UTF8_CONT_MASK = 0xC0
 _UTF8_CONT_TAG = 0x80
 _DEFAULT_MAX_ATTEMPTS = 10
+_MAX_SERVER_RETRIES = 10
+_RETRY_INITIAL_DELAY = 1.0
+_RETRY_BACKOFF_FACTOR = 2
+_INTERNAL_ERROR_STATUS = 500
+_RETRYABLE_STATUS_CODES = (408, 409, 429)
 _MEDIA_DECODE_TIMEOUT = 30
 # How the adapter marks a call its tool rejected before the run started.
 _REJECTED_STATUS = "rejected"
@@ -101,6 +117,7 @@ _NO_CALL_REPORT = _CallReport(task_id=None, status=None)
 @dataclass
 class _RunControl:
     live: RunResultStreaming | None = None
+    backoff_task: asyncio.Task[None] | None = None
     stop_requested: bool = False
 
 
@@ -267,7 +284,48 @@ def _build_model(backend: config.Backend) -> OpenAIChatCompletionsModel:
     if openai_chatcompletions.Converter is not _PreservingConverter:
         openai_chatcompletions.Converter = _PreservingConverter
     client = AsyncOpenAI(base_url=backend.url, api_key=backend.api_key or config.DEFAULT_API_KEY)
-    return OpenAIChatCompletionsModel(model=backend.model or config.DEFAULT_MODEL, openai_client=client)
+    return OpenAIChatCompletionsModel(
+        model=backend.model or config.DEFAULT_MODEL,
+        openai_client=client.with_options(max_retries=0),
+    )
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    if isinstance(exc, APIStatusError):
+        return exc.status_code >= _INTERNAL_ERROR_STATUS or exc.status_code in _RETRYABLE_STATUS_CODES
+    if isinstance(exc, APIError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code >= _INTERNAL_ERROR_STATUS or code in _RETRYABLE_STATUS_CODES
+    return isinstance(
+        exc,
+        (
+            httpx.RequestError,
+            httpx.StreamError,
+            ConnectionError,
+            json.JSONDecodeError,
+            ModelBehaviorError,
+        ),
+    )
+
+
+async def _sleep_backoff(delay: float, control: _RunControl) -> None:
+    if control.stop_requested:
+        raise _AgentRunStopped("agent run stopped on request")
+    sleep_task: asyncio.Task[None] = asyncio.ensure_future(asyncio.sleep(delay))
+    control.backoff_task = sleep_task
+    try:
+        await sleep_task
+    except CancelledError:
+        if control.stop_requested:
+            raise _AgentRunStopped("agent run stopped on request") from None
+        raise
+    finally:
+        control.backoff_task = None
+        sleep_task.cancel()
+    if control.stop_requested:
+        raise _AgentRunStopped("agent run stopped on request")
 
 
 class _ConversationWriter:
@@ -420,15 +478,15 @@ def _conversation_path(task: Task) -> str:
 class AgentRun:
     """The per-run handle for one agent run, composing its tracked Task.
 
-    cancel_run_loop asks the run to stop. It records the stop and cancels the
-    streaming result of the attempt in progress.
+    cancel_run_loop asks the run to stop. It records the stop and cancels any
+    live streaming result or active retry wait.
     """
 
     def __init__(self, task: Task[str]) -> None:
         self._task = task
 
     def cancel_run_loop(self) -> None:
-        """Ask the run to stop, and cancel its live streaming result."""
+        """Ask the run to stop, and cancel any live streaming result or active retry wait."""
         control = _run_control_of(str(self._task.id))
         if control is None:
             print(f"[{_ts()}] cancel_run_loop: no run control for task {str(self._task.id)[:8]}", file=sys.stderr)
@@ -436,6 +494,8 @@ class AgentRun:
         control.stop_requested = True
         if control.live is not None:
             control.live.cancel()
+        if control.backoff_task is not None:
+            control.backoff_task.cancel()
 
     @property
     def task(self) -> Task[str]:
@@ -506,6 +566,8 @@ class Agent[T]:
     With model_input_filter set, the filter runs before every model call in the run
     and the run sends the model input the filter returns. Without it, the run sends
     the input unchanged.
+
+    Server and connection errors during an attempt are retried before failing the run.
     """
 
     class _AgentToolAdapter:
@@ -741,6 +803,12 @@ class Agent[T]:
         print(f"[{_ts()}] agent failed: {last_error}")
         raise RuntimeError(f"agent validation failed after {self._max_attempts} attempts: {last_error}")
 
+    def _open_stream(self, sdk_agent: _SdkAgent, input_text: str | list) -> RunResultStreaming:
+        if self._model_input_filter is None:
+            return Runner.run_streamed(sdk_agent, input_text, max_turns=None)
+        run_config = RunConfig(call_model_input_filter=self._model_input_filter)
+        return Runner.run_streamed(sdk_agent, input_text, max_turns=None, run_config=run_config)
+
     async def _run_attempt(
         self,
         sdk_agent: _SdkAgent,
@@ -750,22 +818,35 @@ class Agent[T]:
         writer: _ConversationWriter,
         control: _RunControl,
     ) -> tuple[str | None, list]:
-        if self._model_input_filter is None:
-            result = Runner.run_streamed(sdk_agent, input_text, max_turns=None)
-        else:
-            run_config = RunConfig(call_model_input_filter=self._model_input_filter)
-            result = Runner.run_streamed(sdk_agent, input_text, max_turns=None, run_config=run_config)
-        control.live = result
-        try:
-            await self._record_conversation(result, attempt, tool_calls, writer)
-            final_output = result.final_output
-            if final_output is not None:
-                await writer.write(_event("assistant", attempt, text=final_output))
-            input_list = result.to_input_list()
-        finally:
-            control.live = None
-            result.cancel()
-        return final_output, input_list
+        current_input: str | list = input_text
+        retries = 0
+        while True:
+            result = self._open_stream(sdk_agent, current_input)
+            control.live = result
+            try:
+                await self._record_conversation(result, attempt, tool_calls, writer)
+                final_output = result.final_output
+                if final_output is not None:
+                    await writer.write(_event("assistant", attempt, text=final_output))
+                input_list = result.to_input_list()
+                return final_output, input_list
+            except Exception as exc:
+                if control.stop_requested:
+                    raise _AgentRunStopped("agent run stopped on request") from exc
+                if not _is_retryable_error(exc):
+                    raise
+                if result.new_items:
+                    current_input = result.to_input_list()
+                    retries = 0
+                if retries >= _MAX_SERVER_RETRIES:
+                    raise
+                retries += 1
+                delay = _RETRY_INITIAL_DELAY * (_RETRY_BACKOFF_FACTOR ** (retries - 1))
+                print(f"[{_ts()}] attempt {attempt} retry {retries}/{_MAX_SERVER_RETRIES} in {delay}s: {exc}")
+            finally:
+                control.live = None
+                result.cancel()
+            await _sleep_backoff(delay, control)
 
     async def _record_conversation(
         self,

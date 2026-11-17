@@ -14,11 +14,16 @@ from pathlib import Path
 from typing import ClassVar, override
 from unittest.mock import MagicMock
 
-import pytest
 import aiofiles.threadpool
 from agents import Agent as _SdkAgent
-from agents import OpenAIChatCompletionsModel
-from agents import ToolOutputFileContent, ToolOutputImage, ToolOutputText, Usage
+from agents import (
+    ModelBehaviorError,
+    OpenAIChatCompletionsModel,
+    ToolOutputFileContent,
+    ToolOutputImage,
+    ToolOutputText,
+    Usage,
+)
 from agents.agent_output import AgentOutputSchemaBase
 from agents.handoffs import Handoff
 from agents.items import ItemHelpers, TResponseInputItem, TResponseStreamEvent, ToolCallItem, ToolCallOutputItem
@@ -30,6 +35,23 @@ from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
 from agents.tool import Tool as _SdkTool
 from agents.tool_context import ToolContext
 from agents.usage import InputTokensDetails, OutputTokensDetails
+import httpx
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIResponseValidationError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    InternalServerError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
 from openai.types.responses import (
     Response,
     ResponseCompletedEvent,
@@ -43,6 +65,7 @@ from openai.types.responses import (
     ResponseUsage,
     response_usage,
 )
+import pytest
 
 import app.lib.agent.engine as engine
 import app.lib.db.store as store_module
@@ -75,6 +98,7 @@ def _build_stub(gen: Callable[[], AsyncIterator], final_output: str | None) -> M
     stub = MagicMock()
     stub.stream_events = MagicMock(side_effect=gen)
     stub.final_output = final_output
+    stub.new_items = []
     stub.to_input_list = MagicMock(return_value=[{"role": "user", "content": "stub"}])
     stub.cancel = MagicMock()
     return stub
@@ -106,7 +130,9 @@ def _stall_in_drain() -> tuple[MagicMock, asyncio.Event]:
     return _build_stub(_gen, "x"), entered
 
 
-def _release_in_drain(final_output: str) -> tuple[MagicMock, asyncio.Event, asyncio.Event]:
+def _release_in_drain(
+    final_output: str, error: Exception | None = None
+) -> tuple[MagicMock, asyncio.Event, asyncio.Event]:
     """A stub whose drain stalls until released, and the events for entry and release."""
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -115,8 +141,11 @@ def _release_in_drain(final_output: str) -> tuple[MagicMock, asyncio.Event, asyn
         yield _text_delta(final_output, 1)
         entered.set()
         await release.wait()
+        if error is not None:
+            raise error
 
-    return _build_stub(_gen, final_output), entered, release
+    stub_output = None if error is not None else final_output
+    return _build_stub(_gen, stub_output), entered, release
 
 
 def _patch_runner(monkeypatch: pytest.MonkeyPatch, stub: MagicMock) -> None:
@@ -378,7 +407,7 @@ class TestAgentLoop:
 class _ScriptedModel(OpenAIChatCompletionsModel):
     """A model that answers from a fixed script and records every input it receives."""
 
-    script: ClassVar[list[str]] = []
+    script: ClassVar[list[str | tuple[str, str] | Exception]] = []
     received: ClassVar[list[list[dict]]] = []
     order: ClassVar[list[str]] = []
 
@@ -396,13 +425,16 @@ class _ScriptedModel(OpenAIChatCompletionsModel):
     ) -> AsyncIterator[TResponseStreamEvent]:
         _ScriptedModel.order.append("model")
         _ScriptedModel.received.append(list(input) if isinstance(input, list) else [input])
-        message = _message(_ScriptedModel.script.pop(0))
+        step = _ScriptedModel.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        item = _script_item(step)
         yield ResponseOutputItemDoneEvent(
-            type="response.output_item.done", item=message, item_id=message.id,
+            type="response.output_item.done", item=item, item_id=item.id or "fc_1",
             output_index=0, sequence_number=1,
         )
         yield ResponseCompletedEvent(
-            type="response.completed", response=_completed_response(message), sequence_number=2,
+            type="response.completed", response=_completed_response(item), sequence_number=2,
         )
 
 
@@ -415,8 +447,19 @@ def _message(text: str) -> ResponseOutputMessage:
     )
 
 
-def _completed_response(message: ResponseOutputMessage) -> Response:
-    """A terminal response wrapping one message."""
+def _script_item(step: str | tuple[str, str]) -> ResponseOutputMessage | ResponseFunctionToolCall:
+    """Build one output item from a script step."""
+    if isinstance(step, tuple):
+        tool_name, tool_args = step
+        return ResponseFunctionToolCall(
+            id="fc_1", call_id="call_1", name=tool_name,
+            arguments=tool_args, type="function_call", status="completed",
+        )
+    return _message(step)
+
+
+def _completed_response(item: ResponseOutputMessage | ResponseFunctionToolCall) -> Response:
+    """A terminal response wrapping one output item."""
     usage = ResponseUsage(
         input_tokens=1,
         input_tokens_details=response_usage.InputTokensDetails(cache_write_tokens=0, cached_tokens=0),
@@ -425,7 +468,7 @@ def _completed_response(message: ResponseOutputMessage) -> Response:
         total_tokens=2,
     )
     return Response(
-        id="resp_1", created_at=1, model="default", object="response", output=[message],
+        id="resp_1", created_at=1, model="default", object="response", output=[item],
         parallel_tool_calls=True, tool_choice="auto", tools=[], status="completed", usage=usage,
     )
 
@@ -2012,6 +2055,487 @@ class TestAgentBackend:
             await run.task.result()
         assert f"[config] {message}\n" in capsys.readouterr().err
         client_spy.assert_not_called()
+
+
+_FIRST_DELAY = 1.0
+_SECOND_DELAY = 2.0
+_THIRD_DELAY = 4.0
+_SHORT_RUN_TIMEOUT = 0.05
+_CANCEL_MAX_ELAPSED = 0.4
+_CORRECTIVE_NOTICE = (
+    "\n\nIMPORTANT NOTE: Your last response is dropped. "
+    "Please correct the error and re-generate your entire response in your "
+    "next message. Please don't put any filler content. Your message must "
+    "contain ONLY the final output."
+)
+
+
+def _sse_chunk(delta: dict, finish_reason: str | None) -> bytes:
+    chunk = {
+        "id": "1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "default",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+    return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+
+
+def _sse_text_response(text: str) -> httpx.Response:
+    body = (
+        _sse_chunk({"role": "assistant", "content": text}, None)
+        + _sse_chunk({}, "stop")
+        + b"data: [DONE]\n\n"
+    )
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+
+def _sse_tool_call_response(call_id: str, name: str, arguments: str) -> httpx.Response:
+    tool_call = {
+        "index": 0,
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+    body = (
+        _sse_chunk({"role": "assistant", "tool_calls": [tool_call]}, None)
+        + _sse_chunk({}, "tool_calls")
+        + b"data: [DONE]\n\n"
+    )
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+
+def _http_500_response() -> httpx.Response:
+    return httpx.Response(500, json={"error": {"message": "boom"}})
+
+
+def _accept_good(text: str, _run: AgentRun) -> tuple[bool, str]:
+    return (True, text) if text == "good" else (False, "need good")
+
+
+def _http_request() -> httpx.Request:
+    return httpx.Request("POST", "http://backend.test/v1/chat/completions")
+
+
+def _http_response(status_code: int) -> httpx.Response:
+    return httpx.Response(status_code, request=_http_request())
+
+
+def _conn_error(message: str = "backend down") -> APIConnectionError:
+    return APIConnectionError(message=message, request=_http_request())
+
+
+def _backoff_delays(count: int) -> list[float]:
+    return [_FIRST_DELAY * (2**i) for i in range(count)]
+
+
+def _sleep_delays() -> list[float]:
+    return [call.args[0] for call in engine.asyncio.sleep.await_args_list]
+
+
+def _failing_stub(
+    error: Exception,
+    on_cancel: Callable[[], None] | None = None,
+    events: list[RawResponsesStreamEvent] | None = None,
+) -> MagicMock:
+    async def _gen() -> AsyncIterator[RawResponsesStreamEvent]:
+        for event in events if events is not None else ():
+            yield event
+        raise error
+
+    stub = _build_stub(_gen, None)
+    if on_cancel is not None:
+        stub.cancel = MagicMock(side_effect=on_cancel)
+    return stub
+
+
+class _CountedTool(Tool):
+    name: ClassVar[str] = "counted_note"
+    description: ClassVar[str] = "Record one note call."
+    tracked: ClassVar[bool] = True
+    calls: ClassVar[int] = 0
+    params: ClassVar[tuple[Param, ...]] = (Param(name="text", type=str, description="Text to note."),)
+
+    @override
+    async def call(self, params: dict) -> ToolResult:
+        _CountedTool.calls += 1
+        return ToolResult(text=f"noted:{params['text']}")
+
+
+def _wire_mock_openai(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[httpx.Response],
+    clients: list[httpx.AsyncClient],
+) -> tuple[MagicMock, list[list[dict]]]:
+    wire_messages: list[list[dict]] = []
+    queue = list(responses)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        wire_messages.append(json.loads(request.content)["messages"])
+        return queue.pop(0)
+
+    real_openai = engine.AsyncOpenAI
+
+    def _build_client(base_url: str, api_key: str) -> AsyncOpenAI:
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        clients.append(http_client)
+        return real_openai(base_url=base_url, api_key=api_key, http_client=http_client)
+
+    model_spy = MagicMock(wraps=engine.OpenAIChatCompletionsModel)
+    monkeypatch.setattr(engine, "AsyncOpenAI", _build_client)
+    monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", model_spy)
+    return model_spy, wire_messages
+
+
+async def _close_clients(clients: list[httpx.AsyncClient]) -> None:
+    for client in clients:
+        await client.aclose()
+
+
+_RETRYABLE_CASES: list[tuple[str, Callable[[], Exception]]] = [
+    ("api_connection", _conn_error),
+    ("api_timeout", lambda: APITimeoutError(request=_http_request())),
+    ("internal_500", lambda: InternalServerError("500", response=_http_response(500), body=None)),
+    ("internal_503", lambda: InternalServerError("503", response=_http_response(503), body=None)),
+    ("rate_limit_429", lambda: RateLimitError("429", response=_http_response(429), body=None)),
+    ("conflict_409", lambda: ConflictError("409", response=_http_response(409), body=None)),
+    ("status_408", lambda: APIStatusError("408", response=_http_response(408), body=None)),
+    ("response_validation", lambda: APIResponseValidationError(response=_http_response(200), body=None, message="bad")),
+    ("mid_stream_api_error", lambda: APIError("stream broke", request=_http_request(), body=None)),
+    ("httpx_status_502", lambda: httpx.HTTPStatusError("502", request=_http_request(), response=_http_response(502))),
+    ("httpx_status_429", lambda: httpx.HTTPStatusError("429", request=_http_request(), response=_http_response(429))),
+    ("httpx_connect", lambda: httpx.ConnectError("connect", request=_http_request())),
+    ("httpx_read_timeout", lambda: httpx.ReadTimeout("timeout", request=_http_request())),
+    ("httpx_remote_protocol", lambda: httpx.RemoteProtocolError("closed", request=_http_request())),
+    ("httpx_stream_closed", httpx.StreamClosed),
+    ("connection_reset", lambda: ConnectionResetError("reset")),
+    ("json_decode", lambda: json.JSONDecodeError("truncated", "{", 1)),
+    ("model_behavior", lambda: ModelBehaviorError("incomplete stream")),
+]
+
+_NON_RETRYABLE_CASES: list[tuple[str, Callable[[], Exception], type[Exception]]] = [
+    ("bad_request_400", lambda: BadRequestError("400", response=_http_response(400), body=None), BadRequestError),
+    ("auth_401", lambda: AuthenticationError("401", response=_http_response(401), body=None), AuthenticationError),
+    ("permission_403", lambda: PermissionDeniedError("403", response=_http_response(403), body=None), PermissionDeniedError),
+    ("not_found_404", lambda: NotFoundError("404", response=_http_response(404), body=None), NotFoundError),
+    ("unprocessable_422", lambda: UnprocessableEntityError("422", response=_http_response(422), body=None), UnprocessableEntityError),
+    ("httpx_status_400", lambda: httpx.HTTPStatusError("400", request=_http_request(), response=_http_response(400)), httpx.HTTPStatusError),
+    ("value_error", lambda: ValueError("bad value"), ValueError),
+]
+
+
+class TestServerRetry:
+    """Server and connection errors retry within the same attempt."""
+
+    async def _run_stubs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stubs: list[MagicMock],
+        timeout: float | None = None,
+    ) -> tuple[AgentRun, MagicMock]:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        run_mock = _patch_runner_seq(monkeypatch, stubs)
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any, timeout=timeout)
+        run = await agent.run("do it")
+        return run, run_mock
+
+    async def _run_scripted_turns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        steps: list[str | tuple[str, str] | Exception],
+    ) -> AgentRun:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        _ScriptedModel.received = []
+        _ScriptedModel.order = []
+        _ScriptedModel.script = steps
+        monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", _ScriptedModel)
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        agent.add_tool_adapter(_CountedTool())
+        return await agent.run("do it")
+
+    async def _run_wire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        responses: list[httpx.Response],
+        validator: Callable[[str, AgentRun], tuple[bool, str]] = _accept_any,
+        *,
+        with_tool: bool = False,
+    ) -> tuple[AgentRun, list[list[dict]], MagicMock]:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        clients: list[httpx.AsyncClient] = []
+        model_spy, wire_messages = _wire_mock_openai(monkeypatch, responses, clients)
+        try:
+            agent = Agent(name="res", system_prompt="sys", validator=validator)
+            if with_tool:
+                agent.add_tool_adapter(_CountedTool())
+            run = await agent.run("do it")
+            await run.task.result()
+            return run, wire_messages, model_spy
+        finally:
+            await _close_clients(clients)
+
+    async def _park_in_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[AgentRun, MagicMock, float]:
+        backoff_ready = asyncio.Event()
+        stubs = [
+            _failing_stub(_conn_error(), on_cancel=backoff_ready.set),
+            _stub_result([_text_delta("ok", 1)], "ok"),
+        ]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        await asyncio.wait_for(backoff_ready.wait(), timeout=5)
+        await asyncio.sleep(0)
+        return run, run_mock, time.monotonic()
+
+    @pytest.mark.fast_sleeps
+    async def test_exponential_backoff_recovers_within_first_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stubs = [
+            _failing_stub(_conn_error()),
+            _failing_stub(_conn_error()),
+            _failing_stub(_conn_error()),
+            _stub_result([_text_delta("Answer: 42", 1)], "Answer: 42"),
+        ]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        assert await run.task.result() == "Answer: 42"
+        assert run_mock.call_count == 4
+        assert _sleep_delays() == [_FIRST_DELAY, _SECOND_DELAY, _THIRD_DELAY]
+        assert [s.cancel.call_count for s in stubs] == [1, 1, 1, 1]
+        events = await run.events()
+        assert [e.text for e in events if e.type == "user"] == ["do it"]
+        assert [(e.attempt, e.text) for e in events if e.type == "assistant"] == [(1, "Answer: 42")]
+
+    @pytest.mark.fast_sleeps
+    async def test_mid_stream_error_retries_within_same_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stubs = [
+            _failing_stub(
+                httpx.RemoteProtocolError("peer closed"),
+                events=[_reasoning_delta("think", 1), _text_delta("partial", 2)],
+            ),
+            _stub_result([_text_delta("clean", 1)], "clean"),
+        ]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        assert await run.task.result() == "clean"
+        assert run_mock.call_count == 2
+        assert _sleep_delays() == [_FIRST_DELAY]
+        events = await run.events()
+        assert [e.attempt for e in events] == [1, 1, 1, 1, 1, 1]
+        assert [e.text for e in events if e.type == "user"] == ["do it"]
+        assert [(e.attempt, e.text) for e in events if e.type == "assistant"] == [(1, "clean")]
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize(
+        "make_error",
+        [fn for _, fn in _RETRYABLE_CASES],
+        ids=[name for name, _ in _RETRYABLE_CASES],
+    )
+    async def test_retryable_errors_retry_and_recover(
+        self, monkeypatch: pytest.MonkeyPatch, make_error: Callable[[], Exception]
+    ) -> None:
+        stubs = [_failing_stub(make_error()), _stub_result([_text_delta("ok", 1)], "ok")]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        assert await run.task.result() == "ok"
+        assert run_mock.call_count == 2
+        assert _sleep_delays() == [_FIRST_DELAY]
+
+    @pytest.mark.fast_sleeps
+    async def test_exhaustion_after_ten_retries_raises_original_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stubs = [_failing_stub(_conn_error("backend down")) for _ in range(11)]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        with pytest.raises(APIConnectionError, match="backend down"):
+            await run.task.result()
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 11
+        assert _sleep_delays() == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0]
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize(
+        ("make_error", "expected_cls"),
+        [(fn, cls) for _, fn, cls in _NON_RETRYABLE_CASES],
+        ids=[name for name, _, _ in _NON_RETRYABLE_CASES],
+    )
+    async def test_non_retryable_errors_fail_immediately_without_sleep(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        make_error: Callable[[], Exception],
+        expected_cls: type[Exception],
+    ) -> None:
+        stubs = [_failing_stub(make_error()), _stub_result([_text_delta("ok", 1)], "ok")]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs)
+        with pytest.raises(expected_cls):
+            await run.task.result()
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 1
+        assert _sleep_delays() == []
+
+    @pytest.mark.fast_sleeps
+    async def test_multi_turn_retry_preserves_completed_tool_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        steps: list[str | tuple[str, str] | Exception] = [
+            ("counted_note", '{"text":"hi"}'),
+            _conn_error(),
+            _conn_error(),
+            "Answer: 42",
+        ]
+        run = await self._run_scripted_turns(monkeypatch, steps)
+        assert await run.task.result() == "Answer: 42"
+        assert _CountedTool.calls == 1
+        assert _sleep_delays() == [_FIRST_DELAY, _SECOND_DELAY]
+        expected_turn_two = [
+            {"role": "user", "content": "do it"},
+            {
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "counted_note",
+                "arguments": '{"text":"hi"}',
+                "type": "function_call",
+                "status": "completed",
+            },
+            {
+                "call_id": "call_1",
+                "output": "noted:hi",
+                "type": "function_call_output",
+            },
+        ]
+        assert _ScriptedModel.received == [
+            [{"role": "user", "content": "do it"}],
+            expected_turn_two,
+            expected_turn_two,
+            expected_turn_two,
+        ]
+        calls = await run.tool_calls()
+        assert len(calls) == 1
+        assert calls[0].tool_name == "counted_note"
+        assert calls[0].status == "completed"
+        assert [e.attempt for e in await run.events() if e.type == "assistant"] == [1]
+
+    @pytest.mark.fast_sleeps
+    async def test_consecutive_retry_counter_resets_after_completed_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        steps: list[str | tuple[str, str] | Exception] = (
+            [_conn_error() for _ in range(6)]
+            + [("counted_note", '{"text":"hi"}')]
+            + [_conn_error() for _ in range(6)]
+            + ["Answer: 42"]
+        )
+        run = await self._run_scripted_turns(monkeypatch, steps)
+        assert await run.task.result() == "Answer: 42"
+        assert _CountedTool.calls == 1
+        assert _sleep_delays() == _backoff_delays(6) + _backoff_delays(6)
+
+    @pytest.mark.fast_sleeps
+    async def test_sdk_client_disables_hidden_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [_http_500_response(), _sse_text_response("hello")]
+        run, wire_messages, model_spy = await self._run_wire(monkeypatch, responses)
+        assert await run.task.result() == "hello"
+        assert model_spy.call_args.kwargs["openai_client"].max_retries == 0
+        expected = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do it"}]
+        assert wire_messages == [expected, expected]
+        assert _sleep_delays() == [_FIRST_DELAY]
+
+    @pytest.mark.fast_sleeps
+    async def test_wire_messages_preserved_across_turn_and_validation_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"one"}'),
+            _http_500_response(),
+            _http_500_response(),
+            _sse_text_response("bad"),
+            _http_500_response(),
+            _sse_text_response("good"),
+        ]
+        run, wire_messages, _spy = await self._run_wire(
+            monkeypatch, responses, validator=_accept_good, with_tool=True
+        )
+        assert await run.task.result() == "good"
+        assert _CountedTool.calls == 1
+        assert _sleep_delays() == [_FIRST_DELAY, _SECOND_DELAY, _FIRST_DELAY]
+        turn_one = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do it"}]
+        turn_two = turn_one + [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "counted_note", "arguments": '{"text":"one"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "noted:one"},
+        ]
+        attempt_two = turn_two + [
+            {"role": "assistant", "content": "bad"},
+            {"role": "user", "content": "need good" + _CORRECTIVE_NOTICE},
+        ]
+        assert wire_messages == [
+            turn_one,
+            turn_two,
+            turn_two,
+            turn_two,
+            attempt_two,
+            attempt_two,
+        ]
+
+    @pytest.mark.fast_sleeps
+    async def test_cancel_run_loop_during_failing_stream_skips_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub, entered, release = _release_in_drain("partial", error=_conn_error())
+        run, run_mock = await self._run_stubs(
+            monkeypatch, [stub, _stub_result([_text_delta("ok", 1)], "ok")]
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        run.cancel_run_loop()
+        release.set()
+        with pytest.raises(RuntimeError, match="stopped on request"):
+            await run.task.result()
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 1
+        assert _sleep_delays() == []
+
+    async def test_cancel_run_loop_wakes_real_backoff_sleep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run, run_mock, started = await self._park_in_backoff(monkeypatch)
+        run.cancel_run_loop()
+        with pytest.raises(RuntimeError, match="stopped on request"):
+            await run.task.result()
+        assert time.monotonic() - started < _CANCEL_MAX_ELAPSED
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 1
+
+    async def test_task_cancel_wakes_real_backoff_sleep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run, run_mock, started = await self._park_in_backoff(monkeypatch)
+        await task_manager.cancel(str(run.task.id))
+        assert time.monotonic() - started < _CANCEL_MAX_ELAPSED
+        assert run.task.status.value == "cancelled"
+        assert run_mock.call_count == 1
+
+    async def test_timeout_expires_during_backoff_sleep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stubs = [_failing_stub(_conn_error()), _stub_result([_text_delta("ok", 1)], "ok")]
+        run, run_mock = await self._run_stubs(monkeypatch, stubs, timeout=_SHORT_RUN_TIMEOUT)
+        with pytest.raises(TimeoutError):
+            await run.task.result()
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 1
 
 
 @pytest.mark.live
