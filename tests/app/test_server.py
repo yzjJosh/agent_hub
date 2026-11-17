@@ -16,7 +16,7 @@ import httpx
 import pytest
 from cloakbrowser import binary_info
 from httpx import ASGITransport
-from playwright.async_api import Page, Route as PlaywrightRoute, async_playwright, expect
+from playwright.async_api import Page, Request as PlaywrightRequest, Route as PlaywrightRoute, async_playwright, expect
 from starlette.routing import Route
 from starlette.testclient import TestClient
 from websockets.asyncio.client import connect
@@ -2249,6 +2249,289 @@ async def test_conv_fold_live_terminal_settles_the_open_card(
     await disclosure.click()
     await expect(disclosure).to_have_attribute("aria-expanded", "true")
     await expect(page.get_by_text(answer.strip(), exact=True)).to_be_visible()
+
+
+_CONV_RESUME_DELTAS = 16
+_CONV_SCROLL_BLOCKS = 18
+_CONV_SHORT_HEIGHT = 500
+_CONV_UNPINNED_TOP = 180
+_CONV_SCROLL_TOLERANCE = 20
+_CONV_TRAILING_REPEATS = 40
+_CONV_NARROW_WIDTH = 320
+_CONV_LIVE_PILL_HEIGHT = 20
+
+
+async def _seed_waiting_conv_agent(
+    console_stub: SimpleNamespace, agent_id: str, child_id: str
+) -> tuple[Path, int]:
+    """Seed a running agent waiting on a running web_fetch child tool call."""
+    await console_stub.seed_task(agent_id, "planner", E2E_STARTED_AT)
+    await store_module.agent_store.insert(agent_id, "planner")
+    await console_stub.seed_task(child_id, "web_fetch", E2E_STARTED_AT, parent_task_id=agent_id)
+    events: list[dict] = [
+        {"type": "system", "attempt": 1, "ts": E2E_STARTED_AT, "text": "System instructions."},
+        {"type": "user", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Inspect the target page."},
+        {"type": "thinking", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Planning the fetch "},
+        {"type": "thinking", "attempt": 1, "ts": E2E_STARTED_AT, "text": "and checking headers."},
+    ]
+    for idx in range(_CONV_RESUME_DELTAS):
+        events.append({
+            "type": "content",
+            "attempt": 1,
+            "ts": E2E_STARTED_AT,
+            "text": f"- **Step {idx + 1}**: notes on the page layout and structure.\n",
+        })
+    events.append({
+        "type": "tool_call",
+        "attempt": 1,
+        "call_id": "call-fetch-1",
+        "tool_name": "web_fetch",
+        "ts": E2E_STARTED_AT,
+    })
+    raw = "".join(json.dumps(ev) + "\n" for ev in events)
+    conv_path = await asyncio.to_thread(write_run_file, console_stub.data_dir, agent_id, "conversation.jsonl", raw)
+    return conv_path, len(raw.encode("utf-8"))
+
+
+def _append_conv_events(conv_path: Path, events: list[dict]) -> None:
+    """Append JSON lines to an agent conversation file."""
+    with conv_path.open("a", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(ev) + "\n" for ev in events))
+
+
+def _record_return_requests(page: Page) -> tuple[list[str], list[str]]:
+    """Collect render and conversation stream URLs requested by the page."""
+    render_hits: list[str] = []
+    stream_urls: list[str] = []
+
+    def _track_req(req: PlaywrightRequest) -> None:
+        if "/api/render/message" in req.url:
+            render_hits.append(req.url)
+        if "/conversation/stream" in req.url:
+            stream_urls.append(req.url)
+
+    page.on("request", _track_req)
+    return render_hits, stream_urls
+
+
+async def _seed_long_conv_agent(console_stub: SimpleNamespace, agent_id: str, child_id: str) -> None:
+    """Seed a tall running conversation with one open child tool call."""
+    await console_stub.seed_task(agent_id, "planner", E2E_STARTED_AT)
+    await store_module.agent_store.insert(agent_id, "planner")
+    await console_stub.seed_task(child_id, "web_fetch", E2E_STARTED_AT, parent_task_id=agent_id)
+    events: list[dict] = [
+        {"type": "user", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Start long investigation."},
+        {"type": "tool_call", "attempt": 1, "call_id": "c-top", "tool_name": "web_fetch", "ts": E2E_STARTED_AT},
+    ]
+    for idx in range(_CONV_SCROLL_BLOCKS):
+        cid = f"c-done-{idx}"
+        events.append({"type": "tool_call", "attempt": 1, "call_id": cid, "tool_name": "brave_search", "ts": E2E_STARTED_AT})
+        events.append({"type": "tool_result", "attempt": 1, "call_id": cid, "tool_name": "brave_search",
+                       "status": "completed", "ts": E2E_ENDED_AT})
+    raw = "".join(json.dumps(ev) + "\n" for ev in events)
+    await asyncio.to_thread(write_run_file, console_stub.data_dir, agent_id, "conversation.jsonl", raw)
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+@skip_if_no_chrome
+async def test_conv_return_from_tool_resumes_at_offset_and_shows_waiting(
+    console_stub: SimpleNamespace, _parameter_page: Page
+) -> None:
+    """Returning from a running tool call resumes at the snapshot offset and streams new events."""
+    page = _parameter_page
+    agent_id, child_id = "conv-resume-agent", "conv-resume-child"
+    conv_path, eof_offset = await _seed_waiting_conv_agent(console_stub, agent_id, child_id)
+    await page.goto(console_stub.base_url + "/task/" + agent_id)
+    await page.get_by_role("button", name="Conversation", exact=True).click()
+    disclosure = page.locator(".conv-assist").get_by_role("button", name=re.compile("Assistant"))
+    await expect(disclosure).to_have_attribute("aria-expanded", "false")
+    await expect(page.locator(".conv-assist .plain-pre, .conv-assist .md-doc")).to_have_count(1)
+    await expect(page.locator(".conv-assist .conv-pre")).to_have_count(0)
+    await expect(page.locator(".conv-user .plain-pre, .conv-user .md-doc")).to_have_count(2)
+    tcall = page.locator(".conv-tcall")
+    await expect(tcall).to_have_attribute("href", "/task/" + child_id)
+    await expect(page.locator(".conv-wait")).to_have_text("Waiting for web_fetch\u2026")
+    await expect(page.locator(".conv-live")).to_have_text("Waiting \u00B7 web_fetch")
+
+    await tcall.click()
+    await expect(page.locator(".td-title")).to_have_text("web_fetch")
+    render_hits, stream_urls = _record_return_requests(page)
+    async with page.expect_request("**/conversation/stream**") as stream_req_info:
+        await page.go_back()
+    stream_req = await stream_req_info.value
+    assert f"offset={eof_offset}" in stream_req.url
+    assert eof_offset > 0
+    await expect(disclosure).to_have_attribute("aria-expanded", "false")
+    await expect(page.locator(".conv-assist .conv-pre")).to_have_count(0)
+    await expect(page.locator(".conv-wait")).to_have_text("Waiting for web_fetch\u2026")
+    await expect(page.locator(".conv-live")).to_have_text("Waiting \u00B7 web_fetch")
+    assert render_hits == []
+    assert len(stream_urls) == 1
+
+    _append_conv_events(conv_path, [
+        {"type": "tool_result", "attempt": 1, "call_id": "call-fetch-1", "tool_name": "web_fetch",
+         "task_id": child_id, "status": "completed", "ts": E2E_ENDED_AT},
+        {"type": "content", "attempt": 1, "ts": E2E_ENDED_AT, "text": "Fetched body analyzed "},
+        {"type": "content", "attempt": 1, "ts": E2E_ENDED_AT, "text": "without restreaming."},
+    ])
+    await expect(page.locator(".conv-wait")).to_be_hidden()
+    await expect(page.locator(".conv-live")).to_have_text("Live")
+    await expect(tcall.locator(".s-dot")).to_have_class(re.compile(r"\bcompleted\b"))
+    await expect(page.locator(".conv-assist")).to_have_count(2)
+    await expect(page.locator(".conv-assist").nth(1)).to_contain_text("Fetched body analyzed without restreaming.")
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+@skip_if_no_chrome
+async def test_conv_return_from_tool_restores_unpinned_scroll_position(
+    console_stub: SimpleNamespace, _parameter_page: Page
+) -> None:
+    """Returning to an unpinned live conversation restores the mid-page scroll offset."""
+    page = _parameter_page
+    agent_id, child_id = "conv-scroll-agent", "conv-scroll-child"
+    await _seed_long_conv_agent(console_stub, agent_id, child_id)
+    await page.set_viewport_size({"width": _DESKTOP_VIEWPORT["width"], "height": _CONV_SHORT_HEIGHT})
+    await page.goto(console_stub.base_url + "/task/" + agent_id)
+    await page.get_by_role("button", name="Conversation", exact=True).click()
+    await expect(page.locator(".conv-tcall")).to_have_count(_CONV_SCROLL_BLOCKS + 1)
+    await page.wait_for_function("() => document.querySelector('.td-screen').scrollTop > 250")
+    await page.evaluate(f"() => {{ document.querySelector('.td-screen').scrollTop = {_CONV_UNPINNED_TOP}; }}")
+    await expect(page.locator(".conv-follow")).to_be_visible()
+
+    await page.locator(".conv-tcall").first.click()
+    await expect(page.locator(".td-title")).to_have_text("web_fetch")
+    await page.go_back()
+    await expect(page.locator(".conv-follow")).to_be_visible()
+    await page.wait_for_function(
+        f"() => Math.abs(document.querySelector('.td-screen').scrollTop - {_CONV_UNPINNED_TOP}) <= {_CONV_SCROLL_TOLERANCE}"
+    )
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+@skip_if_no_chrome
+async def test_conv_tab_switch_and_live_arrival_link_polled_child_once(
+    console_stub: SimpleNamespace, _parameter_page: Page
+) -> None:
+    """Children already in polled state link to their tool cards without double counting."""
+    page = _parameter_page
+    agent_id = "conv-polled-agent"
+    child_a, child_b = "conv-polled-child-a", "conv-polled-child-b"
+    await console_stub.seed_task(agent_id, "planner", E2E_STARTED_AT)
+    await store_module.agent_store.insert(agent_id, "planner")
+    conv_path = await asyncio.to_thread(
+        write_run_file,
+        console_stub.data_dir,
+        agent_id,
+        "conversation.jsonl",
+        json.dumps({"type": "user", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Check links."}) + "\n",
+    )
+    await page.goto(console_stub.base_url + "/task/" + agent_id)
+    await expect(page.locator(".res-pending")).to_be_visible()
+
+    await console_stub.seed_task(child_a, "web_fetch", E2E_STARTED_AT, parent_task_id=agent_id)
+    async with page.expect_response("**/api/changes**") as first_poll:
+        pass
+    await (await first_poll.value).finished()
+    _append_conv_events(conv_path, [
+        {"type": "tool_call", "attempt": 1, "call_id": "c-a", "tool_name": "web_fetch", "ts": E2E_STARTED_AT},
+    ])
+
+    await page.get_by_role("button", name="Conversation", exact=True).click()
+    calls = page.locator(".conv-tcall")
+    await expect(calls).to_have_count(1)
+    await expect(calls.nth(0)).to_have_attribute("href", "/task/" + child_a)
+    await expect(page.locator(".conv-live")).to_have_text("Waiting \u00B7 web_fetch")
+    await expect(page.locator(".conv-live")).not_to_have_class(re.compile(r"\bwaiting\b"))
+    await expect(page.locator(".conv-wait")).to_have_text("Waiting for web_fetch\u2026")
+
+    await console_stub.seed_task(child_b, "brave_search", E2E_STARTED_AT, parent_task_id=agent_id)
+    await expect(page.locator(".conv-live")).to_have_text("Waiting \u00B7 2 tools")
+    _append_conv_events(conv_path, [
+        {"type": "tool_call", "attempt": 1, "call_id": "c-b", "tool_name": "brave_search", "ts": E2E_STARTED_AT},
+    ])
+    await expect(calls).to_have_count(2)
+    await expect(calls.nth(1)).to_have_attribute("href", "/task/" + child_b)
+    await expect(page.locator(".conv-live")).to_have_text("Waiting \u00B7 2 tools")
+    await expect(page.locator(".conv-wait")).to_have_text("Waiting for 2 tools (web_fetch, brave_search)\u2026")
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+@skip_if_no_chrome
+async def test_conv_terminal_trailing_bytes_settle_after_drain(
+    console_stub: SimpleNamespace, _parameter_page: Page
+) -> None:
+    """A terminal file without a final newline drains trailing bytes before settling."""
+    page = _parameter_page
+    tid = "conv-trailing-terminal"
+    await console_stub.seed_task(tid, "planner", E2E_STARTED_AT, "completed", ended_at=E2E_ENDED_AT)
+    await store_module.agent_store.insert(tid, "planner")
+    head_lines = "".join(json.dumps(ev) + "\n" for ev in [
+        {"type": "user", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Initial prompt."},
+        {"type": "assistant", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Draft one."},
+        {"type": "user", "attempt": 1, "ts": E2E_STARTED_AT, "text": "Fix the draft."},
+    ])
+    trailing = json.dumps({
+        "type": "content",
+        "attempt": 2,
+        "ts": E2E_ENDED_AT,
+        "text": "Trailing answer line. " * _CONV_TRAILING_REPEATS,
+    })
+    await asyncio.to_thread(write_run_file, console_stub.data_dir, tid, "conversation.jsonl", head_lines + trailing)
+    await page.goto(console_stub.base_url + "/task/" + tid)
+    await page.get_by_role("button", name="Conversation", exact=True).click()
+
+    second_assist = page.locator(".conv-assist").nth(1)
+    disclosure = second_assist.get_by_role("button", name=re.compile("Assistant"))
+    await expect(disclosure).to_have_attribute("aria-expanded", "false")
+    await expect(disclosure).to_have_text(re.compile(r"[1-9][0-9]* lines? hidden"))
+    await expect(second_assist).to_contain_text("Trailing answer line.")
+    well_order = await page.evaluate("""() => [...document.querySelector('.conv-well').children].map(el => {
+      if (el.classList.contains('conv-div')) return 'div:' + el.dataset.attempt;
+      const msg = el.querySelector('.conv-msg');
+      return msg ? 'conv-user:' + msg.textContent.trim() : el.className.split(' ')[0];
+    })""")
+    assert well_order.index("div:2") < well_order.index("conv-user:Fix the draft.")
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+@skip_if_no_chrome
+async def test_conv_live_pill_truncates_on_narrow_viewport(
+    console_stub: SimpleNamespace, _parameter_page: Page
+) -> None:
+    """A long waiting pill truncates on one line beside the event count on narrow screens."""
+    page = _parameter_page
+    agent_id, child_id = "conv-narrow-agent", "conv-narrow-child"
+    await console_stub.seed_task(agent_id, "planner", E2E_STARTED_AT)
+    await store_module.agent_store.insert(agent_id, "planner")
+    await console_stub.seed_task(child_id, "send_or_receive_file", E2E_STARTED_AT, parent_task_id=agent_id)
+    events = [
+        {"type": "thinking", "attempt": 1, "ts": E2E_STARTED_AT, "text": f"Step {idx} "}
+        for idx in range(_CONV_SCROLL_BLOCKS)
+    ]
+    events.append({
+        "type": "tool_call", "attempt": 1, "call_id": "c-long",
+        "tool_name": "send_or_receive_file", "ts": E2E_STARTED_AT,
+    })
+    raw = "".join(json.dumps(ev) + "\n" for ev in events)
+    await asyncio.to_thread(write_run_file, console_stub.data_dir, agent_id, "conversation.jsonl", raw)
+    await page.set_viewport_size({"width": _CONV_NARROW_WIDTH, "height": _PARAMETER_PHONE_HEIGHT})
+    await page.goto(console_stub.base_url + "/task/" + agent_id)
+    await page.get_by_role("button", name="Conversation", exact=True).click()
+
+    live = page.locator(".conv-live")
+    await expect(live).to_have_text("Waiting \u00B7 send_or_receive_file")
+    live_box = await live.bounding_box()
+    count_box = await page.locator(".conv-count").bounding_box()
+    assert abs(live_box["height"] - _CONV_LIVE_PILL_HEIGHT) <= 1
+    assert live_box["x"] + live_box["width"] <= count_box["x"] + 1
+    assert count_box["x"] + count_box["width"] <= _CONV_NARROW_WIDTH
+    truncated = await page.locator(".conv-live-lbl").evaluate("el => el.scrollWidth > el.clientWidth")
+    assert truncated is True
 
 
 async def _served_surface(stub: SimpleNamespace, page: Page, width: int) -> None:

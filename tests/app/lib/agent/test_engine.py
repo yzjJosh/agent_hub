@@ -3,6 +3,7 @@ import base64
 import inspect
 import json
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict
@@ -1856,8 +1857,74 @@ class TestTailLines:
         assert lines == []
 
     async def test_default_poll_keeps_streaming_lag_low(self) -> None:
-        poll = inspect.signature(engine.tail_lines).parameters["poll"].default
-        assert poll <= 0.05
+        sig = inspect.signature(engine.tail_lines)
+        assert list(sig.parameters) == ["path", "should_stop", "poll", "offset"]
+        assert sig.parameters["poll"].default <= 0.05
+        assert sig.parameters["offset"].default == 0
+
+    async def test_offset_skips_earlier_bytes(self, tmp_path: Path) -> None:
+        path = tmp_path / "tail.jsonl"
+        first = '{"text": "héllo 🧠"}\n'.encode("utf-8")
+        rest = b'{"b": 2}\n{"c": 3}\n'
+        path.write_bytes(first + rest)
+        lines = [line async for line in engine.tail_lines(str(path), _stop, offset=len(first))]
+        assert lines == ['{"b": 2}', '{"c": 3}']
+
+    @pytest.mark.parametrize(("delta", "expected_tail"), [
+        (1, ['llo 🧠"}', '{"b": 2}']),
+        (7, ['"}', '{"b": 2}']),
+        (8, ['"}', '{"b": 2}']),
+        (9, ['"}', '{"b": 2}']),
+    ])
+    async def test_offset_mid_utf8_skips_continuation_bytes(
+        self, tmp_path: Path, delta: int, expected_tail: list[str]
+    ) -> None:
+        path = tmp_path / "tail.jsonl"
+        first = '{"text": "héllo 🧠"}\n'.encode("utf-8")
+        accent_pos = first.index("é".encode("utf-8"))
+        path.write_bytes(first + b'{"b": 2}\n')
+        lines = [line async for line in engine.tail_lines(str(path), _stop, offset=accent_pos + delta)]
+        assert lines == expected_tail
+
+    async def test_holds_partial_trailing_line_until_newline_arrives(self, tmp_path: Path) -> None:
+        path = tmp_path / "tail.jsonl"
+        path.write_bytes(b'{"a": 1}\n{"b": "hel')
+        seen: list[str] = []
+        checks = 0
+        snapshots_at_poll: list[list[str]] = []
+
+        async def stop_after_append() -> bool:
+            nonlocal checks
+            checks += 1
+            snapshots_at_poll.append(list(seen))
+            if checks == 1:
+                with path.open("ab") as fh:
+                    fh.write(b'lo"}\n{"c": 3}\n')
+                return False
+            return True
+
+        await _drain_tail(engine.tail_lines(str(path), stop_after_append, poll=0.001), seen)
+        assert snapshots_at_poll[0] == ['{"a": 1}']
+        assert seen == ['{"a": 1}', '{"b": "hello"}', '{"c": 3}']
+
+    async def test_ten_thousand_lines_complete_accurately_and_fast(self, tmp_path: Path) -> None:
+        path = tmp_path / "large.jsonl"
+        count = 10000
+        payload = "".join(f'{{"i": {i}, "msg": "row-{i}"}}\n' for i in range(count))
+        path.write_text(payload, encoding="utf-8")
+        t0 = time.monotonic()
+        lines = [line async for line in engine.tail_lines(str(path), _stop)]
+        elapsed = time.monotonic() - t0
+        assert len(lines) == count
+        assert lines[0] == '{"i": 0, "msg": "row-0"}'
+        assert lines[5000] == '{"i": 5000, "msg": "row-5000"}'
+        assert lines[-1] == f'{{"i": {count - 1}, "msg": "row-{count - 1}"}}'
+        assert elapsed < 2.0
+
+
+async def _drain_tail(gen: AsyncIterator[str], out: list[str]) -> None:
+    async for line in gen:
+        out.append(line)
 
 
 async def _stop() -> bool:

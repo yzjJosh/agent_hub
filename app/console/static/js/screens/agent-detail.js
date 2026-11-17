@@ -56,6 +56,7 @@ export function mountAgent(mount, detail, saved, stopRestore) {
       btn.addEventListener("click", () => {
         mount.scrollTop = 0;
         saved.scrollTop = 0;
+        delete saved.convPinned;
         switchTab(id);
       });
       bar.appendChild(btn);
@@ -99,7 +100,7 @@ export function mountAgent(mount, detail, saved, stopRestore) {
       }
     }
     if (id === "conversation") {
-      convHandle = mountConversation(well, detail);
+      convHandle = mountConversation(well, detail, saved, stopRestore);
     } else if (id === "results") {
       resultHandle = mountResult(well, detail, "No result yet \u2014 the agent is still working.");
     } else if (id === "log") {

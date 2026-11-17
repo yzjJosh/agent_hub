@@ -56,6 +56,8 @@ if TYPE_CHECKING:
 __all__ = ["Agent", "AgentRun", "tail_lines"]
 
 _TAIL_POLL = 0.05
+_UTF8_CONT_MASK = 0xC0
+_UTF8_CONT_TAG = 0x80
 _DEFAULT_MAX_ATTEMPTS = 10
 _MEDIA_DECODE_TIMEOUT = 30
 # How the adapter marks a call its tool rejected before the run started.
@@ -289,10 +291,18 @@ async def _read_tail(path: str, offset: int) -> bytes:
         return b""
 
 
+def _skip_utf8_continuations(chunk: bytes) -> int:
+    pos = 0
+    while pos < len(chunk) and (chunk[pos] & _UTF8_CONT_MASK) == _UTF8_CONT_TAG:
+        pos += 1
+    return pos
+
+
 async def tail_lines(
     path: str,
     should_stop: Callable[[], Awaitable[bool]],
     poll: float = _TAIL_POLL,
+    offset: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Yield complete lines from a growing file until the stop signal fires.
 
@@ -300,21 +310,26 @@ async def tail_lines(
         path: The file to tail.
         should_stop: An async check that ends the tail when it returns True.
         poll: Seconds between reads when no new line is available.
+        offset: First byte in the file to read from.
 
     Yields:
         Each complete line without its trailing newline.
     """
-    offset = 0
+    align = offset > 0
     while True:
         chunk = await _read_tail(path, offset)
-        newline = chunk.find(b"\n")
-        while newline != -1:
-            line = chunk[:newline]
+        pos = _skip_utf8_continuations(chunk) if align and chunk else 0
+        if align and pos < len(chunk):
+            align = False
+        while True:
+            newline = chunk.find(b"\n", pos)
+            if newline == -1:
+                break
+            line = chunk[pos:newline]
             if line:
-                yield line.decode("utf-8")
-            offset += newline + 1
-            chunk = chunk[newline + 1:]
-            newline = chunk.find(b"\n")
+                yield line.decode("utf-8", errors="replace")
+            pos = newline + 1
+        offset += pos
         if await should_stop():
             break
         await asyncio.sleep(poll)

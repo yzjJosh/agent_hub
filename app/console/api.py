@@ -16,7 +16,11 @@ from starlette.types import ASGIApp, Receive, Send, Scope
 
 import app.lib.db.store as store_module
 from app.console import toolcall
-from app.console.conversation_api import conversation_stream_impl, conversation_window_impl
+from app.console.conversation_api import (
+    conversation_snapshot_impl,
+    conversation_stream_impl,
+    conversation_window_impl,
+)
 from app.console.errors import error_response
 from app.console.render_api import render_message_impl
 from app.console.result_api import result_files_for, result_feed_impl, result_view_impl
@@ -1166,7 +1170,12 @@ async def _task_detail(request: Request) -> JSONResponse:
 
 async def _conversation_stream(request: Request) -> Response:
     """Stream an agent run's conversation."""
-    return await conversation_stream_impl(request.path_params["task_id"])
+    return await conversation_stream_impl(request.path_params["task_id"], dict(request.query_params))
+
+
+async def _conversation_snapshot(request: Request) -> Response:
+    """Read a compacted snapshot of an agent run's conversation."""
+    return await conversation_snapshot_impl(request.path_params["task_id"])
 
 
 async def _conversation_window(request: Request) -> Response:
@@ -1345,6 +1354,7 @@ def build_api_routes() -> Router:
         Route("/tools/{tool}/call", _method_guard(_tool_call, ("POST",)), methods=API_ROUTE_METHODS),
         Route("/tasks/{task_id}", _method_guard(_task_detail, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
         Route("/tasks/{task_id}/conversation/stream", _method_guard(_conversation_stream, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
+        Route("/tasks/{task_id}/conversation/snapshot", _method_guard(_conversation_snapshot, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
         Route("/tasks/{task_id}/conversation", _method_guard(_conversation_window, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
         Route("/tasks/{task_id}/log", _method_guard(_task_log, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
         Route("/tasks/{task_id}/result", _method_guard(_task_result, _GET_ONLY_METHODS), methods=API_ROUTE_METHODS),
