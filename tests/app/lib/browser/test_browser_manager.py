@@ -75,6 +75,41 @@ _MOUSE_TEST_HEIGHT = 800
 _VIEWPORT_LOCK_INTERVAL_S = 0.1
 _VIEWPORT_LOCK_READS = 30
 _RECAPTCHA_CLICK_TIMEOUT_MS = 1500
+_CLIENT_WIDTH_WITHOUT_SCROLLBAR = 1905
+_EXPECTED_PAGE_CALL_TIMEOUT_S = 30
+_TEST_PAGE_CALL_TIMEOUT_S = 0.2
+_POPUP_SETTLE_S = 0.2
+_POPUP_WAIT_S = 10.0
+_SHOT_TIMEOUT_S = 45.0
+_SHOT_TIMEOUT_MS = 45000
+_DEFAULT_SHOT_TIMEOUT_MS = 30000
+_LARGE_SCROLL_DISTANCE = 100000.0
+_SLOW_WHEEL_DELAY_S = 0.1
+_WHEEL_TEST_LIMIT_S = 10
+_SCROLL_TEST_LIMIT_S = 35
+_GEOMETRY_PAGE_HTML = f"""<!DOCTYPE html>
+<html>
+<head><title>geometry</title></head>
+<body style="margin: 0;">
+  <div id="spacer" style="height: {_GEOMETRY_PAGE_HEIGHT}px; width: 100%;"></div>
+  <div id="{_GEOMETRY_TARGET_ID}" style="position: absolute; left: 50%; margin-left: -100px; width: 200px; height: 60px; background: red;"></div>
+  <script>
+    const el = document.getElementById("{_GEOMETRY_TARGET_ID}");
+    el.style.top = ({_GEOMETRY_SCROLL_Y} + (window.innerHeight - el.offsetHeight) / 2) + "px";
+    document.addEventListener("click", (event) => {{ window.__lastClicked = event.target.id; }}, true);
+  </script>
+</body>
+</html>
+"""
+_POPUP_OPENER_HTML = (
+    '<!DOCTYPE html><html><body>'
+    '<a id="popup" href="popup.html" target="_blank">open</a>'
+    "</body></html>"
+)
+_POPUP_TARGET_HTML = (
+    '<!DOCTYPE html><html><head><title>popup</title></head>'
+    "<body><h1>popup</h1></body></html>"
+)
 
 
 def _fake_page(fill: Optional[AsyncMock] = None, evaluate: Optional[AsyncMock] = None) -> AsyncMock:
@@ -2928,9 +2963,6 @@ class TestBrowserManagerReadViewport:
 # ---------------------------------------------------------------------------
 
 
-_CLIENT_WIDTH_WITHOUT_SCROLLBAR = 1905
-
-
 async def _clamped_manager(tmp_path: Path, page: AsyncMock, session: MagicMock) -> BrowserManager:
     """Make a connected manager that hands out one fake tab and one live CDP session."""
     return await _created_manager(_test_context(page, session), str(tmp_path))
@@ -3150,9 +3182,6 @@ class TestDetachBounded:
         assert time.monotonic() - t0 < 5, "detach hung past its bound"
 
 
-_TEST_PAGE_CALL_TIMEOUT_S = 0.2
-
-
 async def _never_answer(*_args: str) -> None:
     """Wait forever, like a frozen tab."""
     await asyncio.Event().wait()
@@ -3163,7 +3192,13 @@ class TestSnapshotPageCallBounded:
 
     @pytest.fixture(autouse=True)
     def _short_page_call_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bm_module, "_PAGE_CALL_TIMEOUT_S", _TEST_PAGE_CALL_TIMEOUT_S)
+        real_timeout = asyncio.timeout
+
+        def _short_timeout(delay: Optional[float]) -> asyncio.Timeout:
+            assert delay == _EXPECTED_PAGE_CALL_TIMEOUT_S
+            return real_timeout(_TEST_PAGE_CALL_TIMEOUT_S)
+
+        monkeypatch.setattr(asyncio, "timeout", _short_timeout)
 
     @pytest.mark.timeout(30)
     async def test_content_hang_gives_no_snapshot(self: Self) -> None:
@@ -3385,21 +3420,6 @@ class TestMoveMouseToRelativeLive:
 # The window geometry a snapshot captures, in a real browser
 # ---------------------------------------------------------------------------
 
-_GEOMETRY_PAGE_HTML = f"""<!DOCTYPE html>
-<html>
-<head><title>geometry</title></head>
-<body style="margin: 0;">
-  <div id="spacer" style="height: {_GEOMETRY_PAGE_HEIGHT}px; width: 100%;"></div>
-  <div id="{_GEOMETRY_TARGET_ID}" style="position: absolute; left: 50%; margin-left: -100px; width: 200px; height: 60px; background: red;"></div>
-  <script>
-    const el = document.getElementById("{_GEOMETRY_TARGET_ID}");
-    el.style.top = ({_GEOMETRY_SCROLL_Y} + (window.innerHeight - el.offsetHeight) / 2) + "px";
-    document.addEventListener("click", (event) => {{ window.__lastClicked = event.target.id; }}, true);
-  </script>
-</body>
-</html>
-"""
-
 
 @pytest.mark.live
 @skip_if_no_chrome
@@ -3468,18 +3488,6 @@ class TestSolveCaptcha:
 # ---------------------------------------------------------------------------
 # Tab lifecycle: adoption and liveness
 # ---------------------------------------------------------------------------
-
-_POPUP_OPENER_HTML = (
-    '<!DOCTYPE html><html><body>'
-    '<a id="popup" href="popup.html" target="_blank">open</a>'
-    "</body></html>"
-)
-_POPUP_TARGET_HTML = (
-    '<!DOCTYPE html><html><head><title>popup</title></head>'
-    "<body><h1>popup</h1></body></html>"
-)
-_POPUP_SETTLE_S = 0.2
-_POPUP_WAIT_S = 10.0
 
 
 def _lifecycle_page() -> AsyncMock:
@@ -3796,11 +3804,6 @@ class TestLiveTabLifecycle:
         await mgr.cleanup()
 
         assert mgr.tab_ids() == []
-
-
-_SHOT_TIMEOUT_S = 45.0
-_SHOT_TIMEOUT_MS = 45000
-_DEFAULT_SHOT_TIMEOUT_MS = 30000
 
 
 @pytest.mark.parametrize(
@@ -4276,3 +4279,66 @@ class TestConnectDefaults:
         _, artifacts_dir = await _capture_connect_args()
         assert artifacts_dir == str(tmp_path / "downloads")
         assert (tmp_path / "downloads").is_dir()
+
+
+class TestScrollTimeouts:
+    """Tests that scrolling has deadlines and respects cancellation."""
+
+    @pytest.mark.timeout(_WHEEL_TEST_LIMIT_S)
+    async def test_scroll_by_stops_when_wheel_never_answers(self: Self) -> None:
+        """An unanswered wheel call fails and is cancelled without further scrolling."""
+        mgr, page, tab = await _make_manager()
+        cancelled = asyncio.Event()
+
+        async def _hang(_dx: float, _dy: float) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        page.mouse.wheel.side_effect = _hang
+        assert await mgr.scroll_by(tab, _LARGE_SCROLL_DISTANCE) is False
+        assert cancelled.is_set()
+        page.mouse.wheel.assert_awaited_once()
+        page.mouse.wheel.side_effect = None
+        assert await mgr.scroll_by(tab, _SCROLL_DISTANCE) is True
+
+    @pytest.mark.timeout(_SCROLL_TEST_LIMIT_S)
+    async def test_scroll_by_limits_total_time_for_slow_wheels(self: Self) -> None:
+        """Repeated slow wheel calls stop before the full distance is sent."""
+        mgr, page, tab = await _make_manager()
+
+        async def _slow_wheel(_dx: float, _dy: float) -> None:
+            await asyncio.sleep(_SLOW_WHEEL_DELAY_S)
+
+        page.mouse.wheel.side_effect = _slow_wheel
+        assert await mgr.scroll_by(tab, _LARGE_SCROLL_DISTANCE) is False
+        wheel_calls = page.mouse.wheel.await_args_list
+        assert len(wheel_calls) > 1
+        assert sum(wheel_call.args[1] for wheel_call in wheel_calls) < _LARGE_SCROLL_DISTANCE
+        count = page.mouse.wheel.await_count
+        await asyncio.sleep(_SLOW_WHEEL_DELAY_S)
+        assert page.mouse.wheel.await_count == count
+
+    @pytest.mark.timeout(_WHEEL_TEST_LIMIT_S)
+    async def test_scroll_by_preserves_cancellation(self: Self) -> None:
+        """Cancelling a scroll cancels its wheel call and reaches the caller."""
+        mgr, page, tab = await _make_manager()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _hang(_dx: float, _dy: float) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        page.mouse.wheel.side_effect = _hang
+        task = asyncio.create_task(mgr.scroll_by(tab, _LARGE_SCROLL_DISTANCE))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+        page.mouse.wheel.assert_awaited_once()

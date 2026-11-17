@@ -51,6 +51,14 @@ _SCROLL_MAX_ITERATIONS = 30
 _SCROLL_STEP_MAX = 300
 _SCROLL_STAGNANT_LIMIT = 5
 _SCROLL_MARGIN = 10
+_WHEEL_TIMEOUT_S = 5
+_SCROLL_TIMEOUT_S = 30
+# Settling a scroll waits this long for the spot to stop moving before it is
+# counted as reached, polling at this interval.
+_SCROLL_SETTLE_TIMEOUT_S = 2.0
+_SCROLL_SETTLE_INTERVAL_S = 0.05
+# How long one page call may take before it is given up on.
+_PAGE_CALL_TIMEOUT_S = 30
 # How long one cleanup step may take before it is given up on.
 _CLEANUP_STEP_TIMEOUT_S = 10
 
@@ -749,6 +757,14 @@ class BrowserManager:
             dy: How far to scroll up or down.
             verbose: Print progress lines when True.
         """
+        try:
+            await _await_page_call(self._scroll_wheels(page, dx, dy, verbose), "Scroll", timeout=_SCROLL_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise TimeoutError(f"{exc}. Scroll may be partial.") from None
+
+    @staticmethod
+    async def _scroll_wheels(page: Page, dx: float, dy: float, verbose: bool = False) -> None:
+        """Scroll the page in small steps."""
         for component in ("x", "y"):
             total = dx if component == "x" else dy
             if total == 0:
@@ -758,7 +774,11 @@ class BrowserManager:
             while remaining > 0:
                 step = min(remaining, random.randint(100, 300))
                 step_val = step if total > 0 else -step
-                await page.mouse.wheel(step_val if component == "x" else 0, step_val if component == "y" else 0)
+                await _await_page_call(
+                    page.mouse.wheel(step_val if component == "x" else 0, step_val if component == "y" else 0),
+                    "Wheel",
+                    timeout=_WHEEL_TIMEOUT_S,
+                )
                 await asyncio.sleep(random.uniform(0.03, 0.08))
                 remaining -= step
 
@@ -934,6 +954,9 @@ class BrowserManager:
     async def scroll_by(self, target_id: str, distance: float, dx: float = 0.0, verbose: bool = False) -> bool:
         """Scroll the page a set number of pixels, sideways too if a number is given.
 
+        Gives up if the page stops answering for 5 seconds or after 30 seconds in total.
+        A failed scroll may leave the page partly scrolled.
+
         Args:
             target_id: The tab to scroll.
             distance: How far to scroll up or down. A positive number scrolls down.
@@ -941,7 +964,7 @@ class BrowserManager:
             verbose: Print progress lines when True.
 
         Returns:
-            True if the page scrolled.
+            True if the page scrolled the whole way.
         """
         if target_id not in self._pages:
             print(f"[BrowserManager.scroll_by] Error: target_id not found: {target_id}", file=sys.stderr)
@@ -2247,21 +2270,13 @@ async def _clamp_mouse_params(mgr: BrowserManager, target_id: str, params: dict)
         params["y"] = max(0, min(params["y"], height - 1))
 
 
-# Settling a scroll waits this long for the spot to stop moving before it is
-# counted as reached, polling at this interval.
-_SCROLL_SETTLE_TIMEOUT_S = 2.0
-_SCROLL_SETTLE_INTERVAL_S = 0.05
-
-# How long one page read may take before it is given up on.
-_PAGE_CALL_TIMEOUT_S = 30
-
-
-async def _await_page_call[T](call: Awaitable[T], name: str) -> T:
+async def _await_page_call[T](call: Awaitable[T], name: str, timeout: float = _PAGE_CALL_TIMEOUT_S) -> T:
     """Wait for a page call, but not forever.
 
     Args:
         call: The page call to wait for.
-        name: What the call reads, for the log.
+        name: What the call does, for the log.
+        timeout: How many seconds to wait.
 
     Returns:
         What the call gives back.
@@ -2269,10 +2284,14 @@ async def _await_page_call[T](call: Awaitable[T], name: str) -> T:
     Raises:
         TimeoutError: If the page does not answer in time.
     """
+    deadline = asyncio.timeout(timeout)
     try:
-        return await asyncio.wait_for(call, timeout=_PAGE_CALL_TIMEOUT_S)
+        async with deadline:
+            return await call
     except TimeoutError:
-        message = f"{name} timed out after {_PAGE_CALL_TIMEOUT_S}s"
+        if not deadline.expired():
+            raise
+        message = f"{name} timed out after {timeout}s"
         print(f"[browser_manager._await_page_call] Error: {message}", file=sys.stderr)
         raise TimeoutError(message) from None
 
