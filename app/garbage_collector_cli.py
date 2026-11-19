@@ -8,14 +8,15 @@ Cleans up each kind of leftover data.
              30 by default
   render     saved renders whose source file is gone or changed, plus files
              nobody has read or changed for N days, 30 by default
-   presentations  presentation rows older than N days, 30 by default
+   presentations   presentation rows older than N days, 30 by default
+   context_errors  cached context error rows older than N days, 30 by default
 
 Run it with every category.
 
     python3 -u -m app.garbage_collector_cli
 
 Options:
-    --category all|resources|runs|render|presentations   category to sweep, all by default
+    --category all|resources|runs|render|presentations|context_errors   category to sweep, all by default
     --days N                             staleness window for this run, each category has its own default
 
 With one category it prints one removed path per line, or '(nothing to remove)'.
@@ -27,7 +28,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.lib.db.store import PRESENTATION_WINDOW_DAYS
+from app.lib.db.store import CONTEXT_ERROR_WINDOW_DAYS, PRESENTATION_WINDOW_DAYS, context_error_store
 from app.lib.gc.resources import sweep as sweep_resources
 from app.lib.gc.presentations import sweep_presentations
 from app.lib.gc.runs import sweep_runs
@@ -78,13 +79,18 @@ def _categories() -> list[_GcCategory]:
         _GcCategory("runs", lambda d: sweep_runs(d, data_dir), 30),
         _GcCategory("render", sweep_render, 30),
         _GcCategory("presentations", lambda d: sweep_presentations(d, data_dir), PRESENTATION_WINDOW_DAYS),
+        _GcCategory("context_errors", lambda d: context_error_store.sweep_sync(d, data_dir), CONTEXT_ERROR_WINDOW_DAYS),
     ]
 
 
 def main() -> None:
     """Read the command line and clean up the leftover data."""
     parser = argparse.ArgumentParser(prog="garbage_collector_cli")
-    parser.add_argument("--category", choices=["all", "resources", "runs", "render", "presentations"], default="all")
+    parser.add_argument(
+        "--category",
+        choices=["all", "resources", "runs", "render", "presentations", "context_errors"],
+        default="all",
+    )
     parser.add_argument("--days", type=int, default=None)
     args = parser.parse_args()
 

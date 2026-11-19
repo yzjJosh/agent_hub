@@ -32,9 +32,13 @@ from agents import (
 )
 from agents.items import TResponseInputItem
 from agents.models import chatcmpl_converter, openai_chatcompletions
-from agents.models.reasoning_content_replay import ShouldReplayReasoningContent
+from agents.models.reasoning_content_replay import (
+    ReasoningContentReplayContext,
+    ReasoningContentSource,
+    ShouldReplayReasoningContent,
+)
 from agents.run import RunResultStreaming
-from agents.run_config import CallModelInputFilter, RunConfig
+from agents.run_config import CallModelData, CallModelInputFilter, ModelInputData, RunConfig
 from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
 from agents.tool_context import ToolContext
 import httpx
@@ -47,6 +51,7 @@ from openai.types.responses import (
 )
 from PIL import Image
 
+from app.lib.agent import context
 from app.lib.cli.cli_runner import run_cli
 from app.lib.db import store as db_store
 from app.lib.db.store import agent_store
@@ -117,7 +122,7 @@ _NO_CALL_REPORT = _CallReport(task_id=None, status=None)
 @dataclass
 class _RunControl:
     live: RunResultStreaming | None = None
-    backoff_task: asyncio.Task[None] | None = None
+    helper_task: asyncio.Task | None = None
     stop_requested: bool = False
 
 
@@ -221,18 +226,12 @@ def _media_wire_part(part: dict) -> dict | None:
     file = part.get("file")
     file = file if isinstance(file, dict) else {}
     file_data = file.get("file_data")
-    if not isinstance(file_data, str) or not file_data:
+    if not isinstance(file_data, str):
         return None
-    mime: str | None = None
-    if file_data.startswith("data:"):
-        head = file_data.split(";", 1)[0]
-        if len(head) > len("data:"):
-            mime = head[len("data:"):]
-    elif isinstance(file.get("filename"), str):
-        mime = mimetypes.guess_type(file["filename"])[0]
-    if not is_video_mime(mime):
+    filename = file.get("filename")
+    url = context.resolve_video_url(file_data, filename if isinstance(filename, str) else None)
+    if url is None:
         return None
-    url = file_data if file_data.startswith("data:") else f"data:{mime};base64,{file_data}"
     return {"type": "video_url", "video_url": {"url": url}}
 
 
@@ -254,8 +253,100 @@ def _media_wire_parts(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _always_replay_reasoning(_context: ReasoningContentReplayContext) -> bool:
+    return True
+
+
+def _coalesce_reasoning_run(
+    run_items: list[dict],
+    model: str,
+    base_url: str | None,
+    replay_check: ShouldReplayReasoningContent,
+) -> str:
+    normalized_url = base_url.rstrip("/") if base_url is not None else None
+    texts: list[str] = []
+    for item in run_items:
+        raw_provider = item.get("provider_data")
+        provider_data = raw_provider if isinstance(raw_provider, dict) else {}
+        raw_origin = provider_data.get("model")
+        origin_model = raw_origin if isinstance(raw_origin, str) and raw_origin else None
+        replay_ctx = ReasoningContentReplayContext(
+            model=model,
+            base_url=normalized_url,
+            reasoning=ReasoningContentSource(
+                item=item,
+                origin_model=origin_model,
+                provider_data=provider_data,
+            ),
+        )
+        if replay_check(replay_ctx):
+            text = context.extract_reasoning_text(item)
+            if text:
+                texts.append(text)
+    return "\n".join(texts)
+
+
 class _PreservingConverter(chatcmpl_converter.Converter):
-    """Force tool-output preservation on, and map file parts the wire accepts."""
+    """Keep media tool outputs and assistant thinking text on the wire."""
+
+    @classmethod
+    def _convert_batch(
+        cls,
+        batch: list[TResponseInputItem],
+        model: str,
+        preserve_thinking_blocks: bool,
+        base_url: str | None,
+        replay_check: ShouldReplayReasoningContent,
+        strict_feature_validation: bool,
+    ) -> list[ChatCompletionMessageParam]:
+        if not batch:
+            return []
+        return super().items_to_messages(
+            batch,
+            model=model,
+            preserve_thinking_blocks=preserve_thinking_blocks,
+            preserve_tool_output_all_content=True,
+            base_url=base_url,
+            should_replay_reasoning_content=replay_check,
+            strict_feature_validation=strict_feature_validation,
+        )
+
+    @classmethod
+    def _emit_reasoning_turn(
+        cls,
+        out: list[ChatCompletionMessageParam],
+        pending: list[TResponseInputItem],
+        run_dicts: list[dict],
+        coalesced: str,
+        next_item: TResponseInputItem | None,
+        end: int,
+        preserve_thinking_blocks: bool,
+    ) -> int:
+        if (
+            cls.maybe_response_output_message(next_item) is not None
+            or cls.maybe_function_tool_call(next_item) is not None
+            or cls.maybe_file_search_call(next_item) is not None
+        ):
+            if coalesced:
+                merged = dict(run_dicts[-1])
+                merged["summary"] = [{"type": "summary_text", "text": coalesced}]
+                pending.append(merged)
+            elif preserve_thinking_blocks:
+                pending.extend(run_dicts)
+            return end
+        easy_msg = cls.maybe_easy_input_message(next_item)
+        if easy_msg is not None and easy_msg["role"] == "assistant":
+            asst_msg: dict = {
+                "role": "assistant",
+                "content": cls.extract_text_content(easy_msg["content"]),
+            }
+            if coalesced:
+                asst_msg["reasoning_content"] = coalesced
+            out.append(asst_msg)
+            return end + 1
+        if coalesced:
+            out.append({"role": "assistant", "content": "", "reasoning_content": coalesced})
+        return end
 
     @classmethod
     def items_to_messages(
@@ -267,16 +358,54 @@ class _PreservingConverter(chatcmpl_converter.Converter):
         should_replay_reasoning_content: ShouldReplayReasoningContent | None = None,
         strict_feature_validation: bool = False,
     ) -> list[ChatCompletionMessageParam]:
-        messages = super().items_to_messages(
-            items,
-            model=model,
-            preserve_thinking_blocks=preserve_thinking_blocks,
-            preserve_tool_output_all_content=True,
-            base_url=base_url,
-            should_replay_reasoning_content=should_replay_reasoning_content,
-            strict_feature_validation=strict_feature_validation,
+        if isinstance(items, str):
+            return [{"role": "user", "content": items}]
+        effective_model = model if model is not None else config.DEFAULT_MODEL
+        replay_check = (
+            should_replay_reasoning_content
+            if should_replay_reasoning_content is not None
+            else _always_replay_reasoning
         )
-        return _media_wire_parts(messages)
+        raw_items = list(items)
+        out: list[ChatCompletionMessageParam] = []
+        pending: list[TResponseInputItem] = []
+        idx = 0
+        while idx < len(raw_items):
+            if cls.maybe_reasoning_message(raw_items[idx]) is None:
+                pending.append(raw_items[idx])
+                idx += 1
+                continue
+            out.extend(
+                cls._convert_batch(
+                    pending,
+                    effective_model,
+                    preserve_thinking_blocks,
+                    base_url,
+                    replay_check,
+                    strict_feature_validation,
+                )
+            )
+            pending = []
+            end = idx + 1
+            while end < len(raw_items) and cls.maybe_reasoning_message(raw_items[end]) is not None:
+                end += 1
+            run_dicts = [item for item in raw_items[idx:end] if isinstance(item, dict)]
+            coalesced = _coalesce_reasoning_run(run_dicts, effective_model, base_url, replay_check)
+            next_item = raw_items[end] if end < len(raw_items) else None
+            idx = cls._emit_reasoning_turn(
+                out, pending, run_dicts, coalesced, next_item, end, preserve_thinking_blocks
+            )
+        out.extend(
+            cls._convert_batch(
+                pending,
+                effective_model,
+                preserve_thinking_blocks,
+                base_url,
+                replay_check,
+                strict_feature_validation,
+            )
+        )
+        return _media_wire_parts(out)
 
 
 def _build_model(backend: config.Backend) -> OpenAIChatCompletionsModel:
@@ -287,6 +416,7 @@ def _build_model(backend: config.Backend) -> OpenAIChatCompletionsModel:
     return OpenAIChatCompletionsModel(
         model=backend.model or config.DEFAULT_MODEL,
         openai_client=client.with_options(max_retries=0),
+        should_replay_reasoning_content=_always_replay_reasoning,
     )
 
 
@@ -310,22 +440,23 @@ def _is_retryable_error(exc: Exception) -> bool:
     )
 
 
-async def _sleep_backoff(delay: float, control: _RunControl) -> None:
+async def _run_cancellable[R](start: Callable[[], Awaitable[R]], control: _RunControl) -> R:
     if control.stop_requested:
         raise _AgentRunStopped("agent run stopped on request")
-    sleep_task: asyncio.Task[None] = asyncio.ensure_future(asyncio.sleep(delay))
-    control.backoff_task = sleep_task
+    helper_task: asyncio.Task[R] = asyncio.ensure_future(start())
+    control.helper_task = helper_task
     try:
-        await sleep_task
+        value = await helper_task
     except CancelledError:
         if control.stop_requested:
             raise _AgentRunStopped("agent run stopped on request") from None
         raise
     finally:
-        control.backoff_task = None
-        sleep_task.cancel()
+        control.helper_task = None
+        helper_task.cancel()
     if control.stop_requested:
         raise _AgentRunStopped("agent run stopped on request")
+    return value
 
 
 class _ConversationWriter:
@@ -486,7 +617,7 @@ class AgentRun:
         self._task = task
 
     def cancel_run_loop(self) -> None:
-        """Ask the run to stop, and cancel any live streaming result or active retry wait."""
+        """Ask the run to stop, and cancel any live streaming result or active recovery wait."""
         control = _run_control_of(str(self._task.id))
         if control is None:
             print(f"[{_ts()}] cancel_run_loop: no run control for task {str(self._task.id)[:8]}", file=sys.stderr)
@@ -494,8 +625,8 @@ class AgentRun:
         control.stop_requested = True
         if control.live is not None:
             control.live.cancel()
-        if control.backoff_task is not None:
-            control.backoff_task.cancel()
+        if control.helper_task is not None:
+            control.helper_task.cancel()
 
     @property
     def task(self) -> Task[str]:
@@ -751,7 +882,7 @@ class Agent[T]:
         control = _RunControl()
         _run_controls[task_id] = control
         try:
-            return await self._validate_loop(model, writer, user_prompt, AgentRun(task), control)
+            return await self._validate_loop(model, backend, writer, user_prompt, AgentRun(task), control)
         finally:
             _run_controls.pop(task_id, None)
 
@@ -761,9 +892,38 @@ class Agent[T]:
             kwargs["tools"] = [self._build_sdk_tool(t, tool_calls) for t in self._tools]
         return _SdkAgent(**kwargs)
 
+    def _build_compaction_measure(
+        self, sdk_agent: _SdkAgent
+    ) -> Callable[[list[dict]], Awaitable[int]] | None:
+        input_filter = self._model_input_filter
+        if input_filter is None:
+            return None
+
+        async def _measure(candidate: list[dict]) -> int:
+            call_data = CallModelData(
+                model_data=ModelInputData(
+                    input=list(candidate),
+                    instructions=self._system_prompt,
+                ),
+                agent=sdk_agent,
+                context=None,
+            )
+            filtered = input_filter(call_data)
+            if inspect.isawaitable(filtered):
+                filtered = await filtered
+            if not filtered.input:
+                raise context.CompactionError("Model input filter returned empty input.")
+            return context.count_chars(
+                filtered.input,
+                system_prompt=filtered.instructions or "",
+            )
+
+        return _measure
+
     async def _validate_loop(
         self,
         model: OpenAIChatCompletionsModel,
+        backend: config.Backend,
         writer: _ConversationWriter,
         user_prompt: str,
         agent_run: AgentRun,
@@ -778,7 +938,9 @@ class Agent[T]:
         async with asyncio.timeout(self._timeout):
             for attempt in range(1, self._max_attempts + 1):
                 print(f"[{_ts()}] attempt {attempt}/{self._max_attempts}")
-                final_output, input_list = await self._run_attempt(sdk_agent, input_text, attempt, tool_calls, writer, control)
+                final_output, input_list = await self._run_attempt(
+                    sdk_agent, backend, input_text, attempt, tool_calls, writer, control
+                )
                 if final_output is None:
                     ok, checked = False, "Error: result is None"
                 else:
@@ -809,9 +971,58 @@ class Agent[T]:
         run_config = RunConfig(call_model_input_filter=self._model_input_filter)
         return Runner.run_streamed(sdk_agent, input_text, max_turns=None, run_config=run_config)
 
+    async def _recover_or_retry(
+        self,
+        exc: Exception,
+        *,
+        backend: config.Backend,
+        current_input: str | list,
+        retries: int,
+        attempt: int,
+        measure: Callable[[list[dict]], Awaitable[int]] | None,
+        control: _RunControl,
+    ) -> tuple[str | list, int]:
+        can_retry = _is_retryable_error(exc) and retries < _MAX_SERVER_RETRIES
+        try:
+            overflow = await _run_cancellable(
+                partial(context.is_overflow, exc, backend=backend, before_retry=can_retry),
+                control,
+            )
+            if overflow:
+                compacted = await _run_cancellable(
+                    partial(
+                        context.compact,
+                        current_input,
+                        system_prompt=self._system_prompt,
+                        measure=measure,
+                    ),
+                    control,
+                )
+                print(
+                    f"[{_ts()}] attempt {attempt} context compacted, "
+                    f"{len(compacted)} items remaining"
+                )
+                return compacted, 0
+        except (context.ClassificationError, context.CompactionError) as recovery_exc:
+            print(
+                f"[{_ts()}] attempt {attempt} context recovery aborted, {recovery_exc}",
+                file=sys.stderr,
+            )
+            if control.stop_requested:
+                raise _AgentRunStopped("agent run stopped on request") from None
+            raise exc
+        if not can_retry:
+            raise exc
+        retries += 1
+        delay = _RETRY_INITIAL_DELAY * (_RETRY_BACKOFF_FACTOR ** (retries - 1))
+        print(f"[{_ts()}] attempt {attempt} retry {retries}/{_MAX_SERVER_RETRIES} in {delay}s: {exc}")
+        await _run_cancellable(lambda: asyncio.sleep(delay), control)
+        return current_input, retries
+
     async def _run_attempt(
         self,
         sdk_agent: _SdkAgent,
+        backend: config.Backend,
         input_text: str | list,
         attempt: int,
         tool_calls: dict[str, _CallReport],
@@ -820,9 +1031,11 @@ class Agent[T]:
     ) -> tuple[str | None, list]:
         current_input: str | list = input_text
         retries = 0
+        measure = self._build_compaction_measure(sdk_agent)
         while True:
             result = self._open_stream(sdk_agent, current_input)
             control.live = result
+            caught_exc: Exception | None = None
             try:
                 await self._record_conversation(result, attempt, tool_calls, writer)
                 final_output = result.final_output
@@ -833,20 +1046,23 @@ class Agent[T]:
             except Exception as exc:
                 if control.stop_requested:
                     raise _AgentRunStopped("agent run stopped on request") from exc
-                if not _is_retryable_error(exc):
-                    raise
                 if result.new_items:
                     current_input = result.to_input_list()
                     retries = 0
-                if retries >= _MAX_SERVER_RETRIES:
-                    raise
-                retries += 1
-                delay = _RETRY_INITIAL_DELAY * (_RETRY_BACKOFF_FACTOR ** (retries - 1))
-                print(f"[{_ts()}] attempt {attempt} retry {retries}/{_MAX_SERVER_RETRIES} in {delay}s: {exc}")
+                caught_exc = exc
             finally:
                 control.live = None
                 result.cancel()
-            await _sleep_backoff(delay, control)
+            assert caught_exc is not None
+            current_input, retries = await self._recover_or_retry(
+                caught_exc,
+                backend=backend,
+                current_input=current_input,
+                retries=retries,
+                attempt=attempt,
+                measure=measure,
+                control=control,
+            )
 
     async def _record_conversation(
         self,

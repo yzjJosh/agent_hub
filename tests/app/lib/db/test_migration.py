@@ -487,3 +487,57 @@ class TestToolRecordsRenderTypeMigration:
         fresh_cols = {r[1] for r in fresh.execute("PRAGMA table_info(tool_records)")}
         fresh.close()
         assert migrated == fresh_cols
+
+
+class TestContextErrorCacheMigration:
+    """Tests for creating and keeping context_error_cache across migrations."""
+
+    def test_creates_table_and_index_idempotently(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "records.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE task_records (task_id TEXT PRIMARY KEY, parent_task_id TEXT,"
+            " status TEXT NOT NULL, error TEXT, started_at TEXT NOT NULL, ended_at TEXT, run_dir TEXT NOT NULL)"
+        )
+        conn.commit()
+        conn.close()
+
+        migrate_all_sync(str(tmp_path))
+        migrate_all_sync(str(tmp_path))
+
+        conn = sqlite3.connect(db_path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        cols = {r[1]: (r[2], r[3], r[5]) for r in conn.execute("PRAGMA table_info(context_error_cache)")}
+        idx_cols = {r[2] for r in conn.execute("PRAGMA index_info(idx_context_error_at)")}
+        conn.close()
+
+        assert "context_error_cache" in tables
+        assert cols == {
+            "normalized_error": ("TEXT", 0, 1),
+            "is_context_overflow": ("INTEGER", 1, 0),
+            "classified_at": ("TEXT", 1, 0),
+        }
+        assert idx_cols == {"classified_at"}
+
+    def test_preserves_existing_rows_across_rerun(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "records.db"
+        sqlite3.connect(db_path).close()
+        migrate_all_sync(str(tmp_path))
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO context_error_cache (normalized_error, is_context_overflow, classified_at)"
+            " VALUES (?, ?, ?)",
+            ("maximum context length is <NUM> tokens", 1, "2026-10-01T00:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        migrate_all_sync(str(tmp_path))
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT normalized_error, is_context_overflow, classified_at FROM context_error_cache"
+        ).fetchall()
+        conn.close()
+        assert rows == [("maximum context length is <NUM> tokens", 1, "2026-10-01T00:00:00+00:00")]

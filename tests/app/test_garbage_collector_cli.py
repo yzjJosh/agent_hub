@@ -123,6 +123,7 @@ class TestGcCli:
         assert "[runs]" in lines
         assert "[render]" in lines
         assert "[presentations]" in lines
+        assert "[context_errors]" in lines
 
     def test_render_category_removes_orphan_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -141,7 +142,7 @@ class TestGcCli:
         assert not gone_dir.exists()
         assert live_dir.is_dir()
 
-    @pytest.mark.parametrize("category", ["render", "presentations"])
+    @pytest.mark.parametrize("category", ["render", "presentations", "context_errors"])
     def test_categories_include_render_and_presentations(
         self,
         tmp_path: Path,
@@ -155,6 +156,44 @@ class TestGcCli:
         )
         assert err == ""
         assert out.strip() == "(nothing to remove)"
+
+    def test_context_errors_category_removes_stale_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The context_errors category deletes expired rows from DATA_DIR records.db."""
+        now = datetime.now(timezone.utc)
+        old_ts = (now - timedelta(days=31)).isoformat()
+        fresh_ts = (now - timedelta(days=1)).isoformat()
+        db_path = tmp_path / "records.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE context_error_cache ("
+            "  normalized_error TEXT PRIMARY KEY,"
+            "  is_context_overflow INTEGER NOT NULL,"
+            "  classified_at TEXT NOT NULL"
+            ")"
+        )
+        conn.executemany(
+            "INSERT INTO context_error_cache VALUES (?, ?, ?)",
+            [
+                ("stale context error <NUM>", 1, old_ts),
+                ("fresh context error <NUM>", 0, fresh_ts),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        out, err = _run_gc_cli(
+            monkeypatch, capsys, tmp_path, tmp_path / "resources",
+            "--category", "context_errors",
+        )
+        assert err == ""
+        assert out.splitlines() == ["stale context error <NUM>"]
+
+        conn = sqlite3.connect(db_path)
+        remaining = {r[0] for r in conn.execute("SELECT normalized_error FROM context_error_cache")}
+        conn.close()
+        assert remaining == {"fresh context error <NUM>"}
 
     def test_module_entry_point_runs(self, tmp_path: Path) -> None:
         """The module entry point runs the collector."""

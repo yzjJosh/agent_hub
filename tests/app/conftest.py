@@ -777,28 +777,30 @@ class _TaskStore(Protocol):
 @pytest.fixture
 async def task_store(tmp_path: Path) -> AsyncIterator[_TaskStore]:
     """Point the app stores at a throwaway database and give back the task store."""
-    previous_task = store_module.task_store
-    previous_tool = store_module.tool_store
-    store_module.init_store(str(tmp_path / "records.db"))
-    await store_module.task_store.open()
-    yield store_module.task_store
-    await store_module.task_store.close()
-    store_module.task_store = previous_task
-    store_module.tool_store = previous_tool
+    async for _ in store_infra(tmp_path):
+        yield store_module.task_store
 
 
 async def store_infra(tmp_path: Path) -> AsyncIterator[None]:
     """Point the process-wide stores at a throwaway database for the test."""
+    previous_db_path = os.path.join(store_module.task_store.data_dir, "records.db")
     previous_task = store_module.task_store
     previous_tool = store_module.tool_store
+    previous_presentation = store_module.presentation_store
     previous_agent = store_module.agent_store
+    previous_context_error = store_module.context_error_store
     store_module.init_store(str(tmp_path / "records.db"))
     await store_module.task_store.open()
-    yield
-    await store_module.task_store.close()
-    store_module.task_store = previous_task
-    store_module.tool_store = previous_tool
-    store_module.agent_store = previous_agent
+    try:
+        yield
+    finally:
+        await store_module.task_store.close()
+        store_module.init_store(previous_db_path)
+        store_module.task_store = previous_task
+        store_module.tool_store = previous_tool
+        store_module.presentation_store = previous_presentation
+        store_module.agent_store = previous_agent
+        store_module.context_error_store = previous_context_error
 
 
 # --- Whole app fixture and seed helpers ---

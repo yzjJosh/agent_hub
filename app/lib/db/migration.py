@@ -18,6 +18,7 @@ __all__ = ["migrate_all", "migrate_all_sync"]
 _LOCK_NAME = ".records.lock"
 _DB_NAME = "records.db"
 _LEGACY_DB_NAME = "tool.db"
+_CONNECT_TIMEOUT_S = 10
 _TASK_COLS = ("status", "error", "started_at", "ended_at", "run_dir")
 
 _PRESENTATIONS_DDL = """
@@ -37,6 +38,15 @@ CREATE TABLE IF NOT EXISTS agent_records (
   task_id  TEXT PRIMARY KEY REFERENCES task_records(task_id),
   name     TEXT NOT NULL
 );
+"""
+
+_CONTEXT_ERROR_CACHE_DDL = """
+CREATE TABLE IF NOT EXISTS context_error_cache (
+  normalized_error    TEXT PRIMARY KEY,
+  is_context_overflow INTEGER NOT NULL,
+  classified_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_error_at ON context_error_cache(classified_at);
 """
 
 _PRESENT_TO_USER = "present_to_user"
@@ -309,14 +319,14 @@ def _migrate_presentations(data_dir: str, db_path: str) -> None:
     _move_presentations_folder()
 
 
-def _migrate_agent_records(_data_dir: str, db_path: str) -> None:
-    """Create the agent_records table when it is missing."""
+def _apply_ddl(db_path: str, ddl: str) -> None:
+    """Run a schema script when the database file exists."""
     if not os.path.exists(db_path):
         return
-    conn = sqlite3.connect(db_path, timeout=10, isolation_level=None)
+    conn = sqlite3.connect(db_path, timeout=_CONNECT_TIMEOUT_S, isolation_level=None)
     try:
         conn.execute("PRAGMA busy_timeout=10000")
-        conn.executescript(_AGENT_RECORDS_DDL)
+        conn.executescript(ddl)
     finally:
         conn.close()
 
@@ -359,8 +369,9 @@ def migrate_all_sync(data_dir: str) -> None:
             _migrate_schema(db_path)
             _migrate_runs_dir(data_dir, db_path)
             _migrate_presentations(data_dir, db_path)
-            _migrate_agent_records(data_dir, db_path)
+            _apply_ddl(db_path, _AGENT_RECORDS_DDL)
             _migrate_tool_records_render_type(data_dir, db_path)
+            _apply_ddl(db_path, _CONTEXT_ERROR_CACHE_DDL)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 

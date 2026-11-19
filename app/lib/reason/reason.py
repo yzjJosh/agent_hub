@@ -88,6 +88,8 @@ async def reason(
     image_files: list | None = None,
     video_files: list | None = None,
     json_format: bool = False,
+    *,
+    backend: config.Backend | None = None,
 ) -> Tuple[str, int]:
     """Ask the local model a question and get its answer.
 
@@ -101,15 +103,19 @@ async def reason(
         image_files: Image files to send with the question.
         video_files: Video files to send with the question.
         json_format: Request a JSON object when no JSON schema is given.
+        backend: Backend to call instead of reading the environment settings.
 
     Returns:
         The answer text and a status code. The code is 0 when it worked and
         1 when it did not.
     """
-    try:
-        target = config.backend(config.REASON_THINKING if thinking else config.REASON)
-    except config.MissingSettingError as exc:
-        return str(exc), 1
+    if backend is not None:
+        target = backend
+    else:
+        try:
+            target = config.backend(config.REASON_THINKING if thinking else config.REASON)
+        except config.MissingSettingError as exc:
+            return str(exc), 1
     payload, error = await _prepare_request(
         prompt, context, target.model, json_schema, image_files or [], video_files or [],
         json_format,

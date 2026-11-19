@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,7 @@ from app.lib.db import migration
 from app.lib.shared import paths
 
 __all__ = [
+    "CONTEXT_ERROR_WINDOW_DAYS",
     "PRESENTATION_WINDOW_DAYS",
     "Presentation",
     "RUNS_DIR",
@@ -19,6 +21,7 @@ __all__ = [
     "TaskView",
     "agent_store",
     "ancestor_views",
+    "context_error_store",
     "fingerprint",
     "finished_since_views",
     "init_store",
@@ -37,11 +40,51 @@ __all__ = [
 ]
 
 _DATA_DIR = paths.data_dir()
-_DB_PATH = os.path.join(_DATA_DIR, "records.db")
+_DB_NAME = "records.db"
+_DB_PATH = os.path.join(_DATA_DIR, _DB_NAME)
+_SWEEP_CONNECT_TIMEOUT_S = 10
 
 RUNS_DIR = "runs"
 
 PRESENTATION_WINDOW_DAYS = 30
+CONTEXT_ERROR_WINDOW_DAYS = 30
+
+
+def _sweep_table_sync(
+    table: str,
+    key_col: str,
+    ts_col: str,
+    days: int,
+    data_dir: str,
+) -> list[str]:
+    if not (table.isidentifier() and key_col.isidentifier() and ts_col.isidentifier()):
+        raise ValueError("table, key_col, and ts_col must be valid SQL identifiers")
+    db_path = os.path.join(data_dir, _DB_NAME)
+    if not os.path.exists(db_path):
+        return []
+    conn = sqlite3.connect(db_path, timeout=_SWEEP_CONNECT_TIMEOUT_S)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        if conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone() is None:
+            return []
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        stale = conn.execute(
+            f"SELECT {key_col} FROM {table} WHERE {ts_col} < ?",
+            (cutoff,),
+        ).fetchall()
+        keys = [row[0] for row in stale]
+        if keys:
+            conn.executemany(
+                f"DELETE FROM {table} WHERE {key_col} = ?",
+                [(key,) for key in keys],
+            )
+            conn.commit()
+        return keys
+    finally:
+        conn.close()
 
 
 @dataclass
@@ -86,6 +129,12 @@ CREATE TABLE IF NOT EXISTS presentations (
   title        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_presentation_at ON presentations(presented_at);
+CREATE TABLE IF NOT EXISTS context_error_cache (
+  normalized_error    TEXT PRIMARY KEY,
+  is_context_overflow INTEGER NOT NULL,
+  classified_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_error_at ON context_error_cache(classified_at);
 """
 
 _conn: aiosqlite.Connection | None = None
@@ -380,11 +429,74 @@ class _PresentationRecordStore(_SharedRecordStore):
         await db.commit()
         return cursor.rowcount
 
+    def sweep_sync(
+        self,
+        days: int = PRESENTATION_WINDOW_DAYS,
+        data_dir: str | None = None,
+    ) -> list[str]:
+        """Remove presentation rows older than the day window."""
+        target_dir = data_dir if data_dir is not None else os.path.dirname(_DB_PATH)
+        return _sweep_table_sync("presentations", "id", "presented_at", days, target_dir)
+
+
+class _ContextErrorRecordStore(_SharedRecordStore):
+    """Reads and writes cached context error rows."""
+
+    async def get(
+        self,
+        normalized_error: str,
+        window_days: int = CONTEXT_ERROR_WINDOW_DAYS,
+    ) -> bool | None:
+        """Return the cached overflow verdict when fresh, or None."""
+        db = _db()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+        cursor = await db.execute(
+            "SELECT is_context_overflow FROM context_error_cache"
+            " WHERE normalized_error = ? AND classified_at >= ?",
+            (normalized_error, cutoff),
+        )
+        row = await cursor.fetchone()
+        return bool(row[0]) if row is not None else None
+
+    async def put(
+        self,
+        normalized_error: str,
+        is_context_overflow: bool,
+        classified_at: str,
+    ) -> None:
+        """Save or update a cached overflow verdict."""
+        db = _db()
+        await db.execute(
+            "INSERT INTO context_error_cache (normalized_error, is_context_overflow, classified_at)"
+            " VALUES (?, ?, ?)"
+            " ON CONFLICT(normalized_error) DO UPDATE SET"
+            " is_context_overflow = excluded.is_context_overflow,"
+            " classified_at = excluded.classified_at",
+            (normalized_error, int(is_context_overflow), classified_at),
+        )
+        await db.commit()
+
+    def sweep_sync(
+        self,
+        days: int = CONTEXT_ERROR_WINDOW_DAYS,
+        data_dir: str | None = None,
+    ) -> list[str]:
+        """Remove cached context error rows older than the day window."""
+        target_dir = data_dir if data_dir is not None else os.path.dirname(_DB_PATH)
+        return _sweep_table_sync(
+            "context_error_cache",
+            "normalized_error",
+            "classified_at",
+            days,
+            target_dir,
+        )
+
 
 task_store = _TaskRecordStore()
 tool_store = _ToolRecordStore()
 presentation_store = _PresentationRecordStore()
 agent_store = _AgentRecordStore()
+context_error_store = _ContextErrorRecordStore()
 
 
 def init_store(db_path: str | None = None) -> _TaskRecordStore:
@@ -396,13 +508,22 @@ def init_store(db_path: str | None = None) -> _TaskRecordStore:
     Returns:
         The task store.
     """
-    global _DB_PATH, task_store, tool_store, presentation_store, agent_store
+    global _DB_PATH, task_store, tool_store, presentation_store, agent_store, context_error_store
     if db_path is not None:
         _DB_PATH = db_path
-    task_store = _TaskRecordStore()
-    tool_store = _ToolRecordStore()
-    presentation_store = _PresentationRecordStore()
-    agent_store = _AgentRecordStore()
+    (
+        task_store,
+        tool_store,
+        presentation_store,
+        agent_store,
+        context_error_store,
+    ) = (
+        _TaskRecordStore(),
+        _ToolRecordStore(),
+        _PresentationRecordStore(),
+        _AgentRecordStore(),
+        _ContextErrorRecordStore(),
+    )
     return task_store
 
 

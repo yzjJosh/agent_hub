@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from app.lib.reason.reason import reason
+from app.lib.shared.config import Backend
 
 _REASON_VARS = (
     "REASON_BACKEND_URL", "REASON_MODEL", "REASON_API_KEY", "VISION_MODEL",
@@ -409,9 +410,8 @@ async def test_reason_omits_model_and_key_when_unset(_mock_llm_response: AsyncMo
     assert "Authorization" not in _mock_llm_response.call_args.kwargs["headers"]
 
 
-async def test_reason_thinking_uses_thinking_model_and_key(_mock_llm_response: AsyncMock,
-                                                           monkeypatch: pytest.MonkeyPatch) -> None:
-    """Thinking mode takes its URL, model and key from the REASON_THINKING_* settings."""
+def _set_both_backends_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Populate both normal and thinking backend environment variables."""
     monkeypatch.setenv("REASON_BACKEND_URL", "http://normal:8080")
     monkeypatch.setenv("REASON_MODEL", "fast")
     monkeypatch.setenv("REASON_API_KEY", "sk-normal")
@@ -419,12 +419,52 @@ async def test_reason_thinking_uses_thinking_model_and_key(_mock_llm_response: A
     monkeypatch.setenv("REASON_THINKING_MODEL", "deep")
     monkeypatch.setenv("REASON_THINKING_API_KEY", "sk-think")
 
+
+async def test_reason_thinking_uses_thinking_model_and_key(_mock_llm_response: AsyncMock,
+                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """Thinking mode takes its URL, model and key from the REASON_THINKING_* settings."""
+    _set_both_backends_env(monkeypatch)
+
     await reason(prompt="test", thinking=True)
 
     url, payload = _get_call_args_payload(_mock_llm_response)
     assert url == "http://thinking:9000/v1/chat/completions"
     assert payload["model"] == "deep"
     assert _mock_llm_response.call_args.kwargs["headers"] == {"Authorization": "Bearer sk-think"}
+
+
+async def test_reason_explicit_backend_overrides_env(
+    _mock_llm_response: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit backend overrides environment URLs, models, and keys."""
+    _set_both_backends_env(monkeypatch)
+    given = Backend(url="http://custom:7777/v1", model="custom-model", api_key="sk-custom")
+
+    result, status = await reason(prompt="classify this", thinking=True, backend=given)
+
+    assert status == 0
+    assert "Mocked response from LLM" in result
+    url, payload = _get_call_args_payload(_mock_llm_response)
+    assert url == "http://custom:7777/v1/chat/completions"
+    assert payload["model"] == "custom-model"
+    assert _mock_llm_response.call_args.kwargs["headers"] == {"Authorization": "Bearer sk-custom"}
+
+
+async def test_reason_explicit_backend_without_env_omits_unset_model_and_key(
+    _mock_llm_response: AsyncMock,
+) -> None:
+    """An explicit backend with no model or key works with no env set and omits both."""
+    given = Backend(url="http://custom:7777/v1", model=None, api_key=None)
+
+    result, status = await reason(prompt="classify this", backend=given)
+
+    assert status == 0
+    assert "Mocked response from LLM" in result
+    url, payload = _get_call_args_payload(_mock_llm_response)
+    assert url == "http://custom:7777/v1/chat/completions"
+    assert "model" not in payload
+    assert "Authorization" not in _mock_llm_response.call_args.kwargs["headers"]
 
 
 # =============================================================================

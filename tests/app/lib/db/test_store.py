@@ -1,3 +1,5 @@
+import sqlite3
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -5,6 +7,7 @@ from typing import Protocol
 import pytest
 
 import app.lib.db.store as store_module
+from tests.app.conftest import store_infra
 
 
 class _TaskStore(Protocol):
@@ -33,14 +36,10 @@ async def _seed_completed(
 
 
 @pytest.fixture
-async def stores(tmp_path: Path) -> tuple[_TaskStore, _ToolStore]:
+async def stores(tmp_path: Path) -> AsyncIterator[tuple[_TaskStore, _ToolStore]]:
     """Open both stores on a throwaway database."""
-    previous = store_module.task_store
-    store_module.init_store(str(tmp_path / "records.db"))
-    await store_module.task_store.open()
-    yield store_module.task_store, store_module.tool_store
-    await store_module.task_store.close()
-    store_module.task_store = previous
+    async for _ in store_infra(tmp_path):
+        yield store_module.task_store, store_module.tool_store
 
 
 class TestTaskRecordStore:
@@ -132,15 +131,12 @@ class TestTaskRecordStore:
         task, _ = stores
         assert task.data_dir == str(tmp_path)
 
-    async def test_get_before_open_raises(self, tmp_path: Path) -> None:
-        previous = store_module.task_store
-        store_module.init_store(str(tmp_path / "records.db"))
-        try:
-            await store_module.task_store.close()
-            with pytest.raises(RuntimeError, match="record store is not open"):
-                await store_module.task_store.get("any")
-        finally:
-            store_module.task_store = previous
+    async def test_get_before_open_raises(
+            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+        task, _ = stores
+        await task.close()
+        with pytest.raises(RuntimeError, match="record store is not open"):
+            await task.get("any")
 
 
 class TestToolRecordStore:
@@ -261,6 +257,71 @@ class TestPresentationStore:
         )
         p = await store_module.presentation_store.get("f" * 16)
         assert p is not None and p.title is None
+
+    async def test_sweep_sync_defaults_to_active_store_dir(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _task, _tool = stores
+        decoy_dir = tmp_path / "decoy_env"
+        decoy_dir.mkdir()
+        monkeypatch.setenv("DATA_DIR", str(decoy_dir))
+        now = _now()
+        await store_module.presentation_store.insert(
+            "old-pres", _iso(now - timedelta(days=31)), "/view/old", ["a"],
+        )
+        await store_module.presentation_store.insert(
+            "new-pres", _iso(now - timedelta(days=1)), "/view/new", ["b"],
+        )
+        removed = store_module.presentation_store.sweep_sync()
+        assert removed == ["old-pres"]
+        assert await store_module.presentation_store.get("old-pres") is None
+        kept = await store_module.presentation_store.get("new-pres")
+        assert kept is not None and kept.id == "new-pres"
+
+    async def test_sweep_sync_with_explicit_data_dir_and_missing_cases(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+        tmp_path: Path,
+    ) -> None:
+        _task, _tool = stores
+        now = _now()
+        await store_module.presentation_store.insert(
+            "active-old", _iso(now - timedelta(days=40)), "/view/active", ["a"],
+        )
+        missing_dir = tmp_path / "missing_dir"
+        missing_dir.mkdir()
+        assert store_module.presentation_store.sweep_sync(days=30, data_dir=str(missing_dir)) == []
+
+        empty_db_dir = tmp_path / "empty_db_dir"
+        empty_db_dir.mkdir()
+        (empty_db_dir / "records.db").touch()
+        assert store_module.presentation_store.sweep_sync(days=30, data_dir=str(empty_db_dir)) == []
+
+        external_dir = tmp_path / "external_pres"
+        external_dir.mkdir()
+        conn = sqlite3.connect(external_dir / "records.db")
+        conn.execute(
+            "CREATE TABLE presentations ("
+            "  id TEXT PRIMARY KEY, presented_at TEXT NOT NULL,"
+            "  url_path TEXT NOT NULL, files TEXT NOT NULL, task_id TEXT, title TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO presentations (id, presented_at, url_path, files) VALUES (?, ?, ?, ?)",
+            [
+                ("ext-old", _iso(now - timedelta(days=10)), "/view/1", "[]"),
+                ("ext-new", _iso(now - timedelta(days=1)), "/view/2", "[]"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        removed = store_module.presentation_store.sweep_sync(days=7, data_dir=str(external_dir))
+        assert removed == ["ext-old"]
+        kept_active = await store_module.presentation_store.get("active-old")
+        assert kept_active is not None and kept_active.id == "active-old"
 
 
 class TestToolStats:
@@ -475,3 +536,175 @@ class TestToolRecordRenderType:
         await task.insert_running("plain1", None, _iso(_now()), "runs/plain1")
         view = await store_module.task_view("plain1")
         assert view is not None and view.tool_name is None and view.render_type is None
+
+
+class TestContextErrorStore:
+    """Tests for the context error classification cache store."""
+
+    def test_window_constant(self) -> None:
+        assert store_module.CONTEXT_ERROR_WINDOW_DAYS == 30
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    async def test_put_and_get_roundtrip(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+        verdict: bool,
+    ) -> None:
+        _task, _tool = stores
+        recent = _iso(_now() - timedelta(days=1))
+        await store_module.context_error_store.put("max context <NUM> tokens", verdict, recent)
+        assert await store_module.context_error_store.get("max context <NUM> tokens") is verdict
+
+    async def test_get_missing_returns_none(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+    ) -> None:
+        _task, _tool = stores
+        assert await store_module.context_error_store.get("unknown template") is None
+
+    async def test_get_respects_ttl_window(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+    ) -> None:
+        _task, _tool = stores
+        old = _iso(_now() - timedelta(days=31))
+        await store_module.context_error_store.put("stale template <NUM>", True, old)
+        assert await store_module.context_error_store.get("stale template <NUM>") is None
+        assert await store_module.context_error_store.get("stale template <NUM>", window_days=60) is True
+
+    async def test_put_upserts_existing_key(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+    ) -> None:
+        _task, _tool = stores
+        now = _now()
+        await store_module.context_error_store.put(
+            "template <NUM>",
+            False,
+            _iso(now - timedelta(days=35)),
+        )
+        assert await store_module.context_error_store.get("template <NUM>") is None
+        await store_module.context_error_store.put(
+            "template <NUM>",
+            True,
+            _iso(now - timedelta(days=1)),
+        )
+        assert await store_module.context_error_store.get("template <NUM>") is True
+        await store_module.context_error_store.put(
+            "template <NUM>",
+            False,
+            _iso(now),
+        )
+        assert await store_module.context_error_store.get("template <NUM>") is False
+
+    async def test_get_and_put_before_open_raise(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+    ) -> None:
+        task, _ = stores
+        await task.close()
+        with pytest.raises(RuntimeError, match="record store is not open"):
+            await store_module.context_error_store.get("any")
+        with pytest.raises(RuntimeError, match="record store is not open"):
+            await store_module.context_error_store.put("any", True, _iso(_now()))
+
+    async def test_sweep_sync_defaults_to_active_store_dir(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _task, _tool = stores
+        decoy_dir = tmp_path / "decoy_env_data"
+        decoy_dir.mkdir()
+        monkeypatch.setenv("DATA_DIR", str(decoy_dir))
+        now = _now()
+        await store_module.context_error_store.put(
+            "expired <NUM>",
+            True,
+            _iso(now - timedelta(days=31)),
+        )
+        await store_module.context_error_store.put(
+            "active <NUM>",
+            False,
+            _iso(now - timedelta(days=2)),
+        )
+        removed = store_module.context_error_store.sweep_sync()
+        assert removed == ["expired <NUM>"]
+        assert await store_module.context_error_store.get("expired <NUM>", window_days=365) is None
+        assert await store_module.context_error_store.get("active <NUM>") is False
+
+    async def test_sweep_sync_with_explicit_data_dir(
+        self,
+        stores: tuple[_TaskStore, _ToolStore],
+        tmp_path: Path,
+    ) -> None:
+        _task, _tool = stores
+        now = _now()
+        await store_module.context_error_store.put(
+            "keep in active store",
+            True,
+            _iso(now - timedelta(days=40)),
+        )
+        external_dir = tmp_path / "external"
+        external_dir.mkdir()
+        conn = sqlite3.connect(external_dir / "records.db")
+        conn.execute(
+            "CREATE TABLE context_error_cache ("
+            "  normalized_error TEXT PRIMARY KEY,"
+            "  is_context_overflow INTEGER NOT NULL,"
+            "  classified_at TEXT NOT NULL"
+            ")"
+        )
+        conn.executemany(
+            "INSERT INTO context_error_cache VALUES (?, ?, ?)",
+            [
+                ("external old", 1, _iso(now - timedelta(days=10))),
+                ("external fresh", 0, _iso(now - timedelta(days=1))),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        removed = store_module.context_error_store.sweep_sync(days=7, data_dir=str(external_dir))
+        assert removed == ["external old"]
+        assert store_module.context_error_store.sweep_sync(days=7, data_dir=str(external_dir)) == []
+        assert await store_module.context_error_store.get("keep in active store", window_days=365) is True
+
+        missing_dir = tmp_path / "missing_ctx"
+        missing_dir.mkdir()
+        assert store_module.context_error_store.sweep_sync(data_dir=str(missing_dir)) == []
+        empty_dir = tmp_path / "empty_ctx"
+        empty_dir.mkdir()
+        (empty_dir / "records.db").touch()
+        assert store_module.context_error_store.sweep_sync(data_dir=str(empty_dir)) == []
+
+    async def test_store_infra_restores_db_path_and_singletons(self, tmp_path: Path) -> None:
+        before_dir = store_module.task_store.data_dir
+        before_singletons = (
+            store_module.task_store,
+            store_module.tool_store,
+            store_module.presentation_store,
+            store_module.agent_store,
+            store_module.context_error_store,
+        )
+        nested_dir = tmp_path / "nested_store"
+        nested_dir.mkdir()
+        lifecycle = store_infra(nested_dir)
+        await anext(lifecycle)
+        try:
+            assert store_module.task_store.data_dir == str(nested_dir)
+            await store_module.context_error_store.put("nested", True, _iso(_now()))
+            assert await store_module.context_error_store.get("nested") is True
+        finally:
+            with pytest.raises(StopAsyncIteration):
+                await anext(lifecycle)
+
+        assert store_module.task_store.data_dir == before_dir
+        assert (
+            store_module.task_store,
+            store_module.tool_store,
+            store_module.presentation_store,
+            store_module.agent_store,
+            store_module.context_error_store,
+        ) == before_singletons

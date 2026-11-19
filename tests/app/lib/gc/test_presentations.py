@@ -2,6 +2,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.lib.gc.presentations import sweep_presentations
 
 
@@ -60,3 +62,12 @@ def test_custom_days(tmp_path: Path) -> None:
     _make_db(db, [("a" * 16, old), ("b" * 16, recent)])
     removed = sweep_presentations(1, str(tmp_path))
     assert "a" * 16 in removed
+
+
+def test_default_data_dir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=31)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+    _make_db(tmp_path / "records.db", [("a" * 16, old), ("b" * 16, recent)])
+    assert sweep_presentations(30) == ["a" * 16]

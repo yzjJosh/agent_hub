@@ -67,6 +67,7 @@ from openai.types.responses import (
 )
 import pytest
 
+import app.lib.agent.context as context_module
 import app.lib.agent.engine as engine
 import app.lib.db.store as store_module
 from app.lib.agent.engine import Agent, AgentRun
@@ -1290,6 +1291,161 @@ class TestPreservingConverter:
         ])
         assert content == [{"type": "text", "text": "t"}]
 
+    @staticmethod
+    def _wire_payload_chars(messages: list[dict], system_prompt: str = "") -> int:
+        total = len(system_prompt)
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, str):
+                total += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text":
+                        total += len(part["text"])
+                    elif part.get("type") == "image_url":
+                        total += len(part["image_url"]["url"])
+                    elif part.get("type") == "video_url":
+                        total += len(part["video_url"]["url"])
+            if isinstance(msg.get("refusal"), str):
+                total += len(msg["refusal"])
+            if isinstance(msg.get("reasoning_content"), str):
+                total += len(msg["reasoning_content"])
+            for tc in msg.get("tool_calls", []):
+                fn = tc["function"]
+                total += len(fn["name"]) + len(fn["arguments"])
+        return total
+
+    @pytest.mark.parametrize("model_name", [None, "default", "gpt-4o", "deepseek-reasoner"])
+    async def test_reasoning_preserved_across_models_and_turn_shapes_with_count_chars_parity(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        model_name: str | None,
+    ) -> None:
+        await self._drive_run(monkeypatch)
+        easy_asst = {"role": "assistant", "content": "easy reply"}
+        items: list[dict] = [
+            {"role": "user", "content": "start"},
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "s1"}, {"type": "summary_text", "text": ""}],
+                "content": [{"type": "reasoning_text", "text": "c1"}],
+            },
+            {
+                "type": "reasoning",
+                "summary": [],
+                "content": [{"type": "reasoning_text", "text": "c2"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "line1"},
+                    {"type": "output_text", "text": "line2"},
+                    {"type": "refusal", "refusal": "old"},
+                    {"type": "refusal", "refusal": "kept"},
+                ],
+            },
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "tool_thought"}]},
+            {"type": "function_call", "call_id": "c1", "name": "act", "arguments": '{"a":1}'},
+            {"type": "function_call_output", "call_id": "c1", "output": "done"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "easy_thought"}]},
+            easy_asst,
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "mid_standalone"}]},
+            {"role": "user", "content": "next"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "plain"}]},
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "tail_standalone"}]},
+        ]
+        messages = openai_chatcompletions.Converter.items_to_messages(items, model=model_name)
+        assert easy_asst == {"role": "assistant", "content": "easy reply"}
+        assert messages[1]["reasoning_content"] == "s1\nc1\nc2"
+        assert messages[1]["content"] == "line1\nline2"
+        assert messages[1]["refusal"] == "kept"
+        assert messages[2]["reasoning_content"] == "tool_thought"
+        assert messages[2]["content"] is None
+        assert messages[4] == {
+            "role": "assistant",
+            "content": "easy reply",
+            "reasoning_content": "easy_thought",
+        }
+        assert messages[5] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "mid_standalone",
+        }
+        assert "reasoning_content" not in messages[7]
+        assert messages[8] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "tail_standalone",
+        }
+        assert context_module.count_chars(items, system_prompt="sys") == self._wire_payload_chars(
+            messages, system_prompt="sys"
+        )
+
+    async def test_wire_run_replays_streamed_reasoning_on_default_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        clients: list[httpx.AsyncClient] = []
+        tool_call = {
+            "index": 0,
+            "id": "call_r1",
+            "type": "function",
+            "function": {"name": "counted_note", "arguments": '{"text":"v"}'},
+        }
+        turn_one_sse = (
+            _sse_chunk({"role": "assistant", "reasoning": "deliberate thought"}, None)
+            + _sse_chunk({"tool_calls": [tool_call]}, None)
+            + _sse_chunk({}, "tool_calls")
+            + b"data: [DONE]\n\n"
+        )
+        responses = [
+            httpx.Response(200, headers={"content-type": "text/event-stream"}, content=turn_one_sse),
+            _sse_text_response("final answer"),
+        ]
+        _spy, wire_messages = _wire_mock_openai(monkeypatch, responses, clients)
+        try:
+            agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+            agent.add_tool_adapter(_CountedTool())
+            run = await agent.run("do it")
+            assert await run.task.result() == "final answer"
+        finally:
+            await _close_clients(clients)
+        assert wire_messages[1][2]["role"] == "assistant"
+        assert wire_messages[1][2]["reasoning_content"] == "deliberate thought"
+
+    async def test_replay_callback_false_skips_reasoning_content_with_thinking_blocks_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Returning False from the replay check omits reasoning text even when keeping blocks."""
+        await self._drive_run(monkeypatch)
+        items: list[dict] = [
+            {"role": "user", "content": "start"},
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "hidden summary"}],
+                "content": [{"type": "reasoning_text", "text": "hidden content"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "visible reply"}],
+            },
+        ]
+        messages = openai_chatcompletions.Converter.items_to_messages(
+            items,
+            model="default",
+            preserve_thinking_blocks=True,
+            should_replay_reasoning_content=lambda _ctx: False,
+        )
+        assert len(messages) == 2
+        assert messages[1]["role"] == "assistant"
+        assert messages[1]["content"] == "visible reply"
+        assert "reasoning_content" not in messages[1]
+
 
 def _id_message(task_id: str) -> str:
     """The message a tool call makes when the agent asks for task ids only."""
@@ -2511,11 +2667,7 @@ class TestServerRetry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         run, run_mock, started = await self._park_in_backoff(monkeypatch)
-        run.cancel_run_loop()
-        with pytest.raises(RuntimeError, match="stopped on request"):
-            await run.task.result()
-        assert time.monotonic() - started < _CANCEL_MAX_ELAPSED
-        assert run.task.status.value == "failed"
+        await _assert_loop_cancelled_fast(run, started)
         assert run_mock.call_count == 1
 
     async def test_task_cancel_wakes_real_backoff_sleep(
@@ -2536,6 +2688,326 @@ class TestServerRetry:
             await run.task.result()
         assert run.task.status.value == "failed"
         assert run_mock.call_count == 1
+
+
+def _overflow_400_formal() -> BadRequestError:
+    return BadRequestError(
+        "context exceeded",
+        response=_http_response(400),
+        body={"error": {"code": "context_length_exceeded", "message": "too long"}},
+    )
+
+
+def _overflow_400_prose(tokens: int = 9000) -> BadRequestError:
+    return BadRequestError(
+        "bad request",
+        response=_http_response(400),
+        body={"error": {"message": f"Prompt tokens {tokens} exceed maximum limit 8192"}},
+    )
+
+
+def _overflow_500_prose() -> InternalServerError:
+    return InternalServerError(
+        "500",
+        response=_http_response(500),
+        body={"error": {"message": "Context window of 8192 tokens exceeded by 12000"}},
+    )
+
+
+def _stub_with_items(
+    error: Exception,
+    new_items: list[dict],
+    input_list: list[dict],
+) -> MagicMock:
+    stub = _failing_stub(error, events=[_reasoning_delta("part", 1)])
+    stub.new_items = list(new_items)
+    stub.to_input_list = MagicMock(return_value=list(input_list))
+    return stub
+
+
+async def _assert_loop_cancelled_fast(run: AgentRun, started: float) -> None:
+    run.cancel_run_loop()
+    with pytest.raises(RuntimeError, match="stopped on request"):
+        await run.task.result()
+    assert time.monotonic() - started < _CANCEL_MAX_ELAPSED
+    assert run.task.status.value == "failed"
+
+
+def _mock_classifier_http(
+    monkeypatch: pytest.MonkeyPatch,
+    verdicts: list[bool | int],
+) -> list[str]:
+    seen_urls: list[str] = []
+    queue = list(verdicts)
+
+    async def _post(
+        _self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict,
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        _ = (json, headers)
+        seen_urls.append(url)
+        item = queue.pop(0)
+        req = httpx.Request("POST", url)
+        if not isinstance(item, bool):
+            return httpx.Response(item, text="classifier error", request=req)
+        content = '{"is_context_overflow": true}' if item else '{"is_context_overflow": false}'
+        body = {"choices": [{"message": {"role": "assistant", "content": content}}]}
+        return httpx.Response(200, json=body, request=req)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+    return seen_urls
+
+
+class TestContextOverflowRecovery:
+    """Tests for shrinking message history and retrying when the model hits context limits."""
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            _overflow_400_prose(),
+            APIStatusError("413", response=_http_response(413), body=None),
+            APIError(
+                "An error occurred during streaming",
+                request=_http_request(),
+                body={"error": {"message": "SSE context limit 8192 exceeded by 9500"}},
+            ),
+        ],
+        ids=["bad_request_400_prose", "messageless_413", "sse_api_error_body"],
+    )
+    async def test_pre_retry_overflow_compacts_without_sleep_and_uses_agent_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        exc: Exception,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://wrong-env.test/")
+        given = config.Backend(url="http://agent-only.test/v1", model="m1", api_key="sk-1")
+        seen_urls = _mock_classifier_http(monkeypatch, [True])
+        history = [
+            {"role": "user", "content": "u" * 10},
+            {"id": "r1", "type": "reasoning", "summary": [{"type": "summary_text", "text": "r" * 40}]},
+            {"id": "a1", "role": "assistant", "content": "a" * 40},
+        ]
+        captured_inputs: list[str | list] = []
+        stubs = [
+            _stub_with_items(exc, [{"type": "marker"}], history),
+            _stub_result([_text_delta("recovered", 1)], "recovered"),
+        ]
+
+        def _factory(_sdk: _SdkAgent, inp: str | list) -> MagicMock:
+            captured_inputs.append(inp)
+            return stubs.pop(0)
+
+        _patch_runner_factory(monkeypatch, _factory)
+        agent = Agent(name="res", system_prompt="s" * 4, validator=_accept_any, backend=given)
+        run = await agent.run("u" * 10)
+        assert await run.task.result() == "recovered"
+        assert _sleep_delays() == []
+        assert captured_inputs[1] == [{"role": "user", "content": "u" * 10}]
+        if seen_urls:
+            assert seen_urls == ["http://agent-only.test/v1/chat/completions"]
+
+    @pytest.mark.fast_sleeps
+    async def test_server_500_overflow_defers_across_retries_then_compacts_and_resets_retries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        seen_urls = _mock_classifier_http(monkeypatch, [True])
+        history = [
+            {"role": "user", "content": "u" * 10},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "r" * 80}]},
+        ]
+        first = _stub_with_items(_overflow_500_prose(), [{"type": "turn"}], history)
+        mid_500 = [_failing_stub(_overflow_500_prose()) for _ in range(10)]
+        post_compact_transient = _failing_stub(_conn_error())
+        final = _stub_result([_text_delta("done", 1)], "done")
+        run_mock = _patch_runner_seq(monkeypatch, [first, *mid_500, post_compact_transient, final])
+
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        run = await agent.run("u" * 10)
+        assert await run.task.result() == "done"
+        assert len(seen_urls) == 1
+        assert run_mock.call_count == 13
+        assert _sleep_delays() == _backoff_delays(10) + [_FIRST_DELAY]
+        assert run_mock.call_args_list[11].args[1] == [{"role": "user", "content": "u" * 10}]
+
+    @pytest.mark.fast_sleeps
+    async def test_partial_turn_new_items_preserved_during_compaction(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        partial_history = [
+            {"role": "user", "content": "do it"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "t" * 120}]},
+            {"type": "function_call", "call_id": "c1", "name": "note", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "saved_evidence"},
+        ]
+        first = _stub_with_items(_overflow_400_formal(), [{"type": "tool"}], partial_history)
+        second = _stub_result([_text_delta("final", 1)], "final")
+        run_mock = _patch_runner_seq(monkeypatch, [first, second])
+
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        run = await agent.run("do it")
+        assert await run.task.result() == "final"
+        resumed_input = run_mock.call_args_list[1].args[1]
+        assert resumed_input == [
+            {"role": "user", "content": "do it"},
+            {"type": "function_call", "call_id": "c1", "name": "note", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "saved_evidence"},
+        ]
+
+    @pytest.mark.fast_sleeps
+    async def test_unlimited_multi_turn_recompactions_until_unshrinkable_history_aborts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        base_user = {"role": "user", "content": "u" * 10}
+        turn_1 = [base_user, {"type": "reasoning", "summary": [{"text": "a" * 60}]}]
+        turn_2 = [base_user, {"role": "assistant", "content": "b" * 70}]
+        turn_3 = [base_user, {"type": "reasoning", "summary": [{"text": "c" * 80}]}]
+        turn_4_unshrinkable = [
+            base_user,
+            {"type": "function_call", "call_id": "c1", "name": "fn", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "o" * 100},
+            {"type": "reasoning", "summary": [{"text": "d" * 20}]},
+        ]
+        stubs = [
+            _stub_with_items(_overflow_400_formal(), [{"type": "t1"}], turn_1),
+            _stub_with_items(_overflow_400_formal(), [{"type": "t2"}], turn_2),
+            _stub_with_items(_overflow_400_formal(), [{"type": "t3"}], turn_3),
+            _stub_with_items(_overflow_400_formal(), [{"type": "t4"}], turn_4_unshrinkable),
+        ]
+        run_mock = _patch_runner_seq(monkeypatch, stubs)
+        agent = Agent(name="res", system_prompt="s", validator=_accept_any)
+        run = await agent.run("u" * 10)
+        with pytest.raises(BadRequestError):
+            await run.task.result()
+        assert run_mock.call_count == 4
+        events = await run.events()
+        assert len([e for e in events if e.type == "thinking"]) == 4
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize("use_async_filter", [False, True])
+    async def test_model_input_filter_guides_compaction_and_empty_filter_reraises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        use_async_filter: bool,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+
+        def _sync_filter(data: CallModelData) -> ModelInputData:
+            rewritten = [
+                {"type": "reasoning", "summary": [{"text": "short"}]}
+                if isinstance(item, dict) and item.get("id") == "already_pruned"
+                else item
+                for item in data.model_data.input
+            ]
+            return ModelInputData(input=rewritten, instructions=data.model_data.instructions)
+
+        async def _async_filter(data: CallModelData) -> ModelInputData:
+            return _sync_filter(data)
+
+        history = [
+            {"role": "user", "content": "u" * 20},
+            {"id": "already_pruned", "type": "reasoning", "summary": [{"text": "p" * 400}]},
+            {"id": "unpruned_asst", "role": "assistant", "content": "a" * 60},
+            {"id": "recent_asst", "role": "assistant", "content": "k" * 10},
+        ]
+        stubs = [
+            _stub_with_items(_overflow_400_formal(), [{"type": "t1"}], history),
+            _stub_result([_text_delta("ok", 1)], "ok"),
+        ]
+        run_mock = _patch_runner_seq(monkeypatch, stubs)
+        chosen_filter = _async_filter if use_async_filter else _sync_filter
+        agent = Agent(name="res", system_prompt="s", validator=_accept_any, model_input_filter=chosen_filter)
+        run = await agent.run("u" * 20)
+        assert await run.task.result() == "ok"
+        compacted_sent = run_mock.call_args_list[1].args[1]
+        assert [item.get("id", item.get("role")) for item in compacted_sent] == ["user", "recent_asst"]
+
+        def _empty_filter(data: CallModelData) -> ModelInputData:
+            return ModelInputData(input=[], instructions=data.model_data.instructions)
+
+        empty_agent = Agent(name="res", system_prompt="s", validator=_accept_any, model_input_filter=_empty_filter)
+        _patch_runner_seq(monkeypatch, [_stub_with_items(_overflow_400_formal(), [{"type": "t1"}], history)])
+        empty_run = await empty_agent.run("u" * 20)
+        with pytest.raises(BadRequestError):
+            await empty_run.task.result()
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize("mode", ["classifier_http_error", "first_turn_str_unshrinkable"])
+    async def test_classifier_or_compaction_error_reraises_original_exception(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        if mode == "classifier_http_error":
+            _mock_classifier_http(monkeypatch, [500])
+            err = _overflow_400_prose(15000)
+        else:
+            err = _overflow_400_formal()
+        _patch_runner_seq(monkeypatch, [_failing_stub(err)])
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        run = await agent.run("unshrinkable first turn prompt")
+        with pytest.raises(BadRequestError):
+            await run.task.result()
+
+    @pytest.mark.parametrize("cancel_kind", ["loop_in_classify", "loop_in_compact", "task_in_classify"])
+    async def test_cancellation_aborts_inflight_classification_or_compaction_without_recancelling_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cancel_kind: str,
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        parked = asyncio.Event()
+
+        async def _slow_filter(_data: CallModelData) -> ModelInputData:
+            parked.set()
+            await asyncio.sleep(30)
+            return ModelInputData(input=[], instructions="sys")
+
+        async def _slow_post(
+            _self: httpx.AsyncClient,
+            url: str,
+            *,
+            json: dict,
+            headers: dict[str, str],
+        ) -> httpx.Response:
+            _ = (json, headers)
+            parked.set()
+            await asyncio.sleep(30)
+            return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+        if cancel_kind in ("loop_in_classify", "task_in_classify"):
+            monkeypatch.setattr(httpx.AsyncClient, "post", _slow_post)
+            stub = _failing_stub(_overflow_400_prose(20000))
+            agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        else:
+            history = [
+                {"role": "user", "content": "u" * 10},
+                {"type": "reasoning", "summary": [{"text": "r" * 80}]},
+            ]
+            stub = _stub_with_items(_overflow_400_formal(), [{"type": "t1"}], history)
+            agent = Agent(name="res", system_prompt="sys", validator=_accept_any, model_input_filter=_slow_filter)
+
+        _patch_runner_seq(monkeypatch, [stub])
+        run = await agent.run("do it")
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        started = time.monotonic()
+        if cancel_kind == "task_in_classify":
+            await task_manager.cancel(str(run.task.id))
+            assert time.monotonic() - started < _CANCEL_MAX_ELAPSED
+            assert run.task.status.value == "cancelled"
+        else:
+            await _assert_loop_cancelled_fast(run, started)
+        assert stub.cancel.call_count == 1
 
 
 @pytest.mark.live
