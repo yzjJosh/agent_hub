@@ -161,6 +161,12 @@ Rules for agent-driven development:
 
 Refer to the **code-standard** skill for the full set of coding conventions and rules. The skill must be loaded before writing any new code.
 
+### Simplicity over complexity
+
+- Never introduce new modules, extra layers of indirection, abstractions, or complex control flow unless strictly justified.
+- Keep helpers inside the module that owns the underlying resource or data (e.g., `records.db` helpers belong in `app/lib/db/store.py`, not in a separate cross-package helper module) unless genuinely independent and shared across unrelated domains; never invert module dependencies to share a small helper.
+- Whenever logic can be expressed more directly with fewer moving parts, simpler control flow, and fewer files, the simpler form is required; unjustified complexity is a code-review failure.
+
 ### Async Requirement
 
 The server is asyncio-based; never block the event loop.
