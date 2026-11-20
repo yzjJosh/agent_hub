@@ -225,9 +225,7 @@ def _prune_screenshots(items: list, name_by_call: dict[str, str]) -> list:
     ]
 
 
-def _prune_model_history(data: CallModelData) -> ModelInputData:
-    """Keep current tab dumps and the newest browser screenshot."""
-    items = data.model_data.input
+def _tool_names_by_call(items: list) -> dict[str, str]:
     name_by_call: dict[str, str] = {}
     for item in items:
         if isinstance(item, dict) and item.get("type") == "function_call":
@@ -235,6 +233,34 @@ def _prune_model_history(data: CallModelData) -> ModelInputData:
             name = item.get("name")
             if call_id is not None and name is not None:
                 name_by_call[call_id] = name
+    return name_by_call
+
+
+def _compact_dom_dumps_sync(items: list[dict], verbose: bool = False) -> list[dict] | None:
+    name_by_call = _tool_names_by_call(items)
+    observation = _latest_observation(items, name_by_call)
+    compacted: list[dict] = []
+    omitted = 0
+    for item in items:
+        if item.get("type") == "function_call_output" and name_by_call.get(item.get("call_id")) == "dump_page":
+            match = _DOM_TARGET_LINE.search(_output_text(item))
+            if match is not None:
+                item = _prune_dump(item, match.group(1), item is observation)
+                omitted += 1
+        compacted.append(item)
+    if verbose:
+        print(f"[browser_use.compact] omitted {omitted} DOM bodies", flush=True)
+    return compacted if omitted else None
+
+
+async def _compact_dom_dumps(items: list[dict]) -> list[dict] | None:
+    return await asyncio.to_thread(_compact_dom_dumps_sync, items, True)
+
+
+def _prune_model_history(data: CallModelData) -> ModelInputData:
+    """Keep current tab dumps and the newest browser screenshot."""
+    items = data.model_data.input
+    name_by_call = _tool_names_by_call(items)
     items = _prune_dom_dumps(items, name_by_call)
     items = _prune_screenshots(items, name_by_call)
     return ModelInputData(input=items, instructions=data.model_data.instructions)
@@ -834,6 +860,7 @@ def _build_agent(tools: tuple[Tool, ...], backend: config.Backend) -> Agent:
         backend=backend,
         tool_results_by_id=False,
         model_input_filter=_prune_model_history,
+        compact_hook=_compact_dom_dumps,
     )
     for tool in tools:
         agent.add_tool_adapter(tool)

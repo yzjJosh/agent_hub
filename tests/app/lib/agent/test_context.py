@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+import asyncio
 import json
 import httpx
 from agents import ModelBehaviorError
@@ -842,6 +843,128 @@ class TestCompact:
         """Empty inputs, unshrinkable histories, and single-item lists raise CompactionError."""
         with pytest.raises(CompactionError):
             await compact(items)
+
+    @pytest.mark.parametrize("is_async", [False, True])
+    @pytest.mark.parametrize("global_items", [True, False])
+    async def test_hook_sees_exhausted_history_once(self, is_async: bool, global_items: bool) -> None:
+        """The fallback trims tool output after global removals finish."""
+        protected = [
+            {"role": "user", "content": "keep instructions"},
+            {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "x" * 500},
+        ]
+        items = protected + ([
+            {"type": "reasoning", "summary": [{"text": "thinking"}]},
+            {"role": "assistant", "content": "reply"},
+        ] if global_items else [])
+        seen: list[list[dict]] = []
+
+        def trim(candidate: list[dict]) -> list[dict]:
+            seen.append(json.loads(json.dumps(candidate)))
+            candidate[-1]["output"] = "archived"
+            return candidate
+
+        async def trim_async(candidate: list[dict]) -> list[dict]:
+            return trim(candidate)
+
+        result = await compact(items, compact_hook=trim_async if is_async else trim)
+        assert seen == [protected]
+        assert result == protected[:2] + [{**protected[-1], "output": "archived"}]
+        assert protected[-1]["output"] == "x" * 500
+
+    @pytest.mark.parametrize("failure", ["global_success", "empty", "zero", "baseline", "tier"])
+    async def test_hook_is_not_called_before_global_exhaustion(self, failure: str) -> None:
+        """Default shrinking success and size check errors skip the hook."""
+        items = [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a" * 100}]
+
+        def forbidden(_candidate: list[dict]) -> None:
+            pytest.fail("Hook ran before global policy exhaustion")
+
+        def measure(candidate: list[dict]) -> int:
+            if failure == "baseline" or (failure == "tier" and len(candidate) == 1):
+                raise CompactionError("measurement failed")
+            return 0 if failure == "zero" else count_chars(candidate)
+
+        if failure == "global_success":
+            assert await compact(items, compact_hook=forbidden) == items[:1]
+        else:
+            with pytest.raises(CompactionError):
+                await compact([] if failure == "empty" else items, measure=measure, compact_hook=forbidden)
+
+    @pytest.mark.parametrize("proposal", [None, [], "invalid", ["invalid"], [{"role": "user", "content": "x" * 1000}]])
+    async def test_hook_rejects_declined_empty_invalid_or_large_results(self, proposal: list | str | None) -> None:
+        """A rejected proposal does not change the original conversation."""
+        items = [{"role": "user", "content": "keep"}]
+
+        def trim(_candidate: list[dict]) -> list | str | None:
+            return proposal
+
+        with pytest.raises(CompactionError):
+            await compact(items, compact_hook=trim)
+        assert items == [{"role": "user", "content": "keep"}]
+
+    @pytest.mark.parametrize("mode", ["decline", "raise", "cancel", "unchanged"])
+    async def test_hook_nested_mutations_are_isolated(self, mode: str) -> None:
+        """Rejected changes do not touch the input, and cancellation still raises."""
+        items = [{"role": "user", "content": [{"type": "input_text", "text": "keep"}]}]
+        original = json.loads(json.dumps(items))
+
+        async def trim(candidate: list[dict]) -> list[dict] | None:
+            candidate[0]["content"][0]["text"] = "change"
+            if mode == "raise":
+                raise ValueError("bad hook")
+            if mode == "cancel":
+                raise asyncio.CancelledError
+            return candidate if mode == "unchanged" else None
+
+        expected_error = asyncio.CancelledError if mode == "cancel" else CompactionError
+        with pytest.raises(expected_error):
+            await compact(items, compact_hook=trim)
+        assert items == original
+
+    async def test_hook_cannot_invent_history_after_global_removal_empties_it(self) -> None:
+        """An empty exhausted history is passed through but cannot be replaced."""
+        seen: list[list[dict]] = []
+
+        def trim(candidate: list[dict]) -> list[dict]:
+            seen.append(candidate)
+            return [{"role": "user", "content": "invented"}]
+
+        with pytest.raises(CompactionError):
+            await compact([{"role": "assistant", "content": "x" * 100}], compact_hook=trim)
+        assert seen == [[]]
+
+    async def test_hook_threshold_uses_original_filtered_baseline_with_instructions(self) -> None:
+        """Global and custom reductions combine against one original size."""
+        items = [
+            {"role": "user", "content": "u" * 10},
+            {"type": "function_call_output", "call_id": "c1", "output": "x" * 70},
+            {"role": "assistant", "content": "a" * 40},
+        ]
+
+        def trim(candidate: list[dict]) -> list[dict]:
+            candidate[1]["output"] = "x" * 40
+            return candidate
+
+        result = await compact(items, system_prompt="s" * 20, compact_hook=trim)
+        assert count_chars(result, system_prompt="s" * 20) == 70
+
+    async def test_hook_cannot_claim_progress_hidden_by_input_filter(self) -> None:
+        """Removing bytes already filtered out does not satisfy the size check."""
+        items = [
+            {"role": "user", "content": "u" * 50},
+            {"type": "function_call_output", "call_id": "c1", "output": "x" * 500},
+        ]
+
+        def trim(candidate: list[dict]) -> list[dict]:
+            candidate[1]["output"] = "archived"
+            return candidate
+
+        def measure(candidate: list[dict]) -> int:
+            return count_chars(candidate[:1], system_prompt="instructions")
+
+        with pytest.raises(CompactionError):
+            await compact(items, measure=measure, compact_hook=trim)
 
 
 @pytest.mark.live

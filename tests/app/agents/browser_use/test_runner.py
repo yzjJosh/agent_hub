@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -14,7 +14,9 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from agents.run_config import CallModelData, ModelInputData
+from agents import Agent as SdkAgent, Runner
+from agents.run_config import CallModelData, ModelInputData, RunConfig
+from openai import BadRequestError
 
 from app.agents.browser_use import runner as runner_module
 from app.agents.browser_use.checkpoint import CheckpointTool
@@ -28,6 +30,7 @@ from app.agents.browser_use.models import (
 )
 from app.agents.browser_use.session import Action
 from app.lib.shared import config
+from app.lib.browser import browser_manager
 from app.lib.tool.base import Tool, ToolResult
 from app.tools.read_media_or_doc import read_media_or_doc_tool
 from app.tools.task_tool import task_tool
@@ -56,6 +59,7 @@ _TENTH = 0.1
 _THIRD = 0.3
 _NETWORK_IDLE_TIMEOUT_MS = 2000
 _LIVE_TIMEOUT_S = 600
+_OVERSIZED_BODY_REPEAT = 20000
 _COMPLETED_RAW = json.dumps({"status": "completed", "summary": "done"})
 _IMPOSSIBLE_RAW = json.dumps({"status": "impossible", "summary": "cannot"})
 _LLM_BACKEND_VARS = (
@@ -1545,6 +1549,207 @@ class TestPruneOlderScreenshots:
         assert "New dump" not in result.input[5]["output"]
         assert "Checkpoint: later" in result.input[5]["output"]
         assert filter_fn(_call_data(result.input)).input == result.input
+
+
+def _overflow_error() -> BadRequestError:
+    request = httpx.Request("POST", "http://model.test")
+    return BadRequestError("overflow", response=httpx.Response(400, request=request), body={"code": "context_length_exceeded"})
+
+
+def _overflow_stream(
+    history: list[dict],
+    error: Exception | None,
+    *,
+    new_items: list[dict] | None = None,
+) -> MagicMock:
+    async def events() -> AsyncIterator:
+        if error is not None:
+            raise error
+        for event in ():
+            yield event
+
+    return MagicMock(
+        stream_events=events,
+        new_items=history if new_items is None else new_items,
+        to_input_list=lambda: history,
+        final_output=_COMPLETED_RAW if error is None else None,
+    )
+
+
+@pytest.fixture
+def disconnected_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide a mock browser with no open pages."""
+    browser = MagicMock(contexts=[MagicMock()], close=AsyncMock())
+    playwright = MagicMock(stop=AsyncMock())
+    playwright.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+    monkeypatch.setattr(browser_manager, "async_playwright", lambda: MagicMock(start=AsyncMock(return_value=playwright)))
+
+
+class TestBrowserCompaction:
+    """Overflow fallback archives page dumps in the browser agent."""
+
+    @pytest.mark.usefixtures("disconnected_browser")
+    @pytest.mark.parametrize("multipart", [False, True])
+    @pytest.mark.parametrize("archive", [False, True])
+    async def test_overflow_omits_open_tab_dumps_and_preserves_tool_history(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, multipart: bool, archive: bool,
+    ) -> None:
+        """Both open tab bodies are archived while current and historical evidence survive."""
+        _set_thinking_backend(monkeypatch)
+        checkpoint = "Checkpoint: newest\n" if archive else ""
+        observation = "1. tab1 — Lens\n2. tab2 — Page\nstatus: success\n"
+        latest = observation + checkpoint + "Observation time: now\nDOM capture interval: start to end\nDOM dump target: tab2\n" + "BODY2" * _OVERSIZED_BODY_REPEAT
+        latest_output = [_text_part(latest), _image_part("latest-image")] if multipart else latest
+        history = [
+            {"role": "user", "content": "goal"},
+            _function_call_item("d1", "dump_page"),
+            _function_output_item("d1", observation + "Checkpoint: first\nDOM dump target: tab1\n![image](data:image/jpeg;base64," + "A" * 300000 + ")"),
+            _function_call_item("d2", "dump_page"),
+            _function_output_item("d2", latest_output),
+            _function_call_item("h1", "checkpoint"),
+            _function_output_item("h1", [_text_part("Historical checkpoint: saved\nDOM dump target: tab1\nEvidence"), _image_part("historical-image")]),
+            {"role": "assistant", "content": "small reply"},
+        ]
+        original = json.loads(json.dumps(history))
+        captured: list[list[dict]] = []
+        error = _overflow_error()
+
+        def run_streamed(agent: SdkAgent, items: str | list, *, run_config: RunConfig, max_turns: int | None) -> MagicMock:
+            _ = max_turns
+            if isinstance(items, str):
+                return _overflow_stream(history, error)
+            filtered = run_config.call_model_input_filter(CallModelData(model_data=ModelInputData(input=items, instructions=agent.instructions), agent=agent, context=None))
+            captured.append(filtered.input)
+            assert run_config.call_model_input_filter(CallModelData(model_data=filtered, agent=agent, context=None)).input == filtered.input
+            return _overflow_stream(items, None)
+
+        monkeypatch.setattr(Runner, "run_streamed", run_streamed)
+        result = await runner_module.run_browser_use("goal", str(tmp_path / "downloads"), str(tmp_path))
+        assert result.status == "completed"
+        assert len(captured) == 1
+        kept = captured[0]
+        assert [item.get("call_id") for item in kept] == [None, "d1", "d1", "d2", "d2", "h1", "h1"]
+        assert kept[1] == history[1]
+        assert kept[3] == history[3]
+        assert "data:image" not in kept[2]["output"]
+        assert "Checkpoint: first" in kept[2]["output"]
+        text = kept[4]["output"][0]["text"] if multipart else kept[4]["output"]
+        assert observation in text
+        assert "Archived DOM target: tab2" in text
+        assert "BODY2" not in text
+        assert "Observation time: now" in text
+        assert "DOM capture interval: start to end" in text
+        assert ("checkpoint_id newest" if archive else "Checkpoint archive unavailable.") in text
+        if multipart:
+            assert kept[4]["output"][1] == _image_part("latest-image")
+        assert kept[5:7] == history[5:7]
+        assert history == original
+
+    @pytest.mark.usefixtures("disconnected_browser")
+    @pytest.mark.parametrize("repeat_after_compaction", [True, False])
+    async def test_overflow_stops_when_no_unarchived_dumps_remain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, repeat_after_compaction: bool,
+    ) -> None:
+        """Overflow stops without another model call when every page dump is already archived."""
+        _set_thinking_backend(monkeypatch)
+        observation = "1. tab1 — Page\nstatus: success\n"
+        stub = (
+            "Archived DOM target: tab1\nCheckpoint: old\n"
+            "DOM artifact available in the checkpoint archive.\n"
+            "Read checkpoint with action read, checkpoint_id old, target_id tab1, kind dom."
+        )
+        tail = (
+            [
+                _function_call_item("d1", "dump_page"),
+                _function_output_item("d1", observation + "Checkpoint: first\nDOM dump target: tab1\n" + "BODY1" * _OVERSIZED_BODY_REPEAT),
+            ]
+            if repeat_after_compaction
+            else [
+                _function_call_item("c1", "open_url"),
+                _function_output_item("c1", observation + "LARGE" * _OVERSIZED_BODY_REPEAT),
+            ]
+        )
+        history = [
+            {"role": "user", "content": "goal"},
+            _function_call_item("d0", "dump_page"),
+            _function_output_item("d0", stub),
+            *tail,
+        ]
+        original = json.loads(json.dumps(history))
+        calls: list[str | list] = []
+        error = _overflow_error()
+
+        def run_streamed(agent: SdkAgent, items: str | list, *, run_config: RunConfig, max_turns: int | None) -> MagicMock:
+            _ = agent, run_config, max_turns
+            calls.append(json.loads(json.dumps(items)))
+            if isinstance(items, str):
+                return _overflow_stream(history, error)
+            return _overflow_stream(items, error, new_items=[])
+
+        monkeypatch.setattr(Runner, "run_streamed", run_streamed)
+        with pytest.raises(BadRequestError) as caught:
+            await runner_module.run_browser_use("goal", str(tmp_path / "downloads"), str(tmp_path))
+        assert caught.value is error
+        assert len(calls) == (2 if repeat_after_compaction else 1)
+        if repeat_after_compaction:
+            resumed = calls[1]
+            assert isinstance(resumed, list)
+            assert resumed[2]["output"] == stub
+            assert "Archived DOM target: tab1" in resumed[4]["output"]
+            assert "BODY1" not in resumed[4]["output"]
+        assert history == original
+
+    @pytest.mark.usefixtures("disconnected_browser")
+    async def test_later_overflow_archives_new_dump_and_keeps_old_stub(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A second overflow archives a new page dump and leaves the old stub unchanged."""
+        _set_thinking_backend(monkeypatch)
+        observation = "1. tab1 — Page\nstatus: success\n"
+        first_history = [
+            {"role": "user", "content": "goal"},
+            _function_call_item("d1", "dump_page"),
+            _function_output_item("d1", observation + "Checkpoint: first\nObservation time: t1\nDOM dump target: tab1\n" + "BODY1" * _OVERSIZED_BODY_REPEAT),
+        ]
+        later_turn = [
+            _function_call_item("d2", "dump_page"),
+            _function_output_item("d2", observation + "Checkpoint: second\nObservation time: t2\nDOM dump target: tab1\n" + "BODY2" * _OVERSIZED_BODY_REPEAT),
+        ]
+        raw_inputs: list[list[dict]] = []
+        filtered_inputs: list[list[dict]] = []
+        error = _overflow_error()
+
+        def run_streamed(agent: SdkAgent, items: str | list, *, run_config: RunConfig, max_turns: int | None) -> MagicMock:
+            _ = max_turns
+            if isinstance(items, str):
+                return _overflow_stream(first_history, error)
+            raw_inputs.append(json.loads(json.dumps(items)))
+            if len(raw_inputs) == 1:
+                return _overflow_stream(list(items) + later_turn, error)
+            filtered = run_config.call_model_input_filter(
+                CallModelData(model_data=ModelInputData(input=items, instructions=agent.instructions), agent=agent, context=None)
+            )
+            filtered_inputs.append(filtered.input)
+            return _overflow_stream(items, None)
+
+        monkeypatch.setattr(Runner, "run_streamed", run_streamed)
+        result = await runner_module.run_browser_use("goal", str(tmp_path / "downloads"), str(tmp_path))
+        assert result.status == "completed"
+        assert len(raw_inputs) == 2
+        assert raw_inputs[1][2] == raw_inputs[0][2]
+        assert len(filtered_inputs) == 1
+        kept = filtered_inputs[0]
+        assert [item.get("call_id") for item in kept] == [None, "d1", "d1", "d2", "d2"]
+        assert "Archived DOM target: tab1" in kept[2]["output"]
+        assert "Checkpoint: first" in kept[2]["output"]
+        assert "Observation time: t1" in kept[2]["output"]
+        assert "status:" not in kept[2]["output"]
+        assert "BODY1" not in kept[2]["output"]
+        assert observation in kept[4]["output"]
+        assert "Archived DOM target: tab1" in kept[4]["output"]
+        assert "Checkpoint: second" in kept[4]["output"]
+        assert "Observation time: t2" in kept[4]["output"]
+        assert "BODY2" not in kept[4]["output"]
 
 
 @skip_if_no_chrome

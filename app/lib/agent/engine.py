@@ -698,6 +698,9 @@ class Agent[T]:
     and the run sends the model input the filter returns. Without it, the run sends
     the input unchanged.
 
+    With compact_hook set, the hook can shorten remaining items when default
+    shrinking is not enough, and later model calls in the run use that list.
+
     Server and connection errors during an attempt are retried before failing the run.
     """
 
@@ -781,6 +784,7 @@ class Agent[T]:
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         tool_results_by_id: bool = False,
         model_input_filter: CallModelInputFilter | None = None,
+        compact_hook: context.CompactHook | None = None,
     ) -> None:
         self._name = name
         self._system_prompt = system_prompt
@@ -791,6 +795,7 @@ class Agent[T]:
         self._max_attempts = max_attempts
         self._tool_results_by_id = tool_results_by_id
         self._model_input_filter = model_input_filter
+        self._compact_hook = compact_hook
 
     def add_tool_adapter(self, tool: Tool, results_by_id: bool | None = None) -> Agent[T]:
         """Add one tool to the agent and hand it back to chain further adds.
@@ -995,6 +1000,8 @@ class Agent[T]:
                         current_input,
                         system_prompt=self._system_prompt,
                         measure=measure,
+                        compact_hook=self._compact_hook,
+                        verbose=True,
                     ),
                     control,
                 )

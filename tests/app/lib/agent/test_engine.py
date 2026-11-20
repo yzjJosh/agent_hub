@@ -2764,6 +2764,87 @@ def _mock_classifier_http(
 class TestContextOverflowRecovery:
     """Tests for shrinking message history and retrying when the model hits context limits."""
 
+    @pytest.mark.parametrize("repeat_overflow", [False, True])
+    async def test_compact_hook_persists_partial_tool_history_and_stops_without_progress(
+        self, monkeypatch: pytest.MonkeyPatch, repeat_overflow: bool,
+    ) -> None:
+        """The fallback commits tool result edits and cannot retry an unchanged proposal."""
+        history = [
+            {"role": "user", "content": "do it"},
+            {"type": "function_call", "call_id": "c1", "name": "note", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "evidence" * 100},
+            {"role": "assistant", "content": "small reply"},
+        ]
+        seen: list[list[dict]] = []
+
+        async def trim(candidate: list[dict]) -> list[dict]:
+            seen.append(json.loads(json.dumps(candidate)))
+            candidate[-1]["output"] = "archived"
+            return candidate
+
+        error = _overflow_400_formal()
+        first = _stub_with_items(error, [{"type": "tool"}], history)
+        second = _failing_stub(error) if repeat_overflow else _stub_result([_text_delta("done")], "done")
+        runner = _patch_runner_seq(monkeypatch, [first, second])
+        agent = Agent(name="hook", system_prompt="sys", validator=_accept_any, compact_hook=trim)
+        run = await agent.run("do it")
+        if repeat_overflow:
+            with pytest.raises(BadRequestError) as caught:
+                await run.task.result()
+            assert caught.value is error
+        else:
+            assert await run.task.result() == "done"
+        expected = history[:2] + [{**history[2], "output": "archived"}]
+        assert runner.call_count == 2
+        assert runner.call_args_list[1].args[1] == expected
+        assert seen[0] == history[:3]
+        assert seen[1:] == ([expected] if repeat_overflow else [])
+        assert history[2]["output"] == "evidence" * 100
+
+    async def test_compact_hook_failure_preserves_original_model_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A policy error aborts without a further model request."""
+        error = _overflow_400_formal()
+        runner = _patch_runner_seq(monkeypatch, [_failing_stub(error)])
+
+        async def trim(_candidate: list[dict]) -> None:
+            raise ValueError("policy failed")
+
+        agent = Agent(name="hook", system_prompt="sys", validator=_accept_any, compact_hook=trim)
+        run = await agent.run("user")
+        with pytest.raises(BadRequestError) as caught:
+            await run.task.result()
+        assert caught.value is error
+        assert runner.call_count == 1
+
+    @pytest.mark.parametrize("stop_kind", ["cancel", "timeout"])
+    async def test_compact_hook_obeys_stop_and_timeout(self, monkeypatch: pytest.MonkeyPatch, stop_kind: str) -> None:
+        """Stop and timeout cancel a waiting hook."""
+        parked = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def trim(_candidate: list[dict]) -> None:
+            parked.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        stub = _failing_stub(_overflow_400_formal())
+        runner = _patch_runner_seq(monkeypatch, [stub])
+        agent = Agent(
+            name="hook", system_prompt="sys", validator=_accept_any, compact_hook=trim,
+            timeout=0.25 if stop_kind == "timeout" else None,
+        )
+        run = await agent.run("user")
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        if stop_kind == "cancel":
+            await _assert_loop_cancelled_fast(run, time.monotonic())
+        else:
+            with pytest.raises(TimeoutError):
+                await run.task.result()
+        await asyncio.wait_for(cancelled.wait(), timeout=5)
+        assert runner.call_count == 1
+
     @pytest.mark.fast_sleeps
     @pytest.mark.parametrize(
         "exc",

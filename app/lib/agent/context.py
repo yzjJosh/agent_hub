@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import asyncio
 import inspect
 import json
 import mimetypes
@@ -31,12 +33,15 @@ from app.lib.shared.paths import is_video_mime
 __all__ = [
     "ClassificationError",
     "CompactionError",
+    "CompactHook",
     "compact",
     "count_chars",
     "extract_reasoning_text",
     "is_overflow",
     "resolve_video_url",
 ]
+
+CompactHook = Callable[[list[dict]], list[dict] | None | Awaitable[list[dict] | None]]
 
 _PAYLOAD_TOO_LARGE_STATUS = 413
 _INTERNAL_ERROR_STATUS = 500
@@ -562,13 +567,24 @@ async def compact(
     *,
     system_prompt: str = "",
     measure: Callable[[list[dict]], int | Awaitable[int]] | None = None,
+    compact_hook: CompactHook | None = None,
+    verbose: bool = False,
 ) -> list[dict]:
-    """Drop older thinking and assistant replies to cut message size in half.
+    """Trim message history to at most half its starting size.
 
     Args:
         items: User prompt text or a list of conversation items.
         system_prompt: Instructions sent ahead of the conversation.
         measure: Optional size check called on each candidate item list.
+            Must leave input unchanged and give the same size for the same input.
+        compact_hook: Optional callback to shorten remaining items when default
+            shrinking is not enough. Gets a copy of the remaining items and
+            returns a shorter list or None. Must keep instructions, kept call
+            ids and order, full call and output pairs, unknown items, and
+            unfinished calls, without adding calls or bringing back dropped
+            items. Must be safe across runs at the same time, must not save and
+            later change its input or output, and must be async if slow.
+        verbose: Whether to print size counts during recovery.
 
     Returns:
         A new non-empty item list at most half the starting character size.
@@ -590,6 +606,8 @@ async def compact(
     ]
     tier_two = [i for i, item in enumerate(normalized) if isinstance(item, dict) and _is_assistant_message(item)]
     removed: set[int] = set()
+    candidate = normalized
+    remaining_chars = baseline_chars
     for index in tier_one + tier_two:
         removed.add(index)
         candidate = [item for i, item in enumerate(normalized) if i not in removed]
@@ -597,5 +615,42 @@ async def compact(
             break
         remaining_chars = await _measure_candidate(candidate, system_prompt, measure)
         if (baseline_chars - remaining_chars) * _HALF_REDUCTION_FACTOR >= baseline_chars:
+            if verbose:
+                print(f"[context.compact] global accepted, chars {baseline_chars} to {remaining_chars}", flush=True)
             return candidate
+    if compact_hook is not None:
+        if verbose:
+            print(f"[context.compact] global exhausted, chars {baseline_chars} to {remaining_chars if candidate else 0}", flush=True)
+        return await _compact_with_hook(candidate, compact_hook, baseline_chars, system_prompt, measure, verbose)
     raise CompactionError("Message history could not shrink by at least half.")
+
+
+async def _compact_with_hook(
+    items: list[dict],
+    hook: CompactHook,
+    baseline_chars: int,
+    system_prompt: str,
+    measure: Callable[[list[dict]], int | Awaitable[int]] | None,
+    verbose: bool,
+) -> list[dict]:
+    snapshot = await asyncio.to_thread(deepcopy, items)
+    try:
+        candidate = hook(snapshot)
+        if inspect.isawaitable(candidate):
+            candidate = await candidate
+    except Exception as exc:
+        raise CompactionError(f"Compaction hook failed with {type(exc)}.") from exc
+    if candidate is None:
+        raise CompactionError("Compaction hook declined to trim history.")
+    if not isinstance(candidate, list) or any(not isinstance(item, dict) for item in candidate):
+        raise CompactionError("Compaction hook must return a list of message dictionaries or None.")
+    if not items or not candidate:
+        raise CompactionError("Compaction hook cannot replace empty message history.")
+    remaining_chars = await _measure_candidate(candidate, system_prompt, measure)
+    if verbose:
+        print(f"[context.compact] hook measured, chars {baseline_chars} to {remaining_chars}", flush=True)
+    if remaining_chars <= 0 or remaining_chars * _HALF_REDUCTION_FACTOR > baseline_chars:
+        raise CompactionError("Compaction hook could not shrink message history by at least half.")
+    if verbose:
+        print("[context.compact] hook accepted", flush=True)
+    return candidate
