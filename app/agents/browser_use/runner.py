@@ -410,12 +410,16 @@ class _ActionTool(Tool):
         )
         if result.status is TransactionStatus.CAP_REACHED:
             self._cap_reached.set()
-        base = _tool_result(result)
+        base = self._step_result(result)
         return ToolResult(
             text=f"{_time_line()}\n{base.text}",
             files=base.files,
             render_type=base.render_type,
         )
+
+    def _step_result(self, result: TransactionResult) -> ToolResult:
+        """The tool result of one transaction, without the time line."""
+        return _tool_result(result)
 
 
 class _OpenUrlTool(_ActionTool):
@@ -747,6 +751,10 @@ class _DownloadClickTool(_ActionTool):
         Param("target_id", str | None, None, description=_TARGET_ID_DESC),
     )
 
+    def __init__(self, session: BrowserSession, cap_reached: asyncio.Event, resources_dir: str) -> None:
+        super().__init__(session, cap_reached)
+        self._resources_dir = resources_dir
+
     @override
     async def call(self, params: dict) -> ToolResult:
         return await self._transact(
@@ -754,6 +762,14 @@ class _DownloadClickTool(_ActionTool):
             params["target_id"],
             monitor_download=True,
         )
+
+    @override
+    def _step_result(self, result: TransactionResult) -> ToolResult:
+        """The tool result of one transaction, with a line for each file that came down."""
+        base = _tool_result(result)
+        paths = _resource_paths(list(result.files), self._resources_dir)
+        lines = [base.text, *(f"Downloaded file: {path}" for path in paths)]
+        return ToolResult(text="\n".join(lines), files=base.files, render_type=base.render_type)
 
 
 class _RefreshTool(_ActionTool):
@@ -846,7 +862,7 @@ def _build_tools(session: BrowserSession, cap_reached: asyncio.Event, resources_
         _ClosePageTool(session, cap_reached),
         _SolveCaptchaTool(session, cap_reached),
         _WaitTool(session, cap_reached),
-        _DownloadClickTool(session, cap_reached),
+        _DownloadClickTool(session, cap_reached, resources_dir),
         _RefreshTool(session, cap_reached),
         _DumpPageTool(session, cap_reached),
     )

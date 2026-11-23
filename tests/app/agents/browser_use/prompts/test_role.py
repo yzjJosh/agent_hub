@@ -104,6 +104,11 @@ class TestBuildRolePrompt:
         assert "call task with action result and that task id" in prompt
         assert "page it with offset and max_char" in prompt
 
+    def test_prompt_tells_the_role_where_the_downloaded_file_is(self) -> None:
+        prompt = build_role_prompt((StubTool(),))
+        assert "After download_click brings a file down, its result has a Downloaded file line." in prompt
+        assert "Pass the path on that line as resource_path to read_media_or_doc." in prompt
+
     def test_prompt_covers_the_signin_instructions(self) -> None:
         prompt = build_role_prompt((StubTool(),))
         assert "If the goal carries its own sign-in instructions, follow those." in prompt
