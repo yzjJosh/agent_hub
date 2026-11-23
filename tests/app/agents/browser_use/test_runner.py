@@ -28,6 +28,7 @@ from app.agents.browser_use.models import (
     TransactionResult,
     TransactionStatus,
 )
+from app.agents.browser_use.prompts.role import ROLE_OUTPUT_JSON_SCHEMA
 from app.agents.browser_use.session import Action
 from app.lib.shared import config
 from app.lib.browser import browser_manager
@@ -1144,6 +1145,7 @@ class TestRunBrowserUse:
         assert kwargs["backend"] == config.Backend(url="http://think.test/v1", model=None, api_key=None)
         assert kwargs["tool_results_by_id"] is False
         assert callable(kwargs["model_input_filter"])
+        assert kwargs["output_json_schema"] == ROLE_OUTPUT_JSON_SCHEMA
         assert [tool.name for tool in agent.tools] == (
             list(_TOOL_NAMES[:2]) + ["upload_resources"] + list(_TOOL_NAMES[2:]) + ["checkpoint", "task", "read_media_or_doc"]
         )

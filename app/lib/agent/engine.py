@@ -22,6 +22,7 @@ from aiofiles.tempfile import TemporaryDirectory
 from agents import Agent as _SdkAgent
 from agents import (
     ModelBehaviorError,
+    ModelSettings,
     OpenAIChatCompletionsModel,
     Runner,
     ToolOutputFileContent,
@@ -81,6 +82,7 @@ _RETRY_BACKOFF_FACTOR = 2
 _INTERNAL_ERROR_STATUS = 500
 _RETRYABLE_STATUS_CODES = (408, 409, 429)
 _MEDIA_DECODE_TIMEOUT = 30
+_RESPONSE_SCHEMA_NAME = "response_schema"
 # How the adapter marks a call its tool rejected before the run started.
 _REJECTED_STATUS = "rejected"
 _RETRY_NOTICE = (
@@ -408,6 +410,17 @@ class _PreservingConverter(chatcmpl_converter.Converter):
         return _media_wire_parts(out)
 
 
+def _build_response_format(json_schema: dict) -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _RESPONSE_SCHEMA_NAME,
+            "strict": True,
+            "schema": json_schema,
+        },
+    }
+
+
 def _build_model(backend: config.Backend) -> OpenAIChatCompletionsModel:
     set_tracing_disabled(True)
     if openai_chatcompletions.Converter is not _PreservingConverter:
@@ -701,6 +714,9 @@ class Agent[T]:
     With compact_hook set, the hook can shorten remaining items when default
     shrinking is not enough, and later model calls in the run use that list.
 
+    With output_json_schema set, model calls ask the backend for JSON matching
+    that schema, and the validator still checks the final output.
+
     Server and connection errors during an attempt are retried before failing the run.
     """
 
@@ -785,6 +801,7 @@ class Agent[T]:
         tool_results_by_id: bool = False,
         model_input_filter: CallModelInputFilter | None = None,
         compact_hook: context.CompactHook | None = None,
+        output_json_schema: dict | None = None,
     ) -> None:
         self._name = name
         self._system_prompt = system_prompt
@@ -796,6 +813,7 @@ class Agent[T]:
         self._tool_results_by_id = tool_results_by_id
         self._model_input_filter = model_input_filter
         self._compact_hook = compact_hook
+        self._output_json_schema = output_json_schema
 
     def add_tool_adapter(self, tool: Tool, results_by_id: bool | None = None) -> Agent[T]:
         """Add one tool to the agent and hand it back to chain further adds.
@@ -895,6 +913,10 @@ class Agent[T]:
         kwargs: dict = {"name": self._name, "instructions": self._system_prompt, "model": model}
         if self._tools:
             kwargs["tools"] = [self._build_sdk_tool(t, tool_calls) for t in self._tools]
+        if self._output_json_schema is not None:
+            kwargs["model_settings"] = ModelSettings(
+                extra_args={"response_format": _build_response_format(self._output_json_schema)}
+            )
         return _SdkAgent(**kwargs)
 
     def _build_compaction_measure(

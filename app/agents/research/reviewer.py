@@ -24,6 +24,17 @@ __all__ = ["run_reviewer"]
 
 _VALID_ACTIONS = {"rewrite", "collect", "approve"}
 _FIELDS = ("pass", "reason", "action", "feedback")
+_OUTPUT_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "pass": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "action": {"type": "string", "enum": sorted(_VALID_ACTIONS)},
+        "feedback": {"type": "string"},
+    },
+    "required": list(_FIELDS),
+    "additionalProperties": False,
+}
 _DRAFT_HEADER = (
     "### DRAFT TO "
     "REVIEW (iteration {iteration})"
@@ -128,6 +139,7 @@ async def run_reviewer(
         name="research_reviewer",
         system_prompt=system_prompt,
         validator=_reviewer_validator(draft),
+        output_json_schema=_OUTPUT_JSON_SCHEMA,
     )
     for tool in tools:
         agent.add_tool_adapter(tool)

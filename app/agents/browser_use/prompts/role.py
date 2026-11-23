@@ -7,9 +7,18 @@ from app.lib.agent.engine import AgentRun
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Tool
 
-__all__ = ["build_role_prompt", "validate_role_output"]
+__all__ = ["ROLE_OUTPUT_JSON_SCHEMA", "build_role_prompt", "validate_role_output"]
 
 _STATUSES = ("completed", "impossible", "incomplete")
+ROLE_OUTPUT_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(_STATUSES)},
+        "summary": {"type": "string"},
+    },
+    "required": ["status", "summary"],
+    "additionalProperties": False,
+}
 
 _ROLE = """You drive a real browser to carry out a goal. You see the screens of open tabs and can read a page with dump_page.
 
