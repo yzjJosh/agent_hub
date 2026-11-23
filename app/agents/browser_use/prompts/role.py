@@ -45,7 +45,7 @@ _READING = """Two tools open content that is not on a screen. read_media_or_doc 
 
 When read_media_or_doc finishes, it returns a task id, not the content. To read the content, call task with action result and that task id. When the result is long, page it with offset and max_char.
 
-Use these to read a file you downloaded, or any file you saved."""
+Use these to read a file you downloaded, or any file you saved. After download_click brings a file down, its result has a Downloaded file line. Pass the path on that line as resource_path to read_media_or_doc."""
 
 _FINAL = """When you are done, stop calling tools. Your final answer must be one JSON object and nothing else. The object has two fields, status and summary, like this:
 {"status": "completed", "summary": "what you did and what you found"}

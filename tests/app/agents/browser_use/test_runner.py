@@ -954,6 +954,33 @@ class TestActionTools:
         assert "status: failed, action failed: boom" in result.text
         assert result.files == ("/tmp/dl/txn_1/01.jpg",)
 
+    @pytest.mark.parametrize(
+        "file,line",
+        [
+            pytest.param("/tmp/res/browser_use/t1/txn_3/download", "Downloaded file: browser_use/t1/txn_3/download",
+                         id="inside_resources"),
+            pytest.param("/tmp/other/txn_3/download", "Downloaded file: /tmp/other/txn_3/download",
+                         id="outside_resources"),
+        ],
+    )
+    async def test_download_click_result_names_the_downloaded_file(
+        self, file: str, line: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = FakeSession([TransactionResult(TransactionStatus.SUCCESS, "", _tabs(), (file,))])
+        tools = await _wired_tools(monkeypatch, session, "/tmp/res")
+        result = await _run_tool(_tool("download_click", tools), _PARAMS["download_click"])
+        lines = _time_prefixed(result.text).split("\n")
+        assert lines[-2:] == ["status: success", line]
+        assert result.files == ("/tmp/dl/txn_1/01.jpg",)
+
+    @pytest.mark.parametrize("transaction", [pytest.param(_success(), id="success"), pytest.param(_failed(), id="failed")])
+    async def test_download_click_without_a_file_has_no_downloaded_file_line(
+        self, transaction: TransactionResult, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = FakeSession([transaction])
+        result = await _run_tool(_tool("download_click", await _wired_tools(monkeypatch, session)), _PARAMS["download_click"])
+        assert "Downloaded file:" not in result.text
+
     async def test_stale_transaction_still_hands_back_the_tool_result(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
