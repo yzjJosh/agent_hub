@@ -42,6 +42,15 @@ _COLLECTOR_TOOLS: tuple[Tool, ...] = (
     brave_search_tool, google_search_tool, x_search_tool, github_tool,
     web_fetch_tool, rednote_research_tool, task_tool, read_media_or_doc_tool,
 )
+_OUTPUT_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "evidences": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "evidences"],
+    "additionalProperties": False,
+}
 
 
 def _describe_completed_calls(task_ids: list[str]) -> str:
@@ -143,6 +152,7 @@ async def _run_collector(
         system_prompt=system_prompt,
         validator=_validate_collector_output,
         tool_results_by_id=True,
+        output_json_schema=_OUTPUT_JSON_SCHEMA,
     )
     for tool in tools:
         agent.add_tool_adapter(tool)

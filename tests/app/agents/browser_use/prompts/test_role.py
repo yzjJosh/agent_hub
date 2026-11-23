@@ -7,7 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.agents.browser_use.prompts.role import build_role_prompt, validate_role_output
+from app.agents.browser_use.prompts.role import (
+    ROLE_OUTPUT_JSON_SCHEMA,
+    build_role_prompt,
+    validate_role_output,
+)
 from app.lib.agent.engine import AgentRun
 from app.lib.tool.base import Param, Tool, ToolResult
 
@@ -142,3 +146,16 @@ class TestBuildRolePrompt:
         assert "Historical checkpoint evidence describes an earlier observation" in prompt
         assert "Do not repeat an executed action to repair" in prompt
         assert "never silently dropped to fit the provider context limit" in prompt
+
+
+class TestRoleOutputJsonSchema:
+    def test_schema_matches_role_output_contract(self) -> None:
+        assert ROLE_OUTPUT_JSON_SCHEMA == {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["completed", "impossible", "incomplete"]},
+                "summary": {"type": "string"},
+            },
+            "required": ["status", "summary"],
+            "additionalProperties": False,
+        }

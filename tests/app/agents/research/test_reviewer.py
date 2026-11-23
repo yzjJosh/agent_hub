@@ -1,7 +1,9 @@
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
+import app.agents.research.reviewer as reviewer_module
 from app.agents.research.reviewer import run_reviewer
 from tests.app.agents.research.conftest import (
     CannedCall,
@@ -51,6 +53,31 @@ class TestReviewerRun:
         assert review.passed is False
         assert review.action == "collect"
         assert review.iteration == 2
+
+    async def test_agent_passes_output_json_schema_and_validator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        valid = json.dumps({"pass": True, "reason": "All backed", "action": "approve", "feedback": ""})
+        patch_runner(monkeypatch, stub_result([text_event(valid)], valid, "reviewer"))
+        agent_spy = MagicMock(wraps=reviewer_module.Agent)
+        monkeypatch.setattr(reviewer_module, "Agent", agent_spy)
+
+        review = await run_reviewer("GPU market analysis", "# Draft", tools=(FakeTool(),))
+        kwargs = agent_spy.call_args.kwargs
+        assert kwargs["output_json_schema"] == {
+            "type": "object",
+            "properties": {
+                "pass": {"type": "boolean"},
+                "reason": {"type": "string"},
+                "action": {"type": "string", "enum": ["approve", "collect", "rewrite"]},
+                "feedback": {"type": "string"},
+            },
+            "required": ["pass", "reason", "action", "feedback"],
+            "additionalProperties": False,
+        }
+        assert callable(kwargs["validator"])
+        assert review.passed is True
 
 
 class TestReviewerValidation:

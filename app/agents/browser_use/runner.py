@@ -15,7 +15,11 @@ from agents.run_config import CallModelData, ModelInputData
 from app.agents.browser_use.checkpoint import CheckpointTool
 from app.agents.browser_use.checkpoint_store import CaptureInterval, CheckpointStore, DomCapture, TabCapture
 from app.agents.browser_use.models import BrowserUseResult, TransactionResult, TransactionStatus
-from app.agents.browser_use.prompts.role import build_role_prompt, validate_role_output
+from app.agents.browser_use.prompts.role import (
+    ROLE_OUTPUT_JSON_SCHEMA,
+    build_role_prompt,
+    validate_role_output,
+)
 from app.agents.browser_use.session import Action, BrowserSession
 from app.lib.agent.engine import Agent, AgentRun
 from app.lib.browser.browser_manager import BrowserManager
@@ -877,6 +881,7 @@ def _build_agent(tools: tuple[Tool, ...], backend: config.Backend) -> Agent:
         tool_results_by_id=False,
         model_input_filter=_prune_model_history,
         compact_hook=_compact_dom_dumps,
+        output_json_schema=ROLE_OUTPUT_JSON_SCHEMA,
     )
     for tool in tools:
         agent.add_tool_adapter(tool)

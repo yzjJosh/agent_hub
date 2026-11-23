@@ -430,6 +430,25 @@ class TestCollectorBackend:
         assert agent_spy.call_args.kwargs.get("backend") is None
         assert result.task.status.value == "completed"
 
+    async def test_agent_passes_output_json_schema_and_validator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_spy = MagicMock(wraps=collector_module.Agent)
+        monkeypatch.setattr(collector_module, "Agent", agent_spy)
+        result = await _collect_one(monkeypatch, _CITATIONS, calls=(_GPU_PRICES_CALL,))
+        kwargs = agent_spy.call_args.kwargs
+        assert kwargs["output_json_schema"] == {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "evidences": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "evidences"],
+            "additionalProperties": False,
+        }
+        assert callable(kwargs["validator"])
+        assert result.task.status.value == "completed"
+
 
 def _writes(store: MagicMock) -> list[dict]:
     """List the keyword arguments of every store write, with the text under the key text."""

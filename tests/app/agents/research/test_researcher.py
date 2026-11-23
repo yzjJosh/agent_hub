@@ -1,9 +1,11 @@
 import re
 from collections.abc import AsyncIterator
+from unittest.mock import MagicMock
 
 import pytest
 from agents.stream_events import RawResponsesStreamEvent
 
+import app.agents.research.researcher as researcher_module
 from app.agents.research.collector import CollectionLedger
 from app.agents.research.models import CitedRun, EvidenceItem, Review, TaskState
 from app.agents.research.prompt import REVIEW_FEEDBACK_HEADER
@@ -136,6 +138,14 @@ class TestResearcherRun:
         await run_researcher(_GOAL, ledger, tools=(FakeTool(),), previous_draft=report, review=review)
         assert "[c001] Instruction: Search for GPU prices\nNo evidence collected." in messages[0]
         assert "Summary:" not in messages[0]
+
+    async def test_agent_does_not_set_output_json_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        report = "# Report\n\nGPU prices rose 15% this year [[ref:run-1]]."
+        _stub_report(monkeypatch, report, events=(_read_event("run-1"),))
+        agent_spy = MagicMock(wraps=researcher_module.Agent)
+        monkeypatch.setattr(researcher_module, "Agent", agent_spy)
+        assert await run_researcher(_GOAL, _ledger("run-1"), tools=(FakeTool(),)) == report
+        assert agent_spy.call_args.kwargs.get("output_json_schema") is None
 
 
 class TestResearcherCollectionHappened:

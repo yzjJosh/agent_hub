@@ -2322,12 +2322,16 @@ def _wire_mock_openai(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[httpx.Response],
     clients: list[httpx.AsyncClient],
+    wire_bodies: list[dict] | None = None,
 ) -> tuple[MagicMock, list[list[dict]]]:
     wire_messages: list[list[dict]] = []
     queue = list(responses)
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        wire_messages.append(json.loads(request.content)["messages"])
+        body = json.loads(request.content)
+        wire_messages.append(body["messages"])
+        if wire_bodies is not None:
+            wire_bodies.append(body)
         return queue.pop(0)
 
     real_openai = engine.AsyncOpenAI
@@ -3091,6 +3095,140 @@ class TestContextOverflowRecovery:
         assert stub.cancel.call_count == 1
 
 
+class TestOutputJsonSchema:
+    """The output_json_schema option attaches a strict json_schema response_format to model calls."""
+
+    _SCHEMA: ClassVar[dict] = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    _EXPECTED_RESPONSE_FORMAT: ClassVar[dict] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "response_schema",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    async def _run_wire_bodies(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        responses: list[httpx.Response],
+        *,
+        output_json_schema: dict | None = None,
+        validator: Callable[[str, AgentRun], tuple[bool, str | dict]] = _accept_any,
+        with_tool: bool = False,
+        model_input_filter: CallModelInputFilter | None = None,
+    ) -> tuple[AgentRun, list[dict]]:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        clients: list[httpx.AsyncClient] = []
+        wire_bodies: list[dict] = []
+        _wire_mock_openai(monkeypatch, responses, clients, wire_bodies=wire_bodies)
+        try:
+            agent = Agent(
+                name="res",
+                system_prompt="sys",
+                validator=validator,
+                output_json_schema=output_json_schema,
+                model_input_filter=model_input_filter,
+            )
+            if with_tool:
+                agent.add_tool_adapter(_CountedTool())
+            run = await agent.run("do it")
+            await run.task.result()
+            return run, wire_bodies
+        finally:
+            await _close_clients(clients)
+
+    async def test_without_output_json_schema_sends_no_response_format(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run, wire_bodies = await self._run_wire_bodies(
+            monkeypatch, [_sse_text_response("hello")]
+        )
+        assert await run.task.result() == "hello"
+        assert len(wire_bodies) == 1
+        assert "response_format" not in wire_bodies[0]
+
+    @pytest.mark.parametrize("with_tool", [False, True], ids=["without_tools", "with_tools"])
+    async def test_with_output_json_schema_sends_response_format(
+        self, monkeypatch: pytest.MonkeyPatch, with_tool: bool
+    ) -> None:
+        payload = json.dumps({"answer": "ok"})
+        responses = (
+            [
+                _sse_tool_call_response("call_1", "counted_note", '{"text":"one"}'),
+                _sse_text_response(payload),
+            ]
+            if with_tool
+            else [_sse_text_response(payload)]
+        )
+        run, wire_bodies = await self._run_wire_bodies(
+            monkeypatch,
+            responses,
+            output_json_schema=self._SCHEMA,
+            with_tool=with_tool,
+        )
+        assert await run.task.result() == payload
+        assert _CountedTool.calls == (1 if with_tool else 0)
+        assert len(wire_bodies) == (2 if with_tool else 1)
+        assert all(body["response_format"] == self._EXPECTED_RESPONSE_FORMAT for body in wire_bodies)
+        if with_tool:
+            assert all("tools" in body for body in wire_bodies)
+
+    async def test_output_json_schema_preserved_with_model_input_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = json.dumps({"answer": "filtered"})
+        run, wire_bodies = await self._run_wire_bodies(
+            monkeypatch,
+            [_sse_text_response(payload)],
+            output_json_schema=self._SCHEMA,
+            model_input_filter=_rewrite_last_user,
+        )
+        assert await run.task.result() == payload
+        assert len(wire_bodies) == 1
+        assert wire_bodies[0]["response_format"] == self._EXPECTED_RESPONSE_FORMAT
+        assert wire_bodies[0]["messages"][-1] == {"role": "user", "content": "REWROTE:do it"}
+
+    async def test_output_json_schema_still_runs_validator_and_retries_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen_outputs: list[str] = []
+
+        def validator(text: str, _run: AgentRun) -> tuple[bool, dict | str]:
+            seen_outputs.append(text)
+            data = json.loads(text)
+            if data["answer"] != "good":
+                return False, "answer must be good"
+            return True, data
+
+        bad_payload = json.dumps({"answer": "bad"})
+        good_payload = json.dumps({"answer": "good"})
+        run, wire_bodies = await self._run_wire_bodies(
+            monkeypatch,
+            [_sse_text_response(bad_payload), _sse_text_response(good_payload)],
+            output_json_schema=self._SCHEMA,
+            validator=validator,
+        )
+        assert await run.task.result() == good_payload
+        assert seen_outputs == [bad_payload, good_payload]
+        assert len(wire_bodies) == 2
+        assert all(body["response_format"] == self._EXPECTED_RESPONSE_FORMAT for body in wire_bodies)
+        retry_user = wire_bodies[1]["messages"][-1]
+        assert retry_user["role"] == "user"
+        assert retry_user["content"] == "answer must be good" + _CORRECTIVE_NOTICE
+
+
 @pytest.mark.live
 @pytest.mark.skipif(not is_llm_available(), reason="thinking backend not reachable")
 class TestAgentLive:
@@ -3127,3 +3265,53 @@ class TestAgentLive:
         await run2.task.wait_started()
         await task_manager.cancel(str(run2.task.id))
         assert run2.task.status.value == "cancelled"
+
+    async def test_output_json_schema_with_tool_and_validator(self) -> None:
+        assert os.environ.get("REASON_THINKING_BACKEND_URL"), "REASON_THINKING_BACKEND_URL must be set for the live test"
+        schema: dict = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["done", "failed"]},
+                "note": {"type": "string"},
+            },
+            "required": ["status", "note"],
+            "additionalProperties": False,
+        }
+
+        async def validator(text: str, run: AgentRun) -> tuple[bool, dict | str]:
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return False, f"invalid json: {exc}"
+            if not isinstance(data, dict):
+                return False, "output must be a json object"
+            if data.get("status") not in ("done", "failed"):
+                return False, "invalid status"
+            if not isinstance(data.get("note"), str) or not data["note"].strip():
+                return False, "note must be non-empty"
+            calls = await run.tool_calls()
+            if not any(call.tool_name == "note" for call in calls):
+                return False, "must call note tool first"
+            return True, data
+
+        agent = Agent(
+            name="live_schema",
+            system_prompt=(
+                "Call the note tool once, then answer with a JSON object having status 'done' "
+                "and note containing the noted text."
+            ),
+            validator=validator,
+            backend=config.backend(config.REASON_THINKING),
+            max_attempts=3,
+            output_json_schema=schema,
+        )
+        agent.add_tool_adapter(_LiveBlock())
+        run = await agent.run("Call the note tool with text 'hello' and return the JSON result.")
+        raw = await run.task.result()
+        assert run.task.status.value == "completed"
+        parsed = json.loads(raw)
+        assert parsed["status"] == "done"
+        assert isinstance(parsed["note"], str) and parsed["note"].strip()
+        assert set(parsed.keys()) == {"status", "note"}
+        calls = await run.tool_calls()
+        assert any(call.tool_name == "note" for call in calls)
