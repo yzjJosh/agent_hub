@@ -13,7 +13,7 @@ from app.lib.browser.browser_manager import BrowserManager
 from tests.app.agents.browser_use.conftest import FakeManager
 
 _DOWNLOADS_DIR = "/tmp/downloads"
-_BUDGET = 100
+_BUDGET = 200
 _QUARTER_RATIO = 0.25
 _TENTH_RATIO = 0.1
 _FIFTH_RATIO = 0.2
