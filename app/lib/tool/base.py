@@ -258,7 +258,11 @@ ParamValue: TypeAlias = str | int | float | bool | list | tuple | dict | None
 class _ParameterizedType(Protocol):
     """A generic, union, or literal type form that carries type arguments."""
 
-    __args__: tuple
+    @property
+    def __args__(self) -> tuple: ...
+
+
+_ParamType: TypeAlias = type | _ParameterizedType
 
 
 class _Required:
@@ -278,7 +282,7 @@ class Param:
     """One tool parameter."""
 
     name: str
-    type: type | _ParameterizedType
+    type: _ParamType
     default: _Required | ParamValue = _REQUIRED
     description: str = ""
     # description is the plain purpose of the param. The wire form adds a note
@@ -306,7 +310,7 @@ class Param:
         return _compose_param_description(self)
 
     @property
-    def annotation(self) -> type | _ParameterizedType:
+    def annotation(self) -> _ParamType:
         """The Python type for this param.
 
         A param with an enum is limited to its enum values.
@@ -387,7 +391,7 @@ def _numeric_adapter(numeric: type) -> pydantic.TypeAdapter[int | float]:
     return adapter
 
 
-def _numeric_type(annotation: type | _ParameterizedType) -> type | None:
+def _numeric_type(annotation: _ParamType) -> type | None:
     """The number type a param uses, or None when the param is not a number."""
     if annotation in (int, float):
         return annotation
