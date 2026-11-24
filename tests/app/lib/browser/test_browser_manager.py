@@ -192,11 +192,11 @@ def _mock_locator(mock_page: MagicMock) -> None:
 async def _make_settle_page(settles: bool) -> tuple[BrowserManager, AsyncMock, list[float], str]:
     """Build a fake page whose scroll spot drifts toward its settled spot.
 
-    The target (50, 5000) sits inside the window once the page scrolls past
-    y=3920. The spot starts at y=4000, already in view, and drifts down to
-    y=4460. When settles is True it holds at 4460, when False it keeps
-    drifting past it. The fourth value lists every scroll spot the page
-    reported, in order.
+    The target at x 50 and y 5000 sits inside the window once the page scrolls
+    past y 3920. The spot starts at y 4000, already in view, and drifts down to
+    y 4460. When settles is True it holds at 4460, when False it keeps drifting
+    past it. The third value lists every scroll spot the page reported, in
+    order, and the fourth value is the tab id.
     """
     state = {"reads": 0}
     positions: list[float] = []

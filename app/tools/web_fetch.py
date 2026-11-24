@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Fetch content from a URL."""
+
+from __future__ import annotations
 
 import json
 import os

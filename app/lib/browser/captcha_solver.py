@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Find and solve captchas on a page."""
+
+from __future__ import annotations
 
 import asyncio
 import json

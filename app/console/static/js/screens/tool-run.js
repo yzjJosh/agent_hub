@@ -78,7 +78,7 @@ export async function renderToolRun(el, params) {
   const runLabel = () => (runBtn.innerHTML = icon("play") + '<span class="rr-run-t">Run tool</span>');
 
   let schema = null;
-  const fields = []; // one entry per field, a date pair counts as one
+  const fields = [];
   let optionalOpen = !_isPhone();
   let validatedOnce = false;
   let submitting = false;
@@ -122,7 +122,6 @@ export async function renderToolRun(el, params) {
     const body = {};
     for (const f of fields) {
       addVal(body, f.p, f.read());
-      if (f.p2) addVal(body, f.p2, f.p2.read());
     }
     return body;
   }
@@ -160,37 +159,32 @@ export async function renderToolRun(el, params) {
     for (const f of fields) {
       fieldError(f, null);
       if (f.incompatible) mark(f, f.p.name + " has an unsupported saved value.");
-      for (const pf of [f.p, f.p2]) {
-        if (!pf) continue;
-        const read = pf === f.p ? f.read : pf.read;
-        const v = read();
-        let msg = null;
-        if (pf.required && (v === null || v === undefined || v === "")) {
-          msg = pf.name + " is required.";
-        } else if (v !== null && v !== undefined && v !== "") {
-          if (typeof v === "number" && Number.isNaN(v)) {
-            msg = pf.name + " must be an integer.";
-          } else if (pf.type === "integer") {
-            if (!Number.isInteger(v)) msg = pf.name + " must be an integer.";
-            else if (pf.min !== null && v < pf.min) msg = pf.name + " must be ≥ " + pf.min + ".";
-            else if (pf.max !== null && v > pf.max) msg = pf.name + " must be ≤ " + pf.max + ".";
-          } else if (pf.kind === "url" && !/^https?:\/\//.test(String(v))) {
-            msg = pf.name + " must start with http:// or https://";
-          }
+      const pf = f.p;
+      const v = f.read();
+      let msg = null;
+      if (pf.required && (v === null || v === undefined || v === "")) {
+        msg = pf.name + " is required.";
+      } else if (v !== null && v !== undefined && v !== "") {
+        if (typeof v === "number" && Number.isNaN(v)) {
+          msg = pf.name + " must be an integer.";
+        } else if (pf.type === "integer") {
+          if (!Number.isInteger(v)) msg = pf.name + " must be an integer.";
+          else if (pf.min !== null && v < pf.min) msg = pf.name + " must be ≥ " + pf.min + ".";
+          else if (pf.max !== null && v > pf.max) msg = pf.name + " must be ≤ " + pf.max + ".";
+        } else if (pf.kind === "url" && !/^https?:\/\//.test(String(v))) {
+          msg = pf.name + " must start with http:// or https://";
         }
-        if (msg) mark(f, msg);
       }
-      // A pair field has one error spot, so both of its params show the error there.
+      if (msg) mark(f, msg);
     }
     for (const rule of schema.rules || []) {
       if (!rule.startsWith("order:")) continue;
       const parts = rule.split(":");
-      const fa = fields.find((f) => f.p.name === parts[1] || (f.p2 && f.p2.name === parts[1]));
-      const fb = fields.find((f) => f.p.name === parts[2] || (f.p2 && f.p2.name === parts[2]));
+      const fa = fields.find((f) => f.p.name === parts[1]);
+      const fb = fields.find((f) => f.p.name === parts[2]);
       if (!fa || !fb) continue;
-      const read = (f, n) => (f.p.name === n ? f.read() : f.p2.read());
-      const va = read(fa, parts[1]);
-      const vb = read(fb, parts[2]);
+      const va = fa.read();
+      const vb = fb.read();
       if (va === null || va === undefined || va === "" || vb === null || vb === undefined || vb === "") continue;
       const isDates = fa.p.kind === "date" && fb.p.kind === "date";
       const bothNum = Number.isFinite(Number(va)) && Number.isFinite(Number(vb));
@@ -211,8 +205,7 @@ export async function renderToolRun(el, params) {
 
   function labelRow(f) {
     const p = f.p;
-    const name = f.p2 ? p.name + " / " + f.p2.name : p.name;
-    return '<span class="f-name">' + esc(name) +
+    return '<span class="f-name">' + esc(p.name) +
       (p.required ? '<span class="f-req">*</span>' : "") +
       (p.default !== null ? '<span class="f-default">default</span>' : "") + "</span>" +
       '<span class="f-spacer"></span>' +
@@ -233,7 +226,7 @@ export async function renderToolRun(el, params) {
       descRow(f) +
       '<div class="f-err hidden" role="alert"></div>';
     f.errEl = f.wrap.querySelector(".f-err");
-    f.errEl.id = "ferr-" + f.p.name + (f.p2 ? "-" + f.p2.name : "");
+    f.errEl.id = "ferr-" + f.p.name;
     f.labelEl = f.wrap.querySelector(".f-label");
     f.controlBox = f.wrap.appendChild(document.createElement("div"));
     f.controlBox.className = "f-control";
@@ -703,13 +696,10 @@ export async function renderToolRun(el, params) {
     if (!n) return;
     const optFields = fields.filter((f) => f.optGroup);
     const set = optFields.reduce((acc, f) => {
-      const count = (p, read) => {
-        const v = read();
-        return v !== null && v !== undefined && v !== "" && !sameAsDefault(p, v) ? 1 : 0;
-      };
-      return acc + count(f.p, f.read) + (f.p2 ? count(f.p2, f.p2.read) : 0);
+      const v = f.read();
+      return acc + (v !== null && v !== undefined && v !== "" && !sameAsDefault(f.p, v) ? 1 : 0);
     }, 0);
-    const total = optFields.reduce((acc, f) => acc + 1 + (f.p2 ? 1 : 0), 0);
+    const total = optFields.length;
     n.textContent = "· " + (set > 0 ? set + " set" : total);
   }
 

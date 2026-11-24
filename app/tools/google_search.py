@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Search Google for a query."""
+
+from __future__ import annotations
 
 import json
 import re

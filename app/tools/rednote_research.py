@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """Deep research on Xiaohongshu, also called Rednote.
 
 Searches the site, reads the top notes, reads the pictures in them, and
 writes a report.
 """
+
+from __future__ import annotations
 
 __all__ = ["rednote_research_tool"]
 

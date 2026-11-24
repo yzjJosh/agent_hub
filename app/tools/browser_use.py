@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """Drive a browser to a goal with the vision-only role.
 
 Carries out a plain-language task in the server's managed browser and
 hands back the status, the summary, and the files that came down.
 """
+
+from __future__ import annotations
 
 __all__ = ["browser_use_tool"]
 

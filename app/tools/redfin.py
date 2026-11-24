@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """Search Redfin for properties by address, city, or zipcode.
 
 Gives back a markdown table of price, beds, baths, sqft, and dates for
 active listings and sold homes.
 """
+
+from __future__ import annotations
 
 __all__ = ["redfin_search_tool"]
 

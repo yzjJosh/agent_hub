@@ -225,10 +225,6 @@ class FakeSnapshot:
         self._record("upload_with_chooser_relative", (x, y, file_paths, verbose))
         return True
 
-    async def move_mouse_to_relative(self, x: float, y: float, verbose: bool = False) -> bool:
-        self._record("move_mouse_to_relative", (x, y, verbose))
-        return True
-
     async def type_text_at_relative(
         self, x: float, y: float, text: str, submit: bool = False, verbose: bool = False
     ) -> bool:

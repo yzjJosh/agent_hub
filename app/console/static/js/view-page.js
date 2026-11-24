@@ -3,6 +3,7 @@
 // helpers, and it may import only the files below.
 
 import { copyToClipboard } from "./clipboard.js";
+import { fmtBytes } from "./format.js";
 import { initAudioCard } from "./audio-card.js";
 import { mountPdfViewer } from "./pdf-viewer.js";
 
@@ -480,7 +481,7 @@ function _initPdfs(root) {
 function _presentationToolbar(d, dlHref) {
   return '<div class="well-topbar">'
     + '<span class="chip">' + _esc(d.kind_label || "") + "</span>"
-    + '<span class="well-note">' + _esc(_bytes(d.size)) + "</span>"
+    + '<span class="well-note">' + _esc(d.size != null ? fmtBytes(d.size) : "") + "</span>"
     + '<span class="well-actions">'
     + '<a class="vp-icon-btn" href="/view/' + _encPath(d.path) + '" target="_blank" '
     + 'title="Open full-screen" aria-label="Open full-screen"><span data-vp-icon="open"></span></a>'

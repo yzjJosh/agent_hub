@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """Deep research over a goal.
 
 Plans the work, gathers evidence from multiple web sources, drafts, and
 reviews before returning a cited markdown report.
 """
+
+from __future__ import annotations
 
 __all__ = ["research_tool"]
 

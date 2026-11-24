@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Turn a web address, a file, or plain text into text a model can read."""
+
+from __future__ import annotations
 
 __all__ = ["BINARY_PASSTHROUGH_TAG", "ResolveError", "resolve_input"]
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Drive a Chrome browser that is already running.
 
 Opens tabs, acts on pages, and picks up files the page downloads.
@@ -17,6 +15,8 @@ Example:
     finally:
         await mgr.cleanup()
 """
+
+from __future__ import annotations
 __all__ = ["BrowserManager", "Viewport"]
 
 import asyncio

@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """Tests for the redfin_search tool.
 
 Every test goes through the tool's run interface, and only the browser is faked.
 """
+
+from __future__ import annotations
 
 import os
 import shutil
