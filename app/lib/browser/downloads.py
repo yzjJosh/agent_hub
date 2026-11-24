@@ -69,7 +69,7 @@ def _list_download_files(download_dir: str) -> dict[str, float]:
 
 
 async def _snapshot_download_dir(download_dir: str, verbose: bool = False) -> dict[str, float]:
-    """Read completed files and modification times without blocking the event loop."""
+    """Read completed files and modification times in a download folder."""
     result = await asyncio.to_thread(_list_download_files, download_dir)
     if verbose:
         print(f"[downloads._snapshot_download_dir] Found {len(result)} files", flush=True)
@@ -127,7 +127,7 @@ async def _await_download_completion(
     events: _DownloadEvents,
     download_dir: str,
     snapshot_before: dict[str, float],
-    timeout: int,
+    timeout: float,
     verbose: bool,
 ) -> str | None:
     """Wait for the completion event or fall back to claiming one new file."""
@@ -148,7 +148,7 @@ async def _claim_download(
     download_dir: str,
     trigger_action: Callable[[], Awaitable[bool]],
     snapshot_before: dict[str, float],
-    timeout: int,
+    timeout: float,
     verbose: bool,
 ) -> str | None:
     """Run a download trigger action and return the claimed file path."""
@@ -200,7 +200,7 @@ async def wait_for_page_download(
     download_dir: str,
     trigger_action: Callable[[], Awaitable[bool]],
     save_path: str | None = None,
-    timeout: int = _DEFAULT_DOWNLOAD_TIMEOUT_S,
+    timeout: float = _DEFAULT_DOWNLOAD_TIMEOUT_S,
     verbose: bool = False,
 ) -> DownloadResult:
     """Run a step that may start a download and pick up the finished file.

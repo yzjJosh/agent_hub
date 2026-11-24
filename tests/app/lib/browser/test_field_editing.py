@@ -111,7 +111,7 @@ class TestReplaceFocusedFieldText:
         main_frame.evaluate.assert_not_awaited()
 
     async def test_returns_false_when_inner_frame_cannot_be_accessed(self) -> None:
-        """An unreachable child frame fails cleanly without typing."""
+        """An unreachable child frame returns False without typing."""
         main_frame = _build_frame([], child_frame=None, has_inner_frame_element=True)
         page = _build_page(main_frame)
 
@@ -149,7 +149,7 @@ class TestReplaceFocusedFieldText:
         assert result is False
 
     async def test_returns_false_when_page_evaluation_raises(self) -> None:
-        """Unexpected Playwright exceptions return False."""
+        """Return False when frame evaluation raises an error."""
         frame = _build_frame([])
         frame.evaluate_handle = AsyncMock(side_effect=RuntimeError("frame detached"))
         page = _build_page(frame)

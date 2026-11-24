@@ -83,7 +83,7 @@ class TestScrollByPixels:
         """Both horizontal and vertical wheel steps sum to the requested distances."""
         page = _build_page_with_locator([])
 
-        result = await scroll_by_pixels(page, _WHEEL_DISTANCE, dx=_SIDEWAYS_DISTANCE)
+        result = await scroll_by_pixels(page, _WHEEL_DISTANCE, horizontal_pixels=_SIDEWAYS_DISTANCE)
 
         assert result is True
         wheel_calls = page.mouse.wheel.await_args_list

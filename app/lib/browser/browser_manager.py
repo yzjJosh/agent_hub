@@ -261,7 +261,7 @@ class BrowserManager:
         return self._pages[target_id]
 
     def _lookup_page_or_log(self, target_id: str, method_name: str) -> Page | None:
-        """Look up a tracked page and log an error to stderr when missing."""
+        """Return a tracked page, or None when missing."""
         page = self._pages.get(target_id)
         if page is None:
             print(f"[BrowserManager.{method_name}] Error: target_id not found: {target_id}", file=sys.stderr)
@@ -306,7 +306,7 @@ class BrowserManager:
             return None
 
     async def _track_page(self, page: Page) -> str:
-        """Assign an id, attach a tab session, and add the page to owned tabs."""
+        """Register a page as an owned tab and return its id."""
         target_id: str = uuid.uuid4().hex
         page.on("popup", self._on_popup)
         page.on("close", self._on_page_closed)
@@ -621,7 +621,7 @@ class BrowserManager:
         page = self._lookup_page_or_log(target_id, "scroll_by")
         if page is None:
             return False
-        return await scroll_by_pixels(page, distance, dx=dx, verbose=verbose)
+        return await scroll_by_pixels(page, distance, horizontal_pixels=dx, verbose=verbose)
 
     async def scroll_by_relative(
         self,
@@ -1210,7 +1210,7 @@ class BrowserManager:
             pass
 
     async def _capture_page_data(self, page: Page, target_id: str, verbose: bool) -> PageSnapshot:
-        """Read HTML, URL, title, and viewport to build a PageSnapshot."""
+        """Build a snapshot from the current page."""
         html = await _await_page_call(page.content(), "page content")
         current_url = page.url
         try:
@@ -1688,7 +1688,7 @@ class BrowserManager:
         _CONNECTED_MANAGERS.discard(self)
 
     async def _close_browser_resources(self, verbose: bool) -> None:
-        """Close the browser handle and stop Playwright with bounded timeouts."""
+        """Close the browser handle and stop the browser driver with bounded timeouts."""
         if self._browser is not None:
             try:
                 await asyncio.wait_for(self._browser.close(), timeout=_CLEANUP_STEP_TIMEOUT_S)

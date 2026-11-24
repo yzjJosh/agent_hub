@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import NotRequired, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,6 +60,12 @@ class TestDownloadTypes:
         assert empty["downloaded"] is False
         assert complete["filename"] == "report.pdf"
         assert complete["size"] == 42
+        assert get_type_hints(DownloadResult, include_extras=True) == {
+            "downloaded": bool,
+            "path": NotRequired[str],
+            "filename": NotRequired[str],
+            "size": NotRequired[int],
+        }
 
 
 class TestWaitForPageDownload:

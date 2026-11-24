@@ -131,7 +131,7 @@ async def _scroll_with_wheel(page: Page, dx: float, dy: float, verbose: bool = F
 
 
 async def _wait_until_scroll_settled(read_viewport: Callable[[], Awaitable[Viewport | None]]) -> bool:
-    """Wait until two consecutive viewport reads report the same scroll position."""
+    """Wait until the page stops scrolling."""
     deadline = time.monotonic() + _SCROLL_SETTLE_TIMEOUT_S
     previous_position: _Point | None = None
     while time.monotonic() < deadline:
@@ -221,7 +221,7 @@ async def _read_element_center(locator: Locator) -> _Point | None:
     )
 
 
-async def _step_selector_scroll(
+async def _scroll_once_toward_locator(
     page: Page,
     locator: Locator,
     center: _Point,
@@ -230,34 +230,43 @@ async def _step_selector_scroll(
     move_mouse: Callable[[float, float], Awaitable[bool]],
     verbose: bool,
 ) -> _Point | None:
-    """Move the pointer near the element, scroll toward it, and re-read its center."""
+    """Scroll one step toward the element and return its updated center."""
     hover_x = max(_SCROLL_MARGIN_PX, min(center.x, viewport_width - _SCROLL_MARGIN_PX))
     hover_y = max(_SCROLL_MARGIN_PX, min(center.y, viewport_height - _SCROLL_MARGIN_PX))
     await move_mouse(hover_x, hover_y)
     delta_x = max(-_SCROLL_STEP_MAX_PX, min(center.x - viewport_width / 2, _SCROLL_STEP_MAX_PX))
     delta_y = max(-_SCROLL_STEP_MAX_PX, min(center.y - viewport_height / 2, _SCROLL_STEP_MAX_PX))
     if verbose:
-        print(f"[scrolling._step_selector_scroll] Center ({center.x}, {center.y}) scrolling by ({delta_x}, {delta_y})", flush=True)
+        print(
+            f"[scrolling._scroll_once_toward_locator] Center ({center.x}, {center.y}) "
+            f"scrolling by ({delta_x}, {delta_y})",
+            flush=True,
+        )
     await _scroll_with_wheel(page, delta_x, delta_y, verbose=verbose)
     return await _read_element_center(locator)
 
 
-async def scroll_by_pixels(page: Page, distance: float, dx: float = 0.0, verbose: bool = False) -> bool:
+async def scroll_by_pixels(
+    page: Page,
+    vertical_pixels: float,
+    horizontal_pixels: float = 0.0,
+    verbose: bool = False,
+) -> bool:
     """Scroll a page by a given number of pixels.
 
     Args:
         page: The page to scroll.
-        distance: Vertical distance in pixels, positive scrolls down.
-        dx: Horizontal distance in pixels, positive scrolls right.
+        vertical_pixels: Vertical distance in pixels, positive scrolls down.
+        horizontal_pixels: Horizontal distance in pixels, positive scrolls right.
         verbose: Print progress lines when True.
 
     Returns:
         True if the full scroll completed.
     """
     if verbose:
-        print(f"[scrolling.scroll_by_pixels] Scrolling by ({dx}, {distance})px", flush=True)
+        print(f"[scrolling.scroll_by_pixels] Scrolling by ({horizontal_pixels}, {vertical_pixels})px", flush=True)
     try:
-        await _scroll_with_wheel(page, dx, distance, verbose=verbose)
+        await _scroll_with_wheel(page, horizontal_pixels, vertical_pixels, verbose=verbose)
         if verbose:
             print("[scrolling.scroll_by_pixels] Success", flush=True)
         return True
@@ -346,13 +355,13 @@ async def scroll_selector_into_view(
         if viewport is None:
             print("[scrolling.scroll_selector_into_view] Error: could not read the viewport", file=sys.stderr)
             return False
-        return await _scroll_locator_loop(page, locator, center, viewport, move_mouse, verbose)
+        return await _scroll_until_locator_visible(page, locator, center, viewport, move_mouse, verbose)
     except Exception as exc:
         print(f"[scrolling.scroll_selector_into_view] Error: {exc}", file=sys.stderr)
         return False
 
 
-async def _scroll_locator_loop(
+async def _scroll_until_locator_visible(
     page: Page,
     locator: Locator,
     center: _Point,
@@ -367,7 +376,7 @@ async def _scroll_locator_loop(
     for _ in range(_SCROLL_VIEW_MAX_ITERATIONS):
         if is_in_viewport:
             return True
-        next_center = await _step_selector_scroll(page, locator, center, width, height, move_mouse, verbose)
+        next_center = await _scroll_once_toward_locator(page, locator, center, width, height, move_mouse, verbose)
         if next_center is None:
             stagnant_count += 1
         else:
