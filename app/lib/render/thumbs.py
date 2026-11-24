@@ -77,7 +77,7 @@ def start_thumbnail_job(key: str, kind: RenderKind, path: str) -> bool:
     Args:
         key: The name the file is saved under.
         kind: What sort of file this is.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         True when a job was started.
@@ -98,10 +98,10 @@ def _files_in_dir(rel_dir: str) -> list[tuple[str, str, int]]:
     """Find the files in one folder.
 
     Args:
-        rel_dir: A folder inside the shared folder.
+        rel_dir: A folder inside the resources folder.
 
     Returns:
-        The full path, the shared path, and the change time of each file.
+        The full path, the resource path, and the change time of each file.
 
     Raises:
         FileNotFoundError: If there is no such folder.
@@ -115,7 +115,7 @@ def _files_in_dir(rel_dir: str) -> list[tuple[str, str, int]]:
         for entry in it:
             if not entry.is_file():
                 continue
-            # The path is relative to the shared folder, never a bare file name.
+            # The path is relative to the resources folder, never a bare file name.
             rel = os.path.relpath(entry.path, base).replace(os.sep, "/")
             found.append((entry.path, rel, int(entry.stat().st_mtime)))
     return found
@@ -125,7 +125,7 @@ async def _scan_dir_for_thumbs(rel_dir: str) -> list[tuple[str, RenderKind, str]
     """Find the files in one folder that still need a thumbnail.
 
     Args:
-        rel_dir: A folder inside the shared folder.
+        rel_dir: A folder inside the resources folder.
 
     Returns:
         The saved name, kind, and path of each file that needs one.
@@ -148,7 +148,7 @@ async def start_dir_thumbnails(rel_dir: str) -> int:
     """Start a thumbnail job for every file in one folder that needs one.
 
     Args:
-        rel_dir: A folder inside the shared folder.
+        rel_dir: A folder inside the resources folder.
 
     Returns:
         How many jobs were started.
@@ -162,10 +162,10 @@ async def start_dir_thumbnails(rel_dir: str) -> int:
 
 
 def _resolve_existing_file(path: str) -> str | None:
-    """Find where a shared file is on disk.
+    """Find where a resource file is on disk.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The full path, or None when the path is not allowed or there is no
@@ -187,7 +187,7 @@ async def _thumb_job(key: str, kind: RenderKind, path: str) -> None:
     Args:
         key: The name the file is saved under.
         kind: What sort of file this is.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
     """
     try:
         full = await asyncio.to_thread(_resolve_existing_file, path)

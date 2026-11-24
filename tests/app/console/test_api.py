@@ -34,7 +34,7 @@ from tests.app.conftest import (
     require_novnc,
     seed_task,
     write_run_file,
-    write_share_file,
+    write_resource_file,
 )
 from tests.app.console.conftest import console_env, wait_record
 
@@ -179,8 +179,8 @@ def dav_download_app() -> Starlette:
     return app
 
 
-def _write(share: Path, rel: str, content: str) -> Path:
-    p = share / rel
+def _write(resources: Path, rel: str, content: str) -> Path:
+    p = resources / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
     return p
@@ -194,10 +194,10 @@ def _write(share: Path, rel: str, content: str) -> Path:
     ],
 )
 async def test_dav_download_serves_file_as_attachment(
-    rel: str, content_disposition: str, dav_share: Path, dav_download_app: Starlette
+    rel: str, content_disposition: str, dav_resources_dir: Path, dav_download_app: Starlette
 ) -> None:
     """A download gives back the file bytes as an attachment named after the file."""
-    _write(dav_share, rel, "hello download")
+    _write(dav_resources_dir, rel, "hello download")
     async with httpx.AsyncClient(transport=ASGITransport(app=dav_download_app), base_url="http://t") as c:
         r = await c.get("/dav/dl", params={"path": rel})
     assert r.status_code == 200
@@ -205,9 +205,9 @@ async def test_dav_download_serves_file_as_attachment(
     assert r.headers["content-disposition"] == content_disposition
 
 
-async def test_dav_download_strips_leading_slash(dav_share: Path, dav_download_app: Starlette) -> None:
+async def test_dav_download_strips_leading_slash(dav_resources_dir: Path, dav_download_app: Starlette) -> None:
     """A leading slash on the path is ignored."""
-    _write(dav_share, "upload/x.txt", "hello download")
+    _write(dav_resources_dir, "upload/x.txt", "hello download")
     async with httpx.AsyncClient(transport=ASGITransport(app=dav_download_app), base_url="http://t") as c:
         r = await c.get("/dav/dl", params={"path": "/upload/x.txt"})
     assert r.status_code == 200
@@ -227,10 +227,10 @@ async def test_dav_download_missing_param_is_400(dav_download_app: Starlette) ->
 
 @pytest.mark.parametrize("path", ["upload/missing.txt", "../../etc/passwd", "..", "a/../../b"])
 async def test_dav_download_missing_or_traversal_is_404(
-    path: str, dav_share: Path, dav_download_app: Starlette
+    path: str, dav_resources_dir: Path, dav_download_app: Starlette
 ) -> None:
-    """A missing file and every path that climbs out of the share answer 404."""
-    _write(dav_share, "upload/real.txt", "control")
+    """A missing file and every path that climbs out of the resources folder answer 404."""
+    _write(dav_resources_dir, "upload/real.txt", "control")
     async with httpx.AsyncClient(transport=ASGITransport(app=dav_download_app), base_url="http://t") as c:
         control = await c.get("/dav/dl", params={"path": "upload/real.txt"})
         assert control.status_code == 200  # a real file downloads, so the 404s below are real misses
@@ -241,10 +241,10 @@ async def test_dav_download_missing_or_traversal_is_404(
 
 @pytest.mark.parametrize(("method", "is_recorded"), [("GET", True), ("HEAD", False)])
 async def test_dav_download_records_interest_on_get(
-    method: str, is_recorded: bool, dav_share: Path, dav_download_app: Starlette
+    method: str, is_recorded: bool, dav_resources_dir: Path, dav_download_app: Starlette
 ) -> None:
     """A download renews retention, a HEAD request does not."""
-    path = _write(dav_share, "upload/old.txt", "old")
+    path = _write(dav_resources_dir, "upload/old.txt", "old")
     old = time.time() - 40 * 86400
     os.utime(path, (old, old))
     async with httpx.AsyncClient(transport=ASGITransport(app=dav_download_app), base_url="http://t") as c:
@@ -677,8 +677,8 @@ async def test_presentations_empty(api_client: httpx.AsyncClient) -> None:
 
 
 async def test_presentations_returns_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async with console_env(tmp_path, monkeypatch) as (client, share):
-        write_share_file(share, "upload/a.png", b"\x89PNG fake")
+    async with console_env(tmp_path, monkeypatch) as (client, resources):
+        write_resource_file(resources, "upload/a.png", b"\x89PNG fake")
         await store_module.presentation_store.insert(
             "a" * 16, (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "/view/presentation/aaaaaaaaaaaaaaaa", ["upload/a.png"],
@@ -699,8 +699,8 @@ async def test_presentations_returns_rows(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 async def test_presentations_title_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async with console_env(tmp_path, monkeypatch) as (client, share):
-        write_share_file(share, "upload/a.png", b"\x89PNG fake")
+    async with console_env(tmp_path, monkeypatch) as (client, resources):
+        write_resource_file(resources, "upload/a.png", b"\x89PNG fake")
         await store_module.presentation_store.insert(
             "a" * 16, (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
             "/view/presentation/aaaaaaaaaaaaaaaa", ["upload/a.png"], title="Weekly report",
@@ -716,8 +716,8 @@ async def test_presentations_title_field(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 async def test_presentations_partial_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async with console_env(tmp_path, monkeypatch) as (client, share):
-        write_share_file(share, "upload/a.png", b"\x89PNG fake")
+    async with console_env(tmp_path, monkeypatch) as (client, resources):
+        write_resource_file(resources, "upload/a.png", b"\x89PNG fake")
         await store_module.presentation_store.insert(
             "b" * 16, (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "/view/presentation/bbbbbbbbbbbbbbbb", ["upload/a.png", "upload/gone.png"],
@@ -732,7 +732,7 @@ async def test_presentations_partial_state(tmp_path: Path, monkeypatch: pytest.M
 
 
 async def test_presentations_30day_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async with console_env(tmp_path, monkeypatch) as (client, _share):
+    async with console_env(tmp_path, monkeypatch) as (client, _resources):
         old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
         await store_module.presentation_store.insert(
             "c" * 16, old, "/view/presentation/cccccccccccccccc", ["upload/a.png"],
@@ -847,7 +847,7 @@ async def test_cancel_worker_exception_retrieved(
     await wait_record(str(live.id), "cancelled")
 
 
-def _make_share(root: Path) -> None:
+def _make_resources(root: Path) -> None:
     (root / "downloads").mkdir(parents=True)
     (root / "downloads" / "cat.jpg").write_bytes(b"x" * 100)
     (root / "uploads").mkdir()
@@ -856,9 +856,9 @@ def _make_share(root: Path) -> None:
 
 
 async def test_resources_root_listing(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    _make_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    _make_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources")
     assert r.status_code == 200
@@ -881,9 +881,9 @@ async def test_resources_root_listing(api_client: httpx.AsyncClient, tmp_path: P
 
 
 async def test_resources_subdir_listing(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    _make_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    _make_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources", params={"path": "downloads/"})
     body = r.json()
@@ -904,9 +904,9 @@ async def test_resources_dot_segments_echo_normalized(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A path with dot parts comes back cleaned up, naming the folder that was listed."""
-    share = tmp_path / "share"
-    _make_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    _make_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources", params={"path": "downloads/./.."})
     assert r.status_code == 200
@@ -921,9 +921,9 @@ async def test_resources_dot_segments_echo_normalized(
 
 
 async def test_resources_missing_and_traversal(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    share.mkdir()
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     r = await api_client.get("/api/resources", params={"path": "nope"})
     assert r.status_code == 404
     assert r.json()["code"] == "not_found"
@@ -935,9 +935,9 @@ async def test_resources_missing_and_traversal(api_client: httpx.AsyncClient, tm
 @pytest.mark.parametrize("raw_query", ["path=%00", "path=downloads%00x"])
 async def test_resources_nul_path_returns_bad_param(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_query: str) -> None:
     """A NUL byte in the path answers the JSON 400 bad_param."""
-    share = tmp_path / "share"
-    _make_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    _make_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     r = await api_client.get(f"/api/resources?{raw_query}")
     assert r.status_code == 400
     assert r.headers["content-type"].startswith("application/json")
@@ -951,12 +951,12 @@ async def test_resources_nul_path_returns_bad_param(api_client: httpx.AsyncClien
 async def test_resources_listing_skips_vanished_entries(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A broken link in the share is skipped and the rest still lists."""
-    share = tmp_path / "share"
-    _make_share(share)
-    (share / "broken-top").symlink_to("missing-target")
-    (share / "downloads" / "broken-nested").symlink_to("missing-target")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    """A broken link in the resources folder is skipped and the rest still lists."""
+    resources = tmp_path / "resources"
+    _make_resources(resources)
+    (resources / "broken-top").symlink_to("missing-target")
+    (resources / "downloads" / "broken-nested").symlink_to("missing-target")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources")
     assert r.status_code == 200
@@ -967,20 +967,20 @@ async def test_resources_listing_skips_vanished_entries(
     assert d["file_count"] == 1 and d["total_size"] == 100
 
 
-async def test_resources_listing_skips_symlinks_out_of_share(
+async def test_resources_listing_skips_symlinks_out_of_resources(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Links that point outside the share are left out of the listing."""
-    share = tmp_path / "share"
+    """Links that point outside the resources folder are left out of the listing."""
+    resources = tmp_path / "resources"
     outside = tmp_path / "outside"
-    share.mkdir()
+    resources.mkdir()
     (outside / "target-dir").mkdir(parents=True)
     (outside / "target-dir" / "leak.bin").write_bytes(b"z" * 500)
     (outside / "leak-file.bin").write_bytes(b"z" * 500)
-    (share / "keep.txt").write_text("hello")
-    (share / "escape-dir").symlink_to(outside / "target-dir")
-    (share / "escape-file").symlink_to(outside / "leak-file.bin")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    (resources / "keep.txt").write_text("hello")
+    (resources / "escape-dir").symlink_to(outside / "target-dir")
+    (resources / "escape-file").symlink_to(outside / "leak-file.bin")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources")
     assert r.status_code == 200
@@ -990,12 +990,12 @@ async def test_resources_listing_skips_symlinks_out_of_share(
 
 
 async def test_resources_search(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    (share / "downloads" / "deep").mkdir(parents=True)
-    (share / "downloads" / "deep" / "coffee-notes.txt").write_text("notes")
-    (share / "downloads" / "cat.jpg").write_bytes(b"x" * 50)
-    (share / "README.md").write_text("# hi")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    (resources / "downloads" / "deep").mkdir(parents=True)
+    (resources / "downloads" / "deep" / "coffee-notes.txt").write_text("notes")
+    (resources / "downloads" / "cat.jpg").write_bytes(b"x" * 50)
+    (resources / "README.md").write_text("# hi")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources/search", params={"q": "CAT"})
     assert r.status_code == 200
@@ -1016,11 +1016,11 @@ async def test_resources_search_skips_vanished_entries(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A broken link that matches the search is skipped and the rest still comes back."""
-    share = tmp_path / "share"
-    share.mkdir()
-    (share / "green.txt").write_text("notes")
-    (share / "broken-link").symlink_to("missing-target")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "green.txt").write_text("notes")
+    (resources / "broken-link").symlink_to("missing-target")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources/search", params={"q": "e"})
     assert r.status_code == 200
@@ -1030,10 +1030,10 @@ async def test_resources_search_skips_vanished_entries(
 
 
 async def test_resources_search_matches_dirs_and_descendants(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    (share / "a" / "b" / "c").mkdir(parents=True)
-    (share / "a" / "b" / "c" / "f.txt").write_text("x")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    (resources / "a" / "b" / "c").mkdir(parents=True)
+    (resources / "a" / "b" / "c" / "f.txt").write_text("x")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     body = (await api_client.get("/api/resources/search", params={"q": "a/b"})).json()
     assert body["truncated"] is False
@@ -1055,11 +1055,11 @@ async def test_resources_listing_done_thumb(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A file whose thumbnail is already rendered comes back as done."""
-    share = tmp_path / "share"
-    (share / "media_gen").mkdir(parents=True)
-    (share / "media_gen" / "a.png").write_bytes(b"x" * 100)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
-    mtime = int((share / "media_gen" / "a.png").stat().st_mtime)
+    resources = tmp_path / "resources"
+    (resources / "media_gen").mkdir(parents=True)
+    (resources / "media_gen" / "a.png").write_bytes(b"x" * 100)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
+    mtime = int((resources / "media_gen" / "a.png").stat().st_mtime)
     thumb_dir = Path(os.environ["DATA_DIR"]) / "render" / cache.key_for("media_gen/a.png", mtime)
     thumb_dir.mkdir(parents=True, exist_ok=True)
     (thumb_dir / "thumb.png").write_bytes(b"png")
@@ -1079,10 +1079,10 @@ async def test_resources_listing_no_engine_thumb(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A kind that gets no thumbnail engine comes back as none."""
-    share = tmp_path / "share"
-    share.mkdir()
-    (share / "song.mp3").write_bytes(b"x")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "song.mp3").write_bytes(b"x")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     body = (await api_client.get("/api/resources")).json()
     e = body["entries"][0]
@@ -1090,19 +1090,19 @@ async def test_resources_listing_no_engine_thumb(
     assert e["thumb"]["status"] == "none"
 
 
-def _make_cap_share(root: Path) -> None:
+def _make_cap_resources(root: Path) -> None:
     for i in range(5000):
         (root / f"x{i:05d}").mkdir()
     (root / "a.txt").write_text("x")
 
 
 async def test_resources_search_limit_truncates(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    share.mkdir()
-    (share / "f0.log").write_text("x")
-    (share / "f1.log").write_text("x")
-    (share / "f2.log").write_text("x")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "f0.log").write_text("x")
+    (resources / "f1.log").write_text("x")
+    (resources / "f2.log").write_text("x")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     body = (await api_client.get("/api/resources/search", params={"q": "f", "limit": 2})).json()
     assert [m["path"] for m in body["matches"]] == ["f0.log", "f1.log"]
@@ -1110,29 +1110,29 @@ async def test_resources_search_limit_truncates(api_client: httpx.AsyncClient, t
 
 
 async def test_resources_search_node_cap(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    share.mkdir()
-    _make_cap_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _make_cap_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     body = (await api_client.get("/api/resources/search", params={"q": "a"})).json()
     assert body["truncated"] is True
     assert [m["path"] for m in body["matches"]] == ["a.txt"]
 
 
-async def test_resources_search_skips_symlinks_out_of_share(
+async def test_resources_search_skips_symlinks_out_of_resources(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Links that point outside the share are not matched and not followed."""
-    share = tmp_path / "share"
+    """Links that point outside the resources folder are not matched and not followed."""
+    resources = tmp_path / "resources"
     outside = tmp_path / "outside"
-    share.mkdir()
+    resources.mkdir()
     outside.mkdir()
-    (share / "passwd-notes.txt").write_text("in share")
+    (resources / "passwd-notes.txt").write_text("in resources")
     (outside / "passwd").write_text("outside")
-    (share / "zz_out").symlink_to(outside)
-    (share / "passwd_link").symlink_to(outside / "passwd")
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    (resources / "zz_out").symlink_to(outside)
+    (resources / "passwd_link").symlink_to(outside / "passwd")
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     r = await api_client.get("/api/resources/search", params={"q": "passwd"})
     assert r.status_code == 200
@@ -1141,7 +1141,7 @@ async def test_resources_search_skips_symlinks_out_of_share(
     assert [m["path"] for m in body["matches"]] == ["passwd-notes.txt"]
 
 
-def _make_capped_escape_share(root: Path, outside: Path) -> None:
+def _make_capped_escape_resources(root: Path, outside: Path) -> None:
     for i in range(4999):
         (root / f"y{i:05d}").write_text("x")
     (root / "aa_out").symlink_to(outside)
@@ -1150,14 +1150,14 @@ def _make_capped_escape_share(root: Path, outside: Path) -> None:
 async def test_resources_search_escape_does_not_consume_node_cap(
     api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A link out of the share does not count toward the walk limit."""
-    share = tmp_path / "share"
+    """A link out of the resources folder does not count toward the walk limit."""
+    resources = tmp_path / "resources"
     outside = tmp_path / "outside"
-    share.mkdir()
+    resources.mkdir()
     outside.mkdir()
     (outside / "nomatch_target.txt").write_text("x")
-    _make_capped_escape_share(share, outside)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    _make_capped_escape_resources(resources, outside)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
 
     body = (await api_client.get("/api/resources/search", params={"q": "nomatch"})).json()
     assert body["truncated"] is False
@@ -1165,9 +1165,9 @@ async def test_resources_search_escape_does_not_consume_node_cap(
 
 
 async def test_resources_search_bad_params(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    share = tmp_path / "share"
-    share.mkdir()
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     r = await api_client.get("/api/resources/search", params={"q": ""})
     assert r.status_code == 400
     assert r.json()["code"] == "bad_param"
@@ -1316,21 +1316,21 @@ _FLAKE_FILE_COUNT = 108
 _DOWNLOAD_FILE_COUNT = 12
 
 
-def _make_top_level_share(share: Path) -> None:
-    """Write a share with six top level folders."""
+def _make_top_level_resources(resources: Path) -> None:
+    """Write a resources folder with six top level folders."""
     for i in range(_FLAKE_FILE_COUNT):
-        write_share_file(share, f"debug_flake/flake_{i:03d}.txt", b"flake")
+        write_resource_file(resources, f"debug_flake/flake_{i:03d}.txt", b"flake")
     for i in range(_DOWNLOAD_FILE_COUNT):
-        write_share_file(share, f"downloads/dl_{i:02d}.png", b"png")
+        write_resource_file(resources, f"downloads/dl_{i:02d}.png", b"png")
     for folder in _TOP_FOLDERS:
-        write_share_file(share, f"{folder}/placeholder.txt", b"placeholder")
+        write_resource_file(resources, f"{folder}/placeholder.txt", b"placeholder")
 
 
 async def test_resources_renders_top_level(api_client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The six top level folders list with their exact file counts."""
-    share = tmp_path / "share"
-    _make_top_level_share(share)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    _make_top_level_resources(resources)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     body = (await api_client.get("/api/resources")).json()
     names = [e["name"] for e in body["entries"]]
     assert names == ["debug_flake", "downloads", "github", "media_gen", "tts", "upload"]
@@ -1355,9 +1355,9 @@ async def test_unregistered_tool_run_stays_readable(
 
     It cannot run again, and the tool has no page of its own.
     """
-    share = tmp_path / "share"
-    write_share_file(share, _RETIRED_FILE, E2E_PNG)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    resources = tmp_path / "resources"
+    write_resource_file(resources, _RETIRED_FILE, E2E_PNG)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     await seed_task(_RETIRED_TID, _RETIRED_TOOL, E2E_STARTED_AT, "completed",
                     params={"prompt": "a tea room"}, ended_at=E2E_ENDED_AT)
     write_run_file(store_module.task_store.data_dir, _RETIRED_TID, "result", _RETIRED_RESULT)

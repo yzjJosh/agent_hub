@@ -23,7 +23,7 @@ _TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Point the share folders and the base URL at temp values, then give back the resources and data folders."""
+    """Point the resource folders and the base URL at temp values, then give back the resources and data folders."""
     resources = tmp_path / "resources"
     data = tmp_path / "data"
     resources.mkdir()
@@ -34,8 +34,8 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     return resources, data
 
 
-def _share_file(resources: Path, rel: str, data: bytes = b"fake bytes") -> Path:
-    """Create a file in the resource share and return its absolute path."""
+def _resource_file(resources: Path, rel: str, data: bytes = b"fake bytes") -> Path:
+    """Create a file in the resources folder and return its absolute path."""
     path = resources / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -43,7 +43,7 @@ def _share_file(resources: Path, rel: str, data: bytes = b"fake bytes") -> Path:
 
 
 def _content_files(resources: Path) -> list[Path]:
-    """The presentation files written into the share."""
+    """The presentation files written into the resources folder."""
     return sorted((resources / "presentations").iterdir())
 
 
@@ -101,10 +101,10 @@ class TestValidation:
         assert "send_or_receive_file" in result
         assert calls == []
 
-    async def test_path_escaping_share_is_rejected(
+    async def test_path_escaping_resources_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A path that points outside the share is turned down and shows nothing."""
+        """A path that points outside the resources folder is turned down and shows nothing."""
         resources, _data = _env(tmp_path, monkeypatch)
         outside = resources.parent / "outside_present_to_user"
         outside.mkdir(exist_ok=True)
@@ -151,7 +151,7 @@ class TestPresentation:
     ) -> None:
         """One file with no content gives a plain view link and writes one presentation row."""
         resources, data = present_env
-        _share_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
         calls = thumb_calls(monkeypatch)
         result = await run_text(present_to_user_tool, title="t", files=["upload/pic.png"])
 
@@ -170,7 +170,7 @@ class TestPresentation:
     ) -> None:
         """A file name with a space gives an escaped view link."""
         resources, data = present_env
-        _share_file(resources, "upload/my file.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/my file.png", b"\x89PNG fake png bytes")
         calls = thumb_calls(monkeypatch)
         result = await run_text(present_to_user_tool, title="t", files=["upload/my file.png"])
 
@@ -185,7 +185,7 @@ class TestPresentation:
     ) -> None:
         """A solo presentation gives back the same link and logs a warning when the row write fails."""
         resources, _data = _env(tmp_path, monkeypatch)
-        _share_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
         calls = thumb_calls(monkeypatch)
 
         async def _raise(_id: str, _presented_at: str, _url_path: str, _files: list[str], **_kw: str | None) -> None:
@@ -204,8 +204,8 @@ class TestPresentation:
     ) -> None:
         """A multi-file presentation gives back the failure result when the row write fails."""
         resources, _data = present_env
-        _share_file(resources, "upload/a.png", b"aaa")
-        _share_file(resources, "upload/b.txt", b"bbb")
+        _resource_file(resources, "upload/a.png", b"aaa")
+        _resource_file(resources, "upload/b.txt", b"bbb")
         thumb_calls(monkeypatch)
 
         async def _raise(_id: str, _presented_at: str, _url_path: str, _files: list[str], **_kw: str | None) -> None:
@@ -217,7 +217,7 @@ class TestPresentation:
         assert result == "Tool 'present_to_user' failed: row write failed"
         assert await store_module.presentation_store.list_newest() == []
 
-    async def test_content_only_materializes_share_file(
+    async def test_content_only_materializes_resource_file(
         self, present_env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Content with no files is written to a presentation file named after the detected type."""
@@ -243,7 +243,7 @@ class TestPresentation:
     ) -> None:
         """Content plus a file gives one link for both, with a presentation row listing them."""
         resources, _data = present_env
-        _share_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
         calls = thumb_calls(monkeypatch)
         _stub_identify(monkeypatch, "txt")
         result = await run_text(present_to_user_tool, title="t", files=["upload/pic.png"], content="notes")
@@ -273,9 +273,9 @@ class TestPresentation:
     ) -> None:
         """Many files with no content give one presentation link that counts the files."""
         resources, _data = present_env
-        _share_file(resources, "upload/a.png", b"aaa")
-        _share_file(resources, "upload/b.txt", b"bbb")
-        _share_file(resources, "upload/c.md", b"ccc")
+        _resource_file(resources, "upload/a.png", b"aaa")
+        _resource_file(resources, "upload/b.txt", b"bbb")
+        _resource_file(resources, "upload/c.md", b"ccc")
         calls = thumb_calls(monkeypatch)
         result = await run_text(present_to_user_tool, title="t", files=["upload/a.png", "upload/b.txt", "upload/c.md"])
 
@@ -320,7 +320,7 @@ class TestTitle:
     ) -> None:
         """A solo presentation stores the title on its row and the link is unchanged."""
         resources, _data = present_env
-        _share_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
         thumb_calls(monkeypatch)
         result = await run_text(present_to_user_tool, title="My picture", files=["upload/pic.png"])
 
@@ -334,8 +334,8 @@ class TestTitle:
     ) -> None:
         """A multi-file presentation stores the title on its row."""
         resources, _data = present_env
-        _share_file(resources, "upload/a.png", b"aaa")
-        _share_file(resources, "upload/b.txt", b"bbb")
+        _resource_file(resources, "upload/a.png", b"aaa")
+        _resource_file(resources, "upload/b.txt", b"bbb")
         thumb_calls(monkeypatch)
         result = await run_text(present_to_user_tool, title="Two files", files=["upload/a.png", "upload/b.txt"])
 
@@ -475,7 +475,7 @@ class TestUntracked:
     ) -> None:
         """A good call writes no task rows and no run folder, but writes one presentation row."""
         resources, _data = present_env
-        _share_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
+        _resource_file(resources, "upload/pic.png", b"\x89PNG fake png bytes")
         _stub_identify(monkeypatch, "txt")
         result = await run_text(present_to_user_tool, title="t", files=["upload/pic.png"], content="notes")
 

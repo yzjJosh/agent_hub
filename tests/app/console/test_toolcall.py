@@ -62,7 +62,7 @@ class _FakeBlockingTool(Tool):
         Param("q", str, description="The query string."),
         Param("limit", int, 10, min=1, max=100, step=1, description="How many results to return."),
         Param("reference_images", list[str] | None, None, kind="resource_list",
-              description="Existing files in the share that guide the call."),
+              description="Existing files in the resources folder that guide the call."),
         Param("tags", list[str] | None, None, description="Labels to filter the results by."),
         Param("mode", str, "image", enum=("image", "video"),
               description="Which mode to run in."),

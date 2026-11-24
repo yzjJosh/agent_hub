@@ -36,7 +36,7 @@ class TestMissingReferenceMessage:
         """The message names the missing path and points at the upload tool."""
         assert missing_reference_message("upload/missing.png") == (
             "Resource not found: upload/missing.png. The resource path must already "
-            "exist in this server's resources share. Call the send_or_receive_file "
+            "exist in this server's resources folder. Call the send_or_receive_file "
             "tool for instructions to upload the file, then retry this tool with "
             "the uploaded file's resource path (e.g. 'upload/<filename>')."
         )

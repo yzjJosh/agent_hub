@@ -600,8 +600,8 @@ class _ScrollTool(_ActionTool):
     params: ClassVar[tuple[Param, ...]] = (
         Param("dx", float, description="How far to scroll sideways as a fraction of the viewport width. 1 is one screen wide, negative is left."),
         Param("dy", float, description="How far to scroll down as a fraction of the viewport height. 1 is one screen tall, negative is up."),
-        Param("x", float | None, None, min=0, max=1, description="The point on the screen the scroll is applied at, as a share of the width. Give it with y."),
-        Param("y", float | None, None, min=0, max=1, description="The point on the screen the scroll is applied at, as a share of the height. Give it with x."),
+        Param("x", float | None, None, min=0, max=1, description="The point on the screen the scroll is applied at, as a fraction of the width. Give it with y."),
+        Param("y", float | None, None, min=0, max=1, description="The point on the screen the scroll is applied at, as a fraction of the height. Give it with x."),
         Param("target_id", str | None, None, description=_TARGET_ID_DESC),
     )
 

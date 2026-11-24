@@ -26,7 +26,7 @@ from app.lib.render.cache import (
     thumb_url,
     write_doc,
 )
-from tests.app.conftest import point_share_env
+from tests.app.conftest import configure_resource_env
 
 _FIXED_MTIME = 1700000000
 
@@ -155,22 +155,22 @@ def _touch_files_oldest(root: str, ts: float) -> None:
 
 
 @pytest.fixture
-def _share_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Give the test its own share dir and data dir."""
-    return point_share_env(tmp_path, monkeypatch)
+def _resource_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Give the test its own resources dir and data dir."""
+    return configure_resource_env(tmp_path, monkeypatch)
 
 
-def _write_source(share: Path, rel: str, mtime: int) -> None:
-    """Make a file in the share with the given mtime."""
-    src = share / rel
+def _write_source(resources: Path, rel: str, mtime: int) -> None:
+    """Make a file in the resources folder with the given mtime."""
+    src = resources / rel
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("x", encoding="utf-8")
     os.utime(src, (mtime, mtime))
 
 
-async def _publish(share: Path, rel: str, mtime: int) -> str:
-    """Save a render entry for a share file and give back its key."""
-    _write_source(share, rel, mtime)
+async def _publish(resources: Path, rel: str, mtime: int) -> str:
+    """Save a render entry for a resource file and give back its key."""
+    _write_source(resources, rel, mtime)
     key = key_for(rel, mtime)
     await write_doc(key, "doc", None, {"path": rel, "mtime": mtime})
     return key
@@ -182,57 +182,57 @@ def _corrupt_meta(key: str) -> None:
         fh.write("{bad")
 
 
-async def test_sweep_removes_orphan_entry_when_source_deleted(_share_data: tuple[Path, Path]) -> None:
+async def test_sweep_removes_orphan_entry_when_source_deleted(_resource_data: tuple[Path, Path]) -> None:
     """An entry is removed when its source file is deleted."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     removed = sweep_sync(30)
     assert removed == [os.path.join(render_root(), key)]
     assert await read_doc(key) is None
 
 
-async def test_sweep_removes_orphan_entry_when_source_edited(_share_data: tuple[Path, Path]) -> None:
+async def test_sweep_removes_orphan_entry_when_source_edited(_resource_data: tuple[Path, Path]) -> None:
     """An entry is removed when its source file changes."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    os.utime(share / "upload" / "a.md", (_FIXED_MTIME + 1, _FIXED_MTIME + 1))
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    os.utime(resources / "upload" / "a.md", (_FIXED_MTIME + 1, _FIXED_MTIME + 1))
     removed = sweep_sync(30)
     assert removed == [os.path.join(render_root(), key)]
     assert await read_doc(key) is None
 
 
-async def test_sweep_keeps_entry_with_live_source(_share_data: tuple[Path, Path]) -> None:
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
+async def test_sweep_keeps_entry_with_live_source(_resource_data: tuple[Path, Path]) -> None:
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
     assert sweep_sync(30) == []
     assert await read_doc(key) == ("doc", {"path": "upload/a.md", "mtime": _FIXED_MTIME})
 
 
-async def test_sweep_keeps_entry_with_missing_meta(_share_data: tuple[Path, Path]) -> None:
+async def test_sweep_keeps_entry_with_missing_meta(_resource_data: tuple[Path, Path]) -> None:
     """An entry with no saved info is kept even when the source file is gone."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     os.remove(os.path.join(render_root(), key, "meta.json"))
     assert sweep_sync(30) == []
     assert os.path.isdir(os.path.join(render_root(), key))
 
 
-async def test_sweep_keeps_entry_with_corrupt_meta(_share_data: tuple[Path, Path]) -> None:
+async def test_sweep_keeps_entry_with_corrupt_meta(_resource_data: tuple[Path, Path]) -> None:
     """An entry with unreadable saved info is kept even when the source file is gone."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     _corrupt_meta(key)
     assert sweep_sync(30) == []
     assert os.path.isdir(os.path.join(render_root(), key))
 
 
-async def test_sweep_never_touches_staging_and_state(_share_data: tuple[Path, Path]) -> None:
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+async def test_sweep_never_touches_staging_and_state(_resource_data: tuple[Path, Path]) -> None:
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     root = render_root()
     staging = os.path.join(root, f".staging-{key}-{os.getpid()}-1")
     os.makedirs(staging)
@@ -246,23 +246,23 @@ async def test_sweep_never_touches_staging_and_state(_share_data: tuple[Path, Pa
     assert os.path.isfile(_marker_path(orphan, "convert"))
 
 
-async def test_sweep_still_removes_stale_files(_share_data: tuple[Path, Path]) -> None:
+async def test_sweep_still_removes_stale_files(_resource_data: tuple[Path, Path]) -> None:
     """An old entry is still removed when its source file is fine."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
     _touch_files_oldest(render_root(), time.time() - 40 * 86400)
     removed = sweep_sync(30)
     assert any(f"render/{key}" in p for p in removed)
     assert await read_doc(key) is None
 
 
-async def test_invalidate_removes_entry_and_markers_when_source_deleted(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_removes_entry_and_markers_when_source_deleted(_resource_data: tuple[Path, Path]) -> None:
     """A deleted source removes the entry and both of its failure marks."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
     await mark_failed(key, "thumb", "engine failed")
     await mark_failed(key, "convert", "engine failed")
-    (share / "upload" / "a.md").unlink()
+    (resources / "upload" / "a.md").unlink()
     root = render_root()
     removed = invalidate_sync("upload/a.md")
     assert removed == [
@@ -273,58 +273,58 @@ async def test_invalidate_removes_entry_and_markers_when_source_deleted(_share_d
     assert await read_doc(key) is None
 
 
-async def test_invalidate_removes_entry_when_source_overwritten(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_removes_entry_when_source_overwritten(_resource_data: tuple[Path, Path]) -> None:
     """A changed source removes the old entry."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    os.utime(share / "upload" / "a.md", (_FIXED_MTIME + 1, _FIXED_MTIME + 1))
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    os.utime(resources / "upload" / "a.md", (_FIXED_MTIME + 1, _FIXED_MTIME + 1))
     removed = invalidate_sync("upload/a.md")
     assert removed == [os.path.join(render_root(), key)]
     assert await read_doc(key) is None
 
 
-async def test_invalidate_keeps_entry_with_live_source(_share_data: tuple[Path, Path]) -> None:
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
+async def test_invalidate_keeps_entry_with_live_source(_resource_data: tuple[Path, Path]) -> None:
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
     assert invalidate_sync("upload/a.md") == []
     assert await read_doc(key) == ("doc", {"path": "upload/a.md", "mtime": _FIXED_MTIME})
 
 
-async def test_invalidate_skips_entry_with_corrupt_meta(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_skips_entry_with_corrupt_meta(_resource_data: tuple[Path, Path]) -> None:
     """An entry with unreadable saved info is kept."""
-    share, _data = _share_data
-    key = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     _corrupt_meta(key)
     assert invalidate_sync("upload/a.md") == []
     assert os.path.isdir(os.path.join(render_root(), key))
 
 
-async def test_invalidate_without_entries_returns_empty(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_without_entries_returns_empty(_resource_data: tuple[Path, Path]) -> None:
     """A path with no cached entries gives back an empty list."""
-    _share, _data = _share_data
+    _resources, _data = _resource_data
     assert invalidate_sync("upload/never-rendered.md") == []
 
 
-async def test_invalidate_ignores_other_paths(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_ignores_other_paths(_resource_data: tuple[Path, Path]) -> None:
     """Only the given path and files under it are removed."""
-    share, _data = _share_data
-    key_a = await _publish(share, "upload/a.md", _FIXED_MTIME)
-    key_b = await _publish(share, "upload/b.md", _FIXED_MTIME)
-    key_prefix = await _publish(share, "upload/a.md.bak", _FIXED_MTIME)
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key_a = await _publish(resources, "upload/a.md", _FIXED_MTIME)
+    key_b = await _publish(resources, "upload/b.md", _FIXED_MTIME)
+    key_prefix = await _publish(resources, "upload/a.md.bak", _FIXED_MTIME)
+    (resources / "upload" / "a.md").unlink()
     removed = invalidate_sync("upload/a.md")
     assert removed == [os.path.join(render_root(), key_a)]
     assert await read_doc(key_b) == ("doc", {"path": "upload/b.md", "mtime": _FIXED_MTIME})
     assert await read_doc(key_prefix) == ("doc", {"path": "upload/a.md.bak", "mtime": _FIXED_MTIME})
 
 
-async def test_invalidate_removes_entries_under_deleted_folder(_share_data: tuple[Path, Path]) -> None:
+async def test_invalidate_removes_entries_under_deleted_folder(_resource_data: tuple[Path, Path]) -> None:
     """Deleting a folder removes every entry under it, nested ones too."""
-    share, _data = _share_data
-    key_a = await _publish(share, "upload/x/a.md", _FIXED_MTIME)
-    key_b = await _publish(share, "upload/x/sub/b.md", _FIXED_MTIME)
-    shutil.rmtree(share / "upload" / "x")
+    resources, _data = _resource_data
+    key_a = await _publish(resources, "upload/x/a.md", _FIXED_MTIME)
+    key_b = await _publish(resources, "upload/x/sub/b.md", _FIXED_MTIME)
+    shutil.rmtree(resources / "upload" / "x")
     removed = invalidate_sync("upload/x")
     assert sorted(removed) == sorted(
         [os.path.join(render_root(), key_a), os.path.join(render_root(), key_b)]
@@ -333,19 +333,19 @@ async def test_invalidate_removes_entries_under_deleted_folder(_share_data: tupl
     assert await read_doc(key_b) is None
 
 
-def test_sweep_sync_runs_without_an_event_loop(_share_data: tuple[Path, Path]) -> None:
+def test_sweep_sync_runs_without_an_event_loop(_resource_data: tuple[Path, Path]) -> None:
     """The garbage collector command sweeps with no event loop running."""
-    share, _data = _share_data
-    key = asyncio.run(_publish(share, "upload/a.md", _FIXED_MTIME))
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = asyncio.run(_publish(resources, "upload/a.md", _FIXED_MTIME))
+    (resources / "upload" / "a.md").unlink()
     assert sweep_sync(30) == [os.path.join(render_root(), key)]
 
 
-def test_invalidate_sync_runs_without_an_event_loop(_share_data: tuple[Path, Path]) -> None:
+def test_invalidate_sync_runs_without_an_event_loop(_resource_data: tuple[Path, Path]) -> None:
     """The WebDAV worker threads invalidate with no event loop running."""
-    share, _data = _share_data
-    key = asyncio.run(_publish(share, "upload/a.md", _FIXED_MTIME))
-    (share / "upload" / "a.md").unlink()
+    resources, _data = _resource_data
+    key = asyncio.run(_publish(resources, "upload/a.md", _FIXED_MTIME))
+    (resources / "upload" / "a.md").unlink()
     assert invalidate_sync("upload/a.md") == [os.path.join(render_root(), key)]
 
 
@@ -382,12 +382,12 @@ async def test_run_entry_swept_when_run_dir_gone(tmp_path: Path, monkeypatch: py
     assert not os.path.exists(os.path.join(_cache.render_root(), key))
 
 
-async def test_invalidate_share_path_noop_for_run_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_invalidate_resource_path_noop_for_run_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("RESOURCES_DIR", str(tmp_path / "resources"))
     task_id = str(_uuid.uuid4())
     key, _ = await _run_key_and_meta(tmp_path, task_id, b"hello")
-    removed = _cache.invalidate_sync("some/share/file.txt")
+    removed = _cache.invalidate_sync("some/resource/file.txt")
     assert removed == []
     assert os.path.isdir(os.path.join(_cache.render_root(), key))
 

@@ -22,17 +22,17 @@ def _fmt_local(mtime: int | None) -> str | None:
     return datetime.fromtimestamp(mtime).strftime(_MTIME_FMT)
 
 
-async def _file_entry(share_path: str, size: int | None, mtime: int | None) -> dict:
+async def _file_entry(resource_path: str, size: int | None, mtime: int | None) -> dict:
     entry = {
-        "path": share_path, "name": os.path.basename(share_path), "present": False,
+        "path": resource_path, "name": os.path.basename(resource_path), "present": False,
         "size": size, "mtime": mtime, "mtime_local": _fmt_local(mtime),
         "descriptor": None, "error": None,
     }
-    full = await resolve_view(share_path)
+    full = await resolve_view(resource_path)
     if full is None or not await asyncio.to_thread(os.path.isfile, full):
         return entry
     try:
-        descriptor = await build_descriptor(share_path, full)
+        descriptor = await build_descriptor(resource_path, full)
     except Exception:
         entry["present"] = True
         entry["error"] = "load_error"
@@ -40,7 +40,7 @@ async def _file_entry(share_path: str, size: int | None, mtime: int | None) -> d
     entry["present"] = True
     entry["descriptor"] = descriptor
     entry["path"] = descriptor["path"]
-    entry["size"] = descriptor["size"]          # live share facts win
+    entry["size"] = descriptor["size"]          # live resource facts win
     entry["mtime"] = descriptor["mtime"]
     entry["mtime_local"] = _fmt_local(descriptor["mtime"])
     return entry

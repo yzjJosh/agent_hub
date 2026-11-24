@@ -51,7 +51,7 @@ def text_meta(kind: RenderKind, path: str, mtime: int, size: int, extras: dict) 
 
     Args:
         kind: What sort of file this is.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         mtime: When the file last changed.
         size: How big the file is in bytes.
         extras: The extra facts that came with the HTML.

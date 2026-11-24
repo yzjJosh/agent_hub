@@ -21,12 +21,12 @@ __all__ = ["CacheInvalidatingProvider"]
 
 
 def _invalidate(rel: str | None) -> None:
-    """Drop the render entries for one path under the share.
+    """Drop the render entries for one path under the resources folder.
 
     Nothing is raised. Each dropped path is printed, and so is a failure.
 
     Args:
-        rel: Path under the share root, or None to do nothing.
+        rel: Path under the resources root, or None to do nothing.
     """
     if rel is None:
         return
@@ -37,20 +37,20 @@ def _invalidate(rel: str | None) -> None:
         print(f"[resources.dav_hook] invalidation failed for {rel}: {exc}", file=sys.stderr)
 
 
-def _share_rel(share_root: str, provider_root: str, dav_path: str) -> str | None:
-    """Turn a WebDAV path into a path under the share root.
+def _to_resource_path(resources_root: str, provider_root: str, dav_path: str) -> str | None:
+    """Turn a WebDAV path into a path under the resources root.
 
     Args:
-        share_root: Root folder of the share.
+        resources_root: Root folder of the resources.
         provider_root: Root folder this provider serves.
         dav_path: Path from the WebDAV request.
 
     Returns:
-        The path under the share root, or None when it points outside the
-        share.
+        The path under the resources root, or None when it points outside the
+        resources folder.
     """
     file_path = os.path.realpath(os.path.join(provider_root, dav_path.lstrip("/")))
-    rel = os.path.relpath(file_path, os.path.realpath(share_root))
+    rel = os.path.relpath(file_path, os.path.realpath(resources_root))
     if rel in (".", os.pardir) or rel.startswith(os.pardir + os.sep):
         return None
     return rel
@@ -59,10 +59,10 @@ def _share_rel(share_root: str, provider_root: str, dav_path: str) -> str | None
 class _InvalidatingResource:
     """Shared behavior that drops render entries after a file changes."""
 
-    _share_root: str
+    _resources_root: str
 
     def _rel(self, dav_path: str) -> str | None:
-        return _share_rel(self._share_root, self.provider.root_folder_path, dav_path)
+        return _to_resource_path(self._resources_root, self.provider.root_folder_path, dav_path)
 
     def delete(self) -> None:
         super().delete()
@@ -81,16 +81,16 @@ class _InvalidatingResource:
 
 
 class _InvalidatingFileResource(_InvalidatingResource, FileResource):
-    def __init__(self, path: str, environ: dict, file_path: str, share_root: str) -> None:
+    def __init__(self, path: str, environ: dict, file_path: str, resources_root: str) -> None:
         super().__init__(path, environ, file_path)
-        self._share_root = share_root
+        self._resources_root = resources_root
 
     @override
     def get_content(self) -> BinaryIO:
         content = super().get_content()
         try:
             if self._is_use():
-                activity.record_sync(self._rel(self.path) or "", self._share_root)
+                activity.record_sync(self._rel(self.path) or "", self._resources_root)
         except OSError:
             content.close()
             raise
@@ -107,9 +107,9 @@ class _InvalidatingFileResource(_InvalidatingResource, FileResource):
 
 
 class _InvalidatingFolderResource(_InvalidatingResource, FolderResource):
-    def __init__(self, path: str, environ: dict, file_path: str, share_root: str) -> None:
+    def __init__(self, path: str, environ: dict, file_path: str, resources_root: str) -> None:
         super().__init__(path, environ, file_path)
-        self._share_root = share_root
+        self._resources_root = resources_root
 
 
 class CacheInvalidatingProvider(FilesystemProvider):
@@ -119,12 +119,12 @@ class CacheInvalidatingProvider(FilesystemProvider):
         self,
         root_folder: str,
         *,
-        share_root: str,
+        resources_root: str,
         readonly: bool = False,
         fs_opts: dict | None = None,
     ) -> None:
         super().__init__(root_folder, readonly=readonly, fs_opts=fs_opts)
-        self._share_root = share_root
+        self._resources_root = resources_root
 
     def get_resource_inst(
         self, path: str, environ: dict
@@ -134,5 +134,5 @@ class CacheInvalidatingProvider(FilesystemProvider):
             return None
         file_path = os.path.realpath(os.path.join(self.root_folder_path, path.lstrip("/")))
         if resource.is_collection:
-            return _InvalidatingFolderResource(path, environ, file_path, self._share_root)
-        return _InvalidatingFileResource(path, environ, file_path, self._share_root)
+            return _InvalidatingFolderResource(path, environ, file_path, self._resources_root)
+        return _InvalidatingFileResource(path, environ, file_path, self._resources_root)

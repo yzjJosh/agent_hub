@@ -47,7 +47,7 @@ def _resolve_resource_file(resource_path: str) -> str:
     if target is None or not os.path.isfile(target):
         raise ValueError(
             f"Resource not found: {resource_path}. The resource path must already "
-            "exist in this server's resources share. Call the send_or_receive_file "
+            "exist in this server's resources folder. Call the send_or_receive_file "
             "tool for instructions to upload the file, then retry this tool with "
             "the uploaded file's resource path (e.g. 'upload/<filename>')."
         )

@@ -386,7 +386,7 @@ class TestLocalFileHandling:
     async def test_resolve_input_binary_file_saves_copy_and_returns_notice(
         self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A binary file is copied to the share and the reply says how to download it."""
+        """A binary file is copied to the resources folder and the reply says how to download it."""
         bin_file = tmp_path / "archive.zip"
         bin_file.write_bytes(b"\xff\xfe\x00\x01\x02\x03\x04")
         resources_dir = tmp_path / "resources"

@@ -720,7 +720,7 @@ class PageSnapshot:
         return await self._mgr.move_mouse_to(self._target_id, x, y, verbose=verbose)
 
     async def move_mouse_to_relative(self, x_ratio: float, y_ratio: float, verbose: bool = False) -> bool:
-        """Move the mouse to a spot given as a share of the window.
+        """Move the mouse to a spot given as a fraction of the window.
 
         Args:
             x_ratio: How far across, 0 is the left edge and 1 is the right.
@@ -783,7 +783,7 @@ class PageSnapshot:
         return await self._mgr.solve_captcha(self._target_id, max_steps=max_steps, verbose=verbose)
 
     async def click_at_relative(self, x: float, y: float, verbose: bool = False) -> bool:
-        """Click a spot given as a share of the window.
+        """Click a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 
@@ -798,7 +798,7 @@ class PageSnapshot:
         return await self._mgr.click_at_relative(self._target_id, x, y, viewport=self.viewport, verbose=verbose)
 
     async def scroll_by_relative(self, dx: float, dy: float, verbose: bool = False) -> bool:
-        """Scroll the page a share of the window in each direction.
+        """Scroll the page a fraction of the window in each direction.
 
         Args:
             dx: How far sideways, 1 is one window wide. A positive number scrolls right.
@@ -829,7 +829,7 @@ class PageSnapshot:
         return await self._mgr.type_text_at(self._target_id, x, y, text, submit=submit, verbose=verbose)
 
     async def type_text_at_relative(self, x: float, y: float, text: str, submit: bool = False, verbose: bool = False) -> bool:
-        """Type text at a spot given as a share of the window.
+        """Type text at a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 
@@ -864,7 +864,7 @@ class PageSnapshot:
         return await self._mgr.replace_input_text_at(self._target_id, x, y, old_text, new_text, verbose=verbose)
 
     async def replace_input_text_at_relative(self, x: float, y: float, old_text: str, new_text: str, verbose: bool = False) -> bool:
-        """Replace a piece of the text in the field at a spot given as a share of the window.
+        """Replace a piece of the text in the field at a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 

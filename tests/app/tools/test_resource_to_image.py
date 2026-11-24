@@ -17,10 +17,10 @@ from app.lib.render import RenderKind, cache
 from app.tools.resource_to_image import resource_to_image_tool
 from tests.app.conftest import (
     E2E_PNG,
-    point_share_env,
+    configure_resource_env,
     skip_if_no_chrome,
     thumb_calls,
-    write_share_file,
+    write_resource_file,
 )
 from tests.app.lib.tool.conftest import run_text
 
@@ -35,14 +35,14 @@ _LIVE_READY_TIMEOUT_S = 60.0
 
 
 def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Point the share folders and the base URL at temp values, then give back the resources and data folders."""
-    resources, data = point_share_env(tmp_path, monkeypatch)
+    """Point the resource folders and the base URL at temp values, then give back the resources and data folders."""
+    resources, data = configure_resource_env(tmp_path, monkeypatch)
     monkeypatch.setenv("DAV_BASE_URL", _BASE)
     return resources, data
 
 
-def _share_file(resources: Path, rel: str, data: bytes) -> Path:
-    """Create a file in the resource share and return its absolute path."""
+def _resource_file(resources: Path, rel: str, data: bytes) -> Path:
+    """Create a file in the resources folder and return its absolute path."""
     path = resources / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -67,7 +67,7 @@ async def _seed_failed(key: str) -> None:
 
 
 def _expected_url(path: str) -> str:
-    """The thumbnail URL the tool gives back for a share path."""
+    """The thumbnail URL the tool gives back for a resource path."""
     return f"{_BASE}/api/resources/thumb?path={quote(path, safe='/')}"
 
 
@@ -87,7 +87,7 @@ def _expected_message(path: str, *, ready: bool) -> str:
 
 
 class TestValidation:
-    """Tests for bad share paths."""
+    """Tests for bad resource paths."""
 
     async def test_missing_file_returns_exact_not_found_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -99,15 +99,15 @@ class TestValidation:
         assert result == (
             "Tool 'resource_to_image' failed: "
             "Resource not found: upload/nope.pdf. The resource path must already "
-            "exist in this server's resources share. Call the send_or_receive_file "
+            "exist in this server's resources folder. Call the send_or_receive_file "
             "tool for instructions to upload the file, then retry this tool with "
             "the uploaded file's resource path (e.g. 'upload/<filename>')."
         )
 
-    async def test_path_escaping_share_returns_exact_not_found_error(
+    async def test_path_escaping_resources_returns_exact_not_found_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A path that points outside the share is turned down and shows nothing."""
+        """A path that points outside the resources folder is turned down and shows nothing."""
         resources, _data = _env(tmp_path, monkeypatch)
         outside = resources.parent / "outside_resource_to_image"
         outside.mkdir(exist_ok=True)
@@ -117,7 +117,7 @@ class TestValidation:
         assert result == (
             "Tool 'resource_to_image' failed: "
             "Resource not found: ../outside_resource_to_image/secret.txt. The "
-            "resource path must already exist in this server's resources share. "
+            "resource path must already exist in this server's resources folder. "
             "Call the send_or_receive_file tool for instructions to upload the "
             "file, then retry this tool with the uploaded file's resource path "
             "(e.g. 'upload/<filename>')."
@@ -164,7 +164,7 @@ class TestNotPreviewable:
     ) -> None:
         """A file with no preview gives an error with a download command, and queues no work."""
         resources, _data = _env(tmp_path, monkeypatch)
-        _share_file(resources, rel, b"\x00\x01\x02 binary fixture bytes")
+        _resource_file(resources, rel, b"\x00\x01\x02 binary fixture bytes")
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, rel)
 
@@ -185,7 +185,7 @@ class TestFailed:
     ) -> None:
         """A failed thumbnail gives an error and queues no work."""
         resources, _data = _env(tmp_path, monkeypatch)
-        full = _share_file(resources, "upload/pic.png", _PNG_MAGIC)
+        full = _resource_file(resources, "upload/pic.png", _PNG_MAGIC)
         await _seed_failed(_key_for_file("upload/pic.png", full))
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, "upload/pic.png")
@@ -207,7 +207,7 @@ class TestSuccess:
     ) -> None:
         """A ready thumbnail gives the URL with no retry line, and queues no work."""
         resources, data = _env(tmp_path, monkeypatch)
-        full = _share_file(resources, "upload/report.pdf", b"%PDF fixture")
+        full = _resource_file(resources, "upload/report.pdf", b"%PDF fixture")
         _seed_thumb(data, _key_for_file("upload/report.pdf", full))
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, "upload/report.pdf")
@@ -221,7 +221,7 @@ class TestSuccess:
     ) -> None:
         """A file with no thumbnail yet gives the URL with the retry line, and queues one job."""
         resources, _data = _env(tmp_path, monkeypatch)
-        full = _share_file(resources, "upload/pic.png", _PNG_MAGIC)
+        full = _resource_file(resources, "upload/pic.png", _PNG_MAGIC)
         key = _key_for_file("upload/pic.png", full)
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, "upload/pic.png")
@@ -235,7 +235,7 @@ class TestSuccess:
     ) -> None:
         """A thumbnail already being made gives the URL with the retry line, and queues no work."""
         resources, _data = _env(tmp_path, monkeypatch)
-        full = _share_file(resources, "upload/pic.png", _PNG_MAGIC)
+        full = _resource_file(resources, "upload/pic.png", _PNG_MAGIC)
         key = _key_for_file("upload/pic.png", full)
         monkeypatch.setattr("app.lib.render.gen_state.generating_keys", lambda: frozenset({key}))
         calls = thumb_calls(monkeypatch)
@@ -249,7 +249,7 @@ class TestSuccess:
     ) -> None:
         """A path with a space gives an escaped URL and a download name without the old extension."""
         resources, _data = _env(tmp_path, monkeypatch)
-        _share_file(resources, "upload/my report.pdf", b"%PDF fixture")
+        _resource_file(resources, "upload/my report.pdf", b"%PDF fixture")
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, "upload/my report.pdf")
 
@@ -266,7 +266,7 @@ class TestSuccess:
     ) -> None:
         """A file with no extension gets a download name ending in .png."""
         resources, _data = _env(tmp_path, monkeypatch)
-        _share_file(resources, "upload/cover", _PNG_MAGIC)
+        _resource_file(resources, "upload/cover", _PNG_MAGIC)
         calls = thumb_calls(monkeypatch)
         result = await run_text(resource_to_image_tool, "upload/cover")
 
@@ -283,7 +283,7 @@ class TestUntracked:
     ) -> None:
         """A good call gives back the URL and writes no rows or run folders."""
         resources, data = _env(tmp_path, monkeypatch)
-        full = _share_file(resources, "upload/pic.png", _PNG_MAGIC)
+        full = _resource_file(resources, "upload/pic.png", _PNG_MAGIC)
         _seed_thumb(data, _key_for_file("upload/pic.png", full))
         result = await run_text(resource_to_image_tool, "upload/pic.png")
 
@@ -345,7 +345,7 @@ class TestResourceToImageLive:
     ) -> None:
         """A live call gives back a URL that ends up serving a real PNG."""
         monkeypatch.setenv("DAV_BASE_URL", app_http.base_url)
-        write_share_file(app_http.share, "upload/live.png", E2E_PNG)
+        write_resource_file(app_http.resources_dir, "upload/live.png", E2E_PNG)
 
         result = await run_text(resource_to_image_tool, "upload/live.png")
         url = result.splitlines()[1].strip()

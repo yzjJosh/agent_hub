@@ -24,9 +24,9 @@ _WINDOW = Viewport(
     window_width=_WINDOW_WIDTH,
     window_height=_WINDOW_HEIGHT,
 )
-_SHARE_LEFT = 0.25
-_SHARE_CENTER = 0.5
-_SHARE_THREE_QUARTERS = 0.75
+_LEFT_RATIO = 0.25
+_CENTER_RATIO = 0.5
+_THREE_QUARTERS_RATIO = 0.75
 _REL_CLICK_X = 0.35
 _REL_CLICK_Y = 0.62
 _DUPLICATE_ID_HTML = (
@@ -889,7 +889,7 @@ class TestPageSnapshotCounterparts:
     """Tests that the snapshot's actions go to the tab it came from."""
 
     async def test_click_at_relative_delegates_with_viewport(self, mock_browser_mgr: AsyncMock) -> None:
-        """A window-share click goes to the tab with the snapshot's window."""
+        """A relative viewport click goes to the tab with the snapshot's window."""
         mock_browser_mgr.click_at_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
         result = await snap.click_at_relative(_REL_CLICK_X, _REL_CLICK_Y, verbose=True)
@@ -897,19 +897,19 @@ class TestPageSnapshotCounterparts:
         mock_browser_mgr.click_at_relative.assert_called_once_with("tab1", _REL_CLICK_X, _REL_CLICK_Y, viewport=_WINDOW, verbose=True)
 
     async def test_click_at_relative_without_viewport_passes_none(self, mock_browser_mgr: AsyncMock) -> None:
-        """A window-share click with no window hands none on."""
+        """A relative viewport click with no window hands none on."""
         mock_browser_mgr.click_at_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1")
-        await snap.click_at_relative(_SHARE_CENTER, _SHARE_CENTER)
+        await snap.click_at_relative(_CENTER_RATIO, _CENTER_RATIO)
         assert mock_browser_mgr.click_at_relative.call_args.kwargs["viewport"] is None
 
     async def test_scroll_by_relative_delegates_with_viewport(self, mock_browser_mgr: AsyncMock) -> None:
-        """A window-share scroll goes to the tab with the snapshot's window."""
+        """A relative viewport scroll goes to the tab with the snapshot's window."""
         mock_browser_mgr.scroll_by_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
-        result = await snap.scroll_by_relative(_SHARE_LEFT, _SHARE_CENTER)
+        result = await snap.scroll_by_relative(_LEFT_RATIO, _CENTER_RATIO)
         assert result is True
-        mock_browser_mgr.scroll_by_relative.assert_called_once_with("tab1", _SHARE_LEFT, _SHARE_CENTER, viewport=_WINDOW, verbose=False)
+        mock_browser_mgr.scroll_by_relative.assert_called_once_with("tab1", _LEFT_RATIO, _CENTER_RATIO, viewport=_WINDOW, verbose=False)
 
     async def test_type_text_at_delegates(self, mock_browser_mgr: AsyncMock) -> None:
         """Typing at a spot on the page goes to the tab the snapshot came from."""
@@ -920,20 +920,20 @@ class TestPageSnapshotCounterparts:
         mock_browser_mgr.type_text_at.assert_called_once_with("tab1", _CLICK_AT_X, _CLICK_AT_Y, "hello", submit=False, verbose=False)
 
     async def test_type_text_at_relative_delegates_with_viewport(self, mock_browser_mgr: AsyncMock) -> None:
-        """Typing at a window-share spot goes to the tab with the snapshot's window."""
+        """Typing at a relative viewport spot goes to the tab with the snapshot's window."""
         mock_browser_mgr.type_text_at_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
-        result = await snap.type_text_at_relative(_SHARE_CENTER, _SHARE_CENTER, "hello")
+        result = await snap.type_text_at_relative(_CENTER_RATIO, _CENTER_RATIO, "hello")
         assert result is True
         mock_browser_mgr.type_text_at_relative.assert_called_once_with(
-            "tab1", _SHARE_CENTER, _SHARE_CENTER, "hello", submit=False, viewport=_WINDOW, verbose=False
+            "tab1", _CENTER_RATIO, _CENTER_RATIO, "hello", submit=False, viewport=_WINDOW, verbose=False
         )
 
     async def test_type_text_at_relative_with_submit_passes_it_on(self, mock_browser_mgr: AsyncMock) -> None:
         """Typing with submit on hands the Enter press to the tab."""
         mock_browser_mgr.type_text_at_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
-        result = await snap.type_text_at_relative(_SHARE_CENTER, _SHARE_CENTER, "hello", submit=True)
+        result = await snap.type_text_at_relative(_CENTER_RATIO, _CENTER_RATIO, "hello", submit=True)
         assert result is True
         assert mock_browser_mgr.type_text_at_relative.call_args.kwargs["submit"] is True
 
@@ -946,13 +946,13 @@ class TestPageSnapshotCounterparts:
         mock_browser_mgr.replace_input_text_at.assert_called_once_with("tab1", _CLICK_AT_X, _CLICK_AT_Y, "helo", "hello", verbose=True)
 
     async def test_replace_input_text_at_relative_delegates_with_viewport(self, mock_browser_mgr: AsyncMock) -> None:
-        """Replacing text at a window-share spot goes to the tab with the snapshot's window."""
+        """Replacing text at a relative viewport spot goes to the tab with the snapshot's window."""
         mock_browser_mgr.replace_input_text_at_relative.return_value = False
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
-        result = await snap.replace_input_text_at_relative(_SHARE_CENTER, _SHARE_CENTER, "helo", "")
+        result = await snap.replace_input_text_at_relative(_CENTER_RATIO, _CENTER_RATIO, "helo", "")
         assert result is False
         mock_browser_mgr.replace_input_text_at_relative.assert_called_once_with(
-            "tab1", _SHARE_CENTER, _SHARE_CENTER, "helo", "", viewport=_WINDOW, verbose=False
+            "tab1", _CENTER_RATIO, _CENTER_RATIO, "helo", "", viewport=_WINDOW, verbose=False
         )
 
     async def test_go_forward_delegates(self, mock_browser_mgr: AsyncMock) -> None:
@@ -981,21 +981,21 @@ class TestPageSnapshotCounterparts:
 
 
 class TestPageSnapshotMoveMouseToRelativeViewport:
-    """Tests that a window-share mouse move carries the snapshot's window."""
+    """Tests that a relative viewport mouse move carries the snapshot's window."""
 
     async def test_move_mouse_to_relative_passes_viewport(self, mock_browser_mgr: AsyncMock) -> None:
-        """A window-share mouse move hands the snapshot's window to the browser."""
+        """A relative viewport mouse move hands the snapshot's window to the browser."""
         mock_browser_mgr.move_mouse_to_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1", viewport=_WINDOW)
-        result = await snap.move_mouse_to_relative(_SHARE_LEFT, _SHARE_THREE_QUARTERS)
+        result = await snap.move_mouse_to_relative(_LEFT_RATIO, _THREE_QUARTERS_RATIO)
         assert result is True
-        mock_browser_mgr.move_mouse_to_relative.assert_called_once_with("tab1", _SHARE_LEFT, _SHARE_THREE_QUARTERS, viewport=_WINDOW, verbose=False)
+        mock_browser_mgr.move_mouse_to_relative.assert_called_once_with("tab1", _LEFT_RATIO, _THREE_QUARTERS_RATIO, viewport=_WINDOW, verbose=False)
 
     async def test_move_mouse_to_relative_without_viewport_passes_none(self, mock_browser_mgr: AsyncMock) -> None:
-        """A window-share mouse move with no window hands none on."""
+        """A relative viewport mouse move with no window hands none on."""
         mock_browser_mgr.move_mouse_to_relative.return_value = True
         snap = await PageSnapshot.create("<html><body>test</body></html>", mock_browser_mgr, "tab1")
-        await snap.move_mouse_to_relative(_SHARE_LEFT, _SHARE_THREE_QUARTERS)
+        await snap.move_mouse_to_relative(_LEFT_RATIO, _THREE_QUARTERS_RATIO)
         assert mock_browser_mgr.move_mouse_to_relative.call_args.kwargs["viewport"] is None
 
 

@@ -64,7 +64,7 @@ def key_for(path: str, mtime: int) -> str:
     """Make the name a file is saved under.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         mtime: When the file last changed.
 
     Returns:
@@ -143,7 +143,7 @@ def thumb_url(path: str) -> str:
     """Get the web address of a file's thumbnail.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The address of the thumbnail.
@@ -284,7 +284,7 @@ def invalidate_sync(path: str) -> list[str]:
 
     Args:
         path: The file or folder that was deleted or changed, inside the
-            shared folder.
+            resources folder.
 
     Returns:
         The paths of everything that was removed.

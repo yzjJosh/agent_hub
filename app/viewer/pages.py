@@ -1,4 +1,4 @@
-"""The pages someone sees when they open a shared link."""
+"""The pages someone sees when they open a viewer link."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _dl_href(path: str) -> str:
     """Build the download link for a file.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The link to download the file.
@@ -57,7 +57,7 @@ def _expired_page() -> Response:
 
 
 async def view_file(request: Request) -> Response:
-    """Show one shared file on a page of its own.
+    """Show one resource file on a page of its own.
 
     The file fills the whole page. The only button is Download.
 
@@ -143,19 +143,19 @@ def _content_match(files: list[str], rid: str) -> str | None:
 
     A file is the content when it sits in one of the content folders and
     its name, without extension, is the presentation's id. The first such
-    file in shared order wins.
+    file in presented order wins.
 
     Args:
-        files: The files in the order they were shared.
+        files: The files in the order they were presented.
         rid: The presentation's id.
 
     Returns:
         The path of the content file, or None when no file is the content.
     """
-    for share_rel in files:
-        if os.path.dirname(share_rel) in _CONTENT_DIRS and \
-                os.path.splitext(os.path.basename(share_rel))[0] == rid:
-            return share_rel
+    for resource_path in files:
+        if os.path.dirname(resource_path) in _CONTENT_DIRS and \
+                os.path.splitext(os.path.basename(resource_path))[0] == rid:
+            return resource_path
     return None
 
 
@@ -241,16 +241,16 @@ def _presentation_body_section(content_path: str, d: dict | None) -> str | None:
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def _presentation_card(share_rel: str, is_present: bool, size: int | None, label: str, thumb_status: str) -> str:
-    dl = f"/dav/dl?path={_esc(quote(share_rel, safe='/'))}"
-    view = f"/view/{_esc(quote(share_rel, safe='/'))}"
-    name = os.path.basename(share_rel)
+def _presentation_card(resource_path: str, is_present: bool, size: int | None, label: str, thumb_status: str) -> str:
+    dl = f"/dav/dl?path={_esc(quote(resource_path, safe='/'))}"
+    view = f"/view/{_esc(quote(resource_path, safe='/'))}"
+    name = os.path.basename(resource_path)
     if not is_present:
         return (f'<div class="thumb-card vp-card-gone"><div class="thumb-1610">'
                 f'<span class="thumb-glyph" data-vp-icon="box"></span></div>'
                 f'<div class="thumb-name">{_esc(name)}</div>'
                 f'<div class="thumb-meta">no longer available</div></div>')
-    thumb = (f'<img class="thumb-img" src="{cache.thumb_url(share_rel)}">'
+    thumb = (f'<img class="thumb-img" src="{cache.thumb_url(resource_path)}">'
              if thumb_status == "done" else '<span class="thumb-glyph" data-vp-icon="box"></span>')
     # The whole card is a link that opens the file. The download icon sits on
     # top of it and can still be clicked.
@@ -264,17 +264,17 @@ def _presentation_card(share_rel: str, is_present: bool, size: int | None, label
     )
 
 
-async def _presentation_card_data(share_rel: str) -> dict:
-    full = await resolve_view(share_rel)
+async def _presentation_card_data(resource_path: str) -> dict:
+    full = await resolve_view(resource_path)
     if full is None or not await asyncio.to_thread(os.path.isfile, full):
         return {"is_present": False, "size": None, "label": "file", "thumb_status": "none"}
     st = await asyncio.to_thread(os.stat, full)
-    descriptor = await build_descriptor(share_rel, full)
+    descriptor = await build_descriptor(resource_path, full)
     return {
         "is_present": True,
         "size": st.st_size,
         "label": descriptor["kind_label"],
-        "thumb_status": await cache.thumb_status(cache.key_for(share_rel, int(st.st_mtime))),
+        "thumb_status": await cache.thumb_status(cache.key_for(resource_path, int(st.st_mtime))),
     }
 
 
@@ -282,27 +282,27 @@ async def _content_descriptor(files: list[tuple[str, dict]], content_path: str) 
     """Describe the presentation's content file.
 
     Args:
-        files: The files with their card data, in shared order.
+        files: The files with their card data, in presented order.
         content_path: The path of the content file.
 
     Returns:
         The description of the content file, or None when it is gone.
     """
-    for share_rel, data in files:
-        if share_rel == content_path and data["is_present"]:
-            full = await resolve_view(share_rel)
+    for resource_path, data in files:
+        if resource_path == content_path and data["is_present"]:
+            full = await resolve_view(resource_path)
             if full is not None:
-                return await build_descriptor(share_rel, full)
+                return await build_descriptor(resource_path, full)
             break
     return None
 
 
-def _presentation_header(title: str, shared: str, m: int, alive_grid: int) -> str:
+def _presentation_header(title: str, presented_time: str, m: int, alive_grid: int) -> str:
     """Build the header with the title or the generic heading, and the sub line.
 
     Args:
         title: The agent's title, or the empty string for rows without one.
-        shared: The shared time as text.
+        presented_time: The presentation time as text.
         m: How many files sit in the grid.
         alive_grid: How many of the grid files are still here.
 
@@ -319,7 +319,7 @@ def _presentation_header(title: str, shared: str, m: int, alive_grid: int) -> st
     else:
         head = '<h1 class="vp-presentation-head">Files from your agent</h1>'
         sender = ""
-    return f'{head}<div class="vp-presentation-sub">Shared {_esc(shared)}{sender}{avail}</div>'
+    return f'{head}<div class="vp-presentation-sub">Shared {_esc(presented_time)}{sender}{avail}</div>'
 
 
 async def view_presentation(request: Request) -> Response:
@@ -339,12 +339,12 @@ async def view_presentation(request: Request) -> Response:
         return await _delegate_miss(request, f"presentation/{rid}", _expired_page(), view_file)
     alive = 0
     files: list[tuple[str, dict]] = []
-    # The cards keep the order the files were shared in.
-    for share_rel in presentation.files:
-        data = await _presentation_card_data(share_rel)
+    # The cards keep the order the files were presented in.
+    for resource_path in presentation.files:
+        data = await _presentation_card_data(resource_path)
         if data["is_present"]:
             alive += 1
-        files.append((share_rel, data))
+        files.append((resource_path, data))
     if alive == 0:
         return _expired_page()
     content_path = _content_match(presentation.files, rid)
@@ -353,20 +353,20 @@ async def view_presentation(request: Request) -> Response:
     # When the body shows, the content is out of the grid and the counts.
     body_shown = body is not None
     grid = [
-        _presentation_card(share_rel, **data)
-        for share_rel, data in files
-        if not (body_shown and share_rel == content_path)
+        _presentation_card(resource_path, **data)
+        for resource_path, data in files
+        if not (body_shown and resource_path == content_path)
     ]
     m = len(presentation.files) - 1 if body_shown else len(presentation.files)
     alive_grid = alive - 1 if body_shown and content_desc is not None else alive
     # The saved time may not be a real date. It is then shown as it is.
     created_at = presentation.presented_at
     try:
-        shared = datetime.fromisoformat(created_at).strftime("%b %d %H:%M")
+        presented_time = datetime.fromisoformat(created_at).strftime("%b %d %H:%M")
     except (KeyError, TypeError, ValueError):
-        shared = created_at
+        presented_time = created_at
     title = (presentation.title or "").strip()
-    header = _presentation_header(title, shared, m, alive_grid)
+    header = _presentation_header(title, presented_time, m, alive_grid)
     if body_shown and m > 0:
         files_section = (f'<div class="vp-feed-files">FILES · {m}</div>'
                          f'<div class="thumb-grid after-divider">{"".join(grid)}</div>')

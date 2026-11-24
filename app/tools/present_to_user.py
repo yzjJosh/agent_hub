@@ -70,10 +70,10 @@ def _content_extension(label: str) -> str | None:
 
 
 def _not_found_error(path: str) -> str:
-    """Return the error text for a path that is not in the share."""
+    """Return the error text for a path that is not in the resources folder."""
     return (
         f"Resource not found: {path}. The resource path must already "
-        "exist in this server's resources share. Call the send_or_receive_file "
+        "exist in this server's resources folder. Call the send_or_receive_file "
         "tool for instructions to upload the file, then retry this tool with "
         "the uploaded file's resource path (e.g. 'upload/<filename>')."
     )
@@ -106,18 +106,18 @@ def _write_atomic(target: str, content: str) -> None:
 
 
 def _validate_files(files: list[str]) -> list[tuple[str, str]]:
-    """Check that every file is in the share.
+    """Check that every file is in the resources folder.
 
     This blocks, so run it in a thread.
 
     Args:
-        files: Paths of files in the share.
+        files: Paths of files in the resources folder.
 
     Returns:
         The given path and the full path for each file.
 
     Raises:
-        ValueError: If a path is not in the share or is a folder.
+        ValueError: If a path is not in the resources folder or is a folder.
     """
     resolved: list[tuple[str, str]] = []
     for path in files:

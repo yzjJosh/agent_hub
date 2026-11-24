@@ -625,7 +625,7 @@ class _FileTool(Tool):
 
     @override
     async def call(self, _params: dict) -> ToolResult:
-        # A share file the tool just wrote; the manifest records its size/mtime.
+        # A resource file the tool just wrote, whose size and mtime go in the manifest.
         return ToolResult(text="Binary file with size 13 bytes.", files=("downloads/img.png",))
 
 
@@ -659,11 +659,11 @@ class TestBinaryResult:
     async def test_files_write_json_manifest(
         self, tool_infra: TaskRecordStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The share file must exist so the manifest records its size/mtime.
-        share = tmp_path / "share"
-        (share / "downloads").mkdir(parents=True)
-        (share / "downloads" / "img.png").write_bytes(_BANNER)
-        monkeypatch.setenv("RESOURCES_DIR", str(share))
+        # The resource file must exist so the manifest records its size and mtime.
+        resources = tmp_path / "resources"
+        (resources / "downloads").mkdir(parents=True)
+        (resources / "downloads" / "img.png").write_bytes(_BANNER)
+        monkeypatch.setenv("RESOURCES_DIR", str(resources))
         out = await run_text(_FileTool())
         assert out == "Binary file with size 13 bytes."
         row = (await tool_infra.list())[0]
@@ -677,10 +677,10 @@ class TestBinaryResult:
     async def test_task_result_reads_body_text(
         self, tool_infra: TaskRecordStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        share = tmp_path / "share2"
-        (share / "downloads").mkdir(parents=True)
-        (share / "downloads" / "img.png").write_bytes(_BANNER)
-        monkeypatch.setenv("RESOURCES_DIR", str(share))
+        resources = tmp_path / "resources2"
+        (resources / "downloads").mkdir(parents=True)
+        (resources / "downloads" / "img.png").write_bytes(_BANNER)
+        monkeypatch.setenv("RESOURCES_DIR", str(resources))
         await run_text(_FileTool())
         row = (await tool_infra.list())[0]
         text = await run_text(task_tool, action="result", task_id=row.task_id)

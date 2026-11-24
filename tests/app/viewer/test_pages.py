@@ -14,23 +14,23 @@ import app.lib.db.store as store_module
 import app.lib.render.cache as cache
 import app.lib.render.office as office
 from app.server import build_app
-from tests.app.conftest import point_share_env
+from tests.app.conftest import configure_resource_env
 
 
 @pytest.fixture
 async def view_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
-    """A client for the app, plus the share dir it reads from."""
-    share, data = point_share_env(tmp_path, monkeypatch)
+    """A client for the app, plus the resources dir it reads from."""
+    resources, data = configure_resource_env(tmp_path, monkeypatch)
     monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
     await store_module.task_store.open()
     app = build_app()
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        yield c, share
+        yield c, resources
     await store_module.task_store.close()
 
 
-def _write(share: Path, rel: str, content: str | bytes = b"") -> str:
-    p = share / rel
+def _write(resources: Path, rel: str, content: str | bytes = b"") -> str:
+    p = resources / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(content, str):
         content = content.encode()
@@ -46,8 +46,8 @@ async def _insert_presentation(rid: str, files: list[str], title: str | None = N
 
 async def test_view_file_page_solo_full_screen(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The single file page has no top bar and no footer, only a Download pill."""
-    client, share = view_client
-    _write(share, "upload/notes.md", "# Hi\n\nbody")
+    client, resources = view_client
+    _write(resources, "upload/notes.md", "# Hi\n\nbody")
     r = await client.get("/view/upload/notes.md")
     assert r.status_code == 200
     html = r.text
@@ -61,7 +61,7 @@ async def test_view_file_page_solo_full_screen(view_client: tuple[httpx.AsyncCli
     assert "vp-solo-label" not in html
     assert 'href="/dav/dl?path=upload/notes.md"' in html
     assert 'target="_blank"' not in html  # the download opens in the same tab
-    assert "path=upload/notes.md" in html  # the share path in the Download link
+    assert "path=upload/notes.md" in html  # the resource path in the Download link
     assert 'href="/assets/css/view.css"' in html
     assert '<script type="module" src="/assets/js/view-page.js">' in html
     # the page falls back to the system theme
@@ -72,8 +72,8 @@ async def test_view_file_page_solo_full_screen(view_client: tuple[httpx.AsyncCli
 async def test_view_page_pre_state_theme_script(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The pre-paint script follows the system setting, and a saved pick made
     under that setting wins over it."""
-    client, share = view_client
-    _write(share, "upload/notes.md", "# Hi")
+    client, resources = view_client
+    _write(resources, "upload/notes.md", "# Hi")
     r = await client.get("/view/upload/notes.md")
     assert r.status_code == 200
     html = r.text
@@ -84,8 +84,8 @@ async def test_view_page_pre_state_theme_script(view_client: tuple[httpx.AsyncCl
 
 async def test_view_solo_pdf_renders_the_inline_canvas_container(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A pdf file page carries the canvas container, no iframe, and the client script."""
-    client, share = view_client
-    _write(share, "upload/p.pdf", b"%PDF-1.4 fake")
+    client, resources = view_client
+    _write(resources, "upload/p.pdf", b"%PDF-1.4 fake")
     r = await client.get("/view/upload/p.pdf")
     assert r.status_code == 200
     html = r.text
@@ -97,9 +97,9 @@ async def test_view_solo_pdf_renders_the_inline_canvas_container(view_client: tu
 
 async def test_view_presentation_uses_cached_pdf(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A PowerPoint preview serves its converted slides to the PDF viewer."""
-    client, share = view_client
-    rel = _write(share, "upload/deck.pptx", b"PK\x03\x04 fake pptx")
-    key = cache.key_for(rel, int((share / rel).stat().st_mtime))
+    client, resources = view_client
+    rel = _write(resources, "upload/deck.pptx", b"PK\x03\x04 fake pptx")
+    key = cache.key_for(rel, int((resources / rel).stat().st_mtime))
     pdf = b"%PDF-1.7\nslide"
     await cache.write_doc(key, "", {cache.OFFICE_PDF_ASSET: pdf}, {"mode": "frame"})
 
@@ -116,8 +116,8 @@ async def test_view_presentation_uses_cached_pdf(view_client: tuple[httpx.AsyncC
 
 async def test_view_solo_html_keeps_the_sandboxed_iframe(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An html file page is still a sandboxed iframe, without the pdf container."""
-    client, share = view_client
-    _write(share, "upload/p.html", "<p>page</p>")
+    client, resources = view_client
+    _write(resources, "upload/p.html", "<p>page</p>")
     r = await client.get("/view/upload/p.html")
     assert r.status_code == 200
     html = r.text
@@ -163,8 +163,8 @@ async def test_pdf_viewer_asset_content(view_client: tuple[httpx.AsyncClient, Pa
 
 async def test_view_file_unsupported_state_card(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An unsupported file shows a card with its name, a Download, and a Go back."""
-    client, share = view_client
-    _write(share, "upload/blob.bin", b"\x00\x01binary")
+    client, resources = view_client
+    _write(resources, "upload/blob.bin", b"\x00\x01binary")
     r = await client.get("/view/upload/blob.bin")
     assert r.status_code == 200
     html = r.text
@@ -176,8 +176,8 @@ async def test_view_file_unsupported_state_card(view_client: tuple[httpx.AsyncCl
 
 async def test_presentation_page_keeps_chrome(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The presentation page has a top bar with the brand and the theme, plus a footer."""
-    client, share = view_client
-    _write(share, "upload/a.png", b"\x89PNG")
+    client, resources = view_client
+    _write(resources, "upload/a.png", b"\x89PNG")
     await _insert_presentation("a" * 16, ["upload/a.png"])
     r = await client.get(f"/view/presentation/{'a'*16}")
     assert r.status_code == 200
@@ -198,22 +198,22 @@ async def test_view_missing_file_is_expired_page(view_client: tuple[httpx.AsyncC
 
 
 async def test_view_existing_folder_is_plain_404(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
-    (share / "somefolder").mkdir()
+    client, resources = view_client
+    (resources / "somefolder").mkdir()
     r = await client.get("/view/somefolder")
     assert r.status_code == 404
     assert r.headers["content-type"].startswith("text/plain")
 
 
-def _key_for(share: Path, rel: str) -> str:
-    st = (share / rel).stat()
+def _key_for(resources: Path, rel: str) -> str:
+    st = (resources / rel).stat()
     return cache.key_for(rel, int(st.st_mtime))
 
 
 async def test_presentation_page_lists_files(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
-    _write(share, "upload/a.png", b"\x89PNG")
-    _write(share, "upload/b.md", b"# hi")
+    client, resources = view_client
+    _write(resources, "upload/a.png", b"\x89PNG")
+    _write(resources, "upload/b.md", b"# hi")
     await _insert_presentation("b" * 16, ["upload/a.png", "upload/b.md"])
     r = await client.get(f"/view/presentation/{'b'*16}")
     assert r.status_code == 200
@@ -232,8 +232,8 @@ def _card_html(page: str, index: int) -> str:
 
 async def test_presentation_card_is_whole_card_link(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A live card is one link over the whole card, with Download beside it."""
-    client, share = view_client
-    _write(share, "upload/a.png", b"\x89PNG")
+    client, resources = view_client
+    _write(resources, "upload/a.png", b"\x89PNG")
     rid = "a2" * 8
     await _insert_presentation(rid, ["upload/a.png"])
     r = await client.get(f"/view/presentation/{rid}")
@@ -249,8 +249,8 @@ async def test_presentation_card_is_whole_card_link(view_client: tuple[httpx.Asy
 
 async def test_presentation_gone_card_is_non_interactive(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A card for a missing file has no links, and a live card beside it still does."""
-    client, share = view_client
-    _write(share, "upload/alive.png", b"\x89PNG")
+    client, resources = view_client
+    _write(resources, "upload/alive.png", b"\x89PNG")
     rid = "b2" * 8
     await _insert_presentation(rid, ["upload/alive.png", "upload/gone.png"])
     r = await client.get(f"/view/presentation/{rid}")
@@ -265,8 +265,8 @@ async def test_presentation_gone_card_is_non_interactive(view_client: tuple[http
 
 async def test_presentation_card_open_is_native_anchor(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The card open control is a plain link, not a button."""
-    client, share = view_client
-    _write(share, "upload/a.png", b"\x89PNG")
+    client, resources = view_client
+    _write(resources, "upload/a.png", b"\x89PNG")
     rid = "c2" * 8
     await _insert_presentation(rid, ["upload/a.png"])
     r = await client.get(f"/view/presentation/{rid}")
@@ -308,10 +308,10 @@ async def test_presentation_download_actions_reset_inherited_offsets(view_client
 
 async def test_presentation_thumb_src_url_encoded(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A thumbnail source for a path with special characters is escaped."""
-    client, share = view_client
+    client, resources = view_client
     rel = "upload/photo & more.png"
-    _write(share, rel, b"\x89PNG")
-    key_dir = os.path.join(cache.render_root(), _key_for(share, rel))
+    _write(resources, rel, b"\x89PNG")
+    key_dir = os.path.join(cache.render_root(), _key_for(resources, rel))
     os.makedirs(key_dir, exist_ok=True)
     with open(os.path.join(key_dir, "thumb.png"), "wb") as fh:
         fh.write(b"\x89PNG")
@@ -330,8 +330,8 @@ async def test_presentation_missing_id_is_expired(view_client: tuple[httpx.Async
 
 
 async def test_presentation_non_hex_id_delegate_to_file(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
-    _write(share, "presentation/plain", "# delegated")
+    client, resources = view_client
+    _write(resources, "presentation/plain", "# delegated")
     r = await client.get("/view/presentation/plain")
     assert r.status_code == 200
     assert "delegated" in r.text
@@ -348,9 +348,9 @@ async def test_presentation_all_gone_is_expired(view_client: tuple[httpx.AsyncCl
 
 async def test_presentation_open_href_url_encoded(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A card open link for a path with special characters is escaped."""
-    client, share = view_client
+    client, resources = view_client
     rel = "upload/a & b.png"
-    _write(share, rel, b"\x89PNG")
+    _write(resources, rel, b"\x89PNG")
     await _insert_presentation("e" * 16, [rel])
     r = await client.get(f"/view/presentation/{'e'*16}")
     assert r.status_code == 200
@@ -360,8 +360,8 @@ async def test_presentation_open_href_url_encoded(view_client: tuple[httpx.Async
 
 async def test_view_media_src_url_encoded(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A media page source for a path with special characters is escaped."""
-    client, share = view_client
-    _write(share, "upload/pic #1.png", b"\x89PNG")
+    client, resources = view_client
+    _write(resources, "upload/pic #1.png", b"\x89PNG")
     r = await client.get("/view/upload/pic%20%231.png")
     assert r.status_code == 200
     assert 'src="/dav/upload/pic%20%231.png?ephemeral=1"' in r.text
@@ -369,9 +369,9 @@ async def test_view_media_src_url_encoded(view_client: tuple[httpx.AsyncClient, 
 
 
 async def test_doc_page_composed_and_thumb_override(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
-    _write(share, "upload/n.md", "# composed")
-    key = _key_for(share, "upload/n.md")
+    client, resources = view_client
+    _write(resources, "upload/n.md", "# composed")
+    key = _key_for(resources, "upload/n.md")
     await cache.write_doc(key, '<div class="md-doc"><h1>composed</h1></div>', None,
                           {"mode": "doc", "provenance": None})
     r = await client.get(f"/view/doc/{key}")
@@ -391,8 +391,8 @@ async def test_doc_missing_key_is_plain_404(view_client: tuple[httpx.AsyncClient
 
 
 async def test_doc_non_hex_key_delegate_to_file(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
-    _write(share, "doc/reports/q1", "# delegated doc")
+    client, resources = view_client
+    _write(resources, "doc/reports/q1", "# delegated doc")
     r = await client.get("/view/doc/reports/q1")
     assert r.status_code == 200
     assert "delegated doc" in r.text
@@ -421,10 +421,10 @@ async def test_doc_asset_traversal_rejected(view_client: tuple[httpx.AsyncClient
 
 async def test_presentation_body_titled_markdown(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A titled row renders the title, the body well, and the files divider."""
-    client, share = view_client
+    client, resources = view_client
     rid = "e5d3049aa28546de"
-    _write(share, f"presentations/{rid}.md", "# Hi\n\nbody text")
-    _write(share, "upload/attach.png", b"\x89PNG")
+    _write(resources, f"presentations/{rid}.md", "# Hi\n\nbody text")
+    _write(resources, "upload/attach.png", b"\x89PNG")
     await _insert_presentation(rid, [f"presentations/{rid}.md", "upload/attach.png"],
                                title="Weekend swim lessons")
     r = await client.get(f"/view/presentation/{rid}")
@@ -453,9 +453,9 @@ async def test_presentation_body_titled_markdown(view_client: tuple[httpx.AsyncC
 
 async def test_presentation_body_plain_text(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A plain-text content file renders the body well like the file viewer does."""
-    client, share = view_client
+    client, resources = view_client
     rid = "9f8e7d6c5b4a0312"
-    _write(share, f"presentations/{rid}.txt", "just a note\nsecond line")
+    _write(resources, f"presentations/{rid}.txt", "just a note\nsecond line")
     await _insert_presentation(rid, [f"presentations/{rid}.txt"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -469,9 +469,9 @@ async def test_presentation_body_plain_text(view_client: tuple[httpx.AsyncClient
 
 async def test_presentation_body_null_title_content_only(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A null-title row with only the content gets the count-less heading."""
-    client, share = view_client
+    client, resources = view_client
     rid = "a1b2c3d4e5f60718"
-    _write(share, f"handoffs/{rid}.md", "# legacy body")
+    _write(resources, f"handoffs/{rid}.md", "# legacy body")
     await _insert_presentation(rid, [f"handoffs/{rid}.md"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -488,11 +488,11 @@ async def test_presentation_body_null_title_content_only(view_client: tuple[http
 
 async def test_presentation_body_null_title_with_grid(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A null-title row with content and files counts grid files in the heading."""
-    client, share = view_client
+    client, resources = view_client
     rid = "b3c4d5e6f7a80912"
-    _write(share, f"presentations/{rid}.md", "# body")
-    _write(share, "upload/one.png", b"\x89PNG")
-    _write(share, "upload/two.png", b"\x89PNG")
+    _write(resources, f"presentations/{rid}.md", "# body")
+    _write(resources, "upload/one.png", b"\x89PNG")
+    _write(resources, "upload/two.png", b"\x89PNG")
     await _insert_presentation(rid, ["upload/one.png", f"presentations/{rid}.md", "upload/two.png"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -503,9 +503,9 @@ async def test_presentation_body_null_title_with_grid(view_client: tuple[httpx.A
 
 
 async def test_presentation_blank_title_treated_as_null(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    client, share = view_client
+    client, resources = view_client
     rid = "c5d6e7f809123456"
-    _write(share, "upload/a.png", b"\x89PNG")
+    _write(resources, "upload/a.png", b"\x89PNG")
     await _insert_presentation(rid, ["upload/a.png"], title="   ")
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -518,10 +518,10 @@ async def test_presentation_blank_title_treated_as_null(view_client: tuple[httpx
 
 async def test_presentation_no_match_no_body(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """Files that never match the stem rule keep today's header-plus-grid layout."""
-    client, share = view_client
+    client, resources = view_client
     rid = "d7e8f90a1b2c3d4e"
-    _write(share, "upload/a.png", b"\x89PNG")
-    _write(share, "upload/b.png", b"\x89PNG")
+    _write(resources, "upload/a.png", b"\x89PNG")
+    _write(resources, "upload/b.png", b"\x89PNG")
     await _insert_presentation(rid, ["upload/a.png", "upload/b.png"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -535,10 +535,10 @@ async def test_presentation_no_match_no_body(view_client: tuple[httpx.AsyncClien
 async def test_presentation_unsupported_content_falls_back_to_card(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An unsupported content file stays a counted grid card, no body, no divider."""
-    client, share = view_client
+    client, resources = view_client
     rid = "f1e2d3c4b5a69788"
-    _write(share, "upload/other.png", b"\x89PNG")
-    _write(share, f"presentations/{rid}.bin", b"\x00\x01binary")
+    _write(resources, "upload/other.png", b"\x89PNG")
+    _write(resources, f"presentations/{rid}.bin", b"\x00\x01binary")
     await _insert_presentation(rid, ["upload/other.png", f"presentations/{rid}.bin"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -552,9 +552,9 @@ async def test_presentation_unsupported_content_falls_back_to_card(
 async def test_presentation_unsupported_content_gone_counts_grid(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The availability note counts grid files, fallback card included."""
-    client, share = view_client
+    client, resources = view_client
     rid = "0a1b2c3d4e5f6a7b"
-    _write(share, f"presentations/{rid}.bin", b"\x00\x01binary")
+    _write(resources, f"presentations/{rid}.bin", b"\x00\x01binary")
     await _insert_presentation(rid, ["upload/gone.png", f"presentations/{rid}.bin"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -565,9 +565,9 @@ async def test_presentation_unsupported_content_gone_counts_grid(
 
 async def test_presentation_content_gone_state(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A gone content file renders the body gone state. Alive files keep the page."""
-    client, share = view_client
+    client, resources = view_client
     rid = "1c2d3e4f5a6b7c8d"
-    _write(share, "upload/other.png", b"\x89PNG")
+    _write(resources, "upload/other.png", b"\x89PNG")
     await _insert_presentation(rid, [f"presentations/{rid}.md", "upload/other.png"],
                                title="Gone content")
     r = await client.get(f"/view/presentation/{rid}")
@@ -585,10 +585,10 @@ async def test_presentation_content_gone_state(view_client: tuple[httpx.AsyncCli
 async def test_presentation_partial_grid_gone_availability_note(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """The sub-line notes grid files only. The gone content is not in the count."""
-    client, share = view_client
+    client, resources = view_client
     rid = "2d3e4f5a6b7c8d9e"
-    _write(share, f"presentations/{rid}.md", "# body")
-    _write(share, "upload/alive.png", b"\x89PNG")
+    _write(resources, f"presentations/{rid}.md", "# body")
+    _write(resources, "upload/alive.png", b"\x89PNG")
     await _insert_presentation(rid, [f"presentations/{rid}.md", "upload/alive.png",
                                      "upload/gone.png"], title="Partial")
     r = await client.get(f"/view/presentation/{rid}")
@@ -612,9 +612,9 @@ async def test_presentation_all_gone_including_content_is_expired(
 async def test_presentation_wrong_stem_in_content_folder_is_not_content(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A file in a content folder whose stem is not the id stays a card."""
-    client, share = view_client
+    client, resources = view_client
     rid = "4e5f6a7b8c9d0e1f"
-    _write(share, "presentations/notes.md", "# notes")
+    _write(resources, "presentations/notes.md", "# notes")
     await _insert_presentation(rid, ["presentations/notes.md"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -627,9 +627,9 @@ async def test_presentation_wrong_stem_in_content_folder_is_not_content(
 async def test_presentation_id_stem_outside_content_folder_is_not_content(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A file whose stem is the id but sits outside a content folder stays a card."""
-    client, share = view_client
+    client, resources = view_client
     rid = "5f6a7b8c9d0e1f20"
-    _write(share, f"upload/{rid}.md", "# not content")
+    _write(resources, f"upload/{rid}.md", "# not content")
     await _insert_presentation(rid, [f"upload/{rid}.md"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -641,11 +641,11 @@ async def test_presentation_id_stem_outside_content_folder_is_not_content(
 
 async def test_presentation_first_of_multiple_content_wins(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    """Two matching content files. The first shared one becomes the body."""
-    client, share = view_client
+    """Two matching content files. The first presented one becomes the body."""
+    client, resources = view_client
     rid = "6a7b8c9d0e1f2031"
-    _write(share, f"presentations/{rid}.md", "# first")
-    _write(share, f"handoffs/{rid}.html", "<p>second</p>")
+    _write(resources, f"presentations/{rid}.md", "# first")
+    _write(resources, f"handoffs/{rid}.html", "<p>second</p>")
     await _insert_presentation(rid, [f"presentations/{rid}.md", f"handoffs/{rid}.html"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -658,9 +658,9 @@ async def test_presentation_first_of_multiple_content_wins(
 
 async def test_presentation_body_frame_html_is_sandboxed(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An html content file is a sandboxed frame in the body."""
-    client, share = view_client
+    client, resources = view_client
     rid = "7b8c9d0e1f203142"
-    _write(share, f"presentations/{rid}.html", "<p>page</p>")
+    _write(resources, f"presentations/{rid}.html", "<p>page</p>")
     await _insert_presentation(rid, [f"presentations/{rid}.html"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -672,9 +672,9 @@ async def test_presentation_body_frame_html_is_sandboxed(view_client: tuple[http
 
 async def test_presentation_body_frame_pdf_is_inline(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A pdf content file is an inline canvas container in the body, no iframe."""
-    client, share = view_client
+    client, resources = view_client
     rid = "8c9d0e1f20314253"
-    _write(share, f"presentations/{rid}.pdf", b"%PDF-1.4 fake")
+    _write(resources, f"presentations/{rid}.pdf", b"%PDF-1.4 fake")
     await _insert_presentation(rid, [f"presentations/{rid}.pdf"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -685,11 +685,11 @@ async def test_presentation_body_frame_pdf_is_inline(view_client: tuple[httpx.As
 
 
 async def test_presentation_body_pptx_uses_pdf_viewer(view_client: tuple[httpx.AsyncClient, Path]) -> None:
-    """A PowerPoint content file shows its converted PDF in the shared viewer."""
-    client, share = view_client
+    """A PowerPoint content file shows its converted PDF in the viewer."""
+    client, resources = view_client
     rid = "0e1f203142536475"
-    rel = _write(share, f"presentations/{rid}.pptx", b"PK\x03\x04 fake pptx")
-    key = cache.key_for(rel, int((share / rel).stat().st_mtime))
+    rel = _write(resources, f"presentations/{rid}.pptx", b"PK\x03\x04 fake pptx")
+    key = cache.key_for(rel, int((resources / rel).stat().st_mtime))
     await cache.write_doc(key, "", {cache.OFFICE_PDF_ASSET: b"%PDF-1.7"}, {"mode": "frame"})
     await _insert_presentation(rid, [rel])
 
@@ -702,9 +702,9 @@ async def test_presentation_body_pptx_uses_pdf_viewer(view_client: tuple[httpx.A
 async def test_presentation_body_native_image_carries_no_zoom(
         view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An image content file is a contained stage in the body, with no zoom."""
-    client, share = view_client
+    client, resources = view_client
     rid = "9d0e1f2031425364"
-    _write(share, f"presentations/{rid}.png", b"\x89PNG")
+    _write(resources, f"presentations/{rid}.png", b"\x89PNG")
     await _insert_presentation(rid, [f"presentations/{rid}.png"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -715,9 +715,9 @@ async def test_presentation_body_native_image_carries_no_zoom(
 
 async def test_presentation_body_native_video(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A video content file is a media stage in the body."""
-    client, share = view_client
+    client, resources = view_client
     rid = "0e1f203142536475"
-    _write(share, f"presentations/{rid}.mp4", b"\x00\x00\x00\x20ftypisom")
+    _write(resources, f"presentations/{rid}.mp4", b"\x00\x00\x00\x20ftypisom")
     await _insert_presentation(rid, [f"presentations/{rid}.mp4"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -729,9 +729,9 @@ async def test_presentation_body_native_video(view_client: tuple[httpx.AsyncClie
 
 async def test_presentation_body_native_audio_is_a_card(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """An audio content file is an audio card in the body."""
-    client, share = view_client
+    client, resources = view_client
     rid = "1f20314253647586"
-    _write(share, f"presentations/{rid}.mp3", b"ID3\x03\x00\x00\x00")
+    _write(resources, f"presentations/{rid}.mp3", b"ID3\x03\x00\x00\x00")
     await _insert_presentation(rid, [f"presentations/{rid}.mp3"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -743,9 +743,9 @@ async def test_presentation_body_native_audio_is_a_card(view_client: tuple[httpx
 
 async def test_presentation_body_raw_shows_the_note(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A content file that does not read as text shows its note, with the toolbar."""
-    client, share = view_client
+    client, resources = view_client
     rid = "2031425364758697"
-    _write(share, f"presentations/{rid}.txt", b"\x00\x01not text")
+    _write(resources, f"presentations/{rid}.txt", b"\x00\x01not text")
     await _insert_presentation(rid, [f"presentations/{rid}.txt"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -758,14 +758,14 @@ async def test_presentation_body_raw_shows_the_note(view_client: tuple[httpx.Asy
 async def test_presentation_body_converting_keeps_the_toolbar(
         view_client: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     """A content file mid-conversion shows the spinner with the toolbar and no task id."""
-    client, share = view_client
+    client, resources = view_client
 
     async def fake_start(_path: str, _key: str, _full_path: str) -> None:
         return None
 
     monkeypatch.setattr(office, "start_office_conversion", fake_start)
     rid = "31425364758697a8"
-    _write(share, f"presentations/{rid}.docx", "PK\x03\x04 fake docx")
+    _write(resources, f"presentations/{rid}.docx", "PK\x03\x04 fake docx")
     await _insert_presentation(rid, [f"presentations/{rid}.docx"])
     r = await client.get(f"/view/presentation/{rid}")
     assert r.status_code == 200
@@ -777,11 +777,11 @@ async def test_presentation_body_converting_keeps_the_toolbar(
 
 async def test_presentation_body_convert_failed(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A failed conversion shows the error with Retry and Download in the body."""
-    client, share = view_client
+    client, resources = view_client
     rid = "425364758697a8b9"
     rel = f"presentations/{rid}.docx"
-    _write(share, rel, "PK\x03\x04 fake docx")
-    st = (share / rel).stat()
+    _write(resources, rel, "PK\x03\x04 fake docx")
+    st = (resources / rel).stat()
     await cache.mark_failed(cache.key_for(rel, int(st.st_mtime)), "convert", "boom")
     await _insert_presentation(rid, [rel])
     r = await client.get(f"/view/presentation/{rid}")

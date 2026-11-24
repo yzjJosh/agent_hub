@@ -23,11 +23,11 @@ async def _seed_declared(tmp_path: Path, body: bytes, token: str, task_id: str =
     return task_id
 
 
-def _point_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    share = tmp_path / "res"
-    share.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
-    return share
+def _point_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    resources = tmp_path / "res"
+    resources.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
+    return resources
 
 
 async def test_result_view_markdown(api_client: httpx.AsyncClient, tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ async def test_view_declared_kind_beats_kind_param(api_client: httpx.AsyncClient
 
 async def test_feed_declared_kind_propagates(api_client: httpx.AsyncClient, tmp_path: Path,
                                              monkeypatch: pytest.MonkeyPatch) -> None:
-    _point_share(tmp_path, monkeypatch)
+    _point_resources(tmp_path, monkeypatch)
     tid = await _seed_declared(tmp_path, MARKDOWN, "code")
     r = await api_client.get(f"/api/tasks/{tid}/result/feed")
     assert r.status_code == 200
@@ -119,7 +119,7 @@ async def test_feed_declared_kind_propagates(api_client: httpx.AsyncClient, tmp_
 
 async def test_feed_declared_kind_beats_kind_param(api_client: httpx.AsyncClient, tmp_path: Path,
                                                    monkeypatch: pytest.MonkeyPatch) -> None:
-    _point_share(tmp_path, monkeypatch)
+    _point_resources(tmp_path, monkeypatch)
     tid = await _seed_declared(tmp_path, MARKDOWN, "code")
     r = await api_client.get(f"/api/tasks/{tid}/result/feed", params={"kind": "json"})
     assert r.status_code == 200
@@ -144,7 +144,7 @@ async def test_result_retry_route_gone(api_client: httpx.AsyncClient) -> None:
 
 async def test_feed_200_with_body_and_files(api_client: httpx.AsyncClient, tmp_path: Path,
                                              monkeypatch: pytest.MonkeyPatch) -> None:
-    _point_share(tmp_path, monkeypatch)
+    _point_resources(tmp_path, monkeypatch)
     tid = await _seed(tmp_path, b"body")
     write_run_file(tmp_path / "data", tid, "files", "downloads/a.png\n")
     r = await api_client.get(f"/api/tasks/{tid}/result/feed")
@@ -163,7 +163,7 @@ async def test_feed_result_not_found(api_client: httpx.AsyncClient) -> None:
 
 async def test_feed_bad_kind(api_client: httpx.AsyncClient, tmp_path: Path,
                              monkeypatch: pytest.MonkeyPatch) -> None:
-    _point_share(tmp_path, monkeypatch)
+    _point_resources(tmp_path, monkeypatch)
     tid = await _seed(tmp_path, b"body")
     r = await api_client.get(f"/api/tasks/{tid}/result/feed", params={"kind": "pdf"})
     assert r.status_code == 400 and r.json()["code"] == "bad_param"
@@ -171,11 +171,11 @@ async def test_feed_bad_kind(api_client: httpx.AsyncClient, tmp_path: Path,
 
 async def test_feed_load_error_isolated(api_client: httpx.AsyncClient, tmp_path: Path,
                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    share = _point_share(tmp_path, monkeypatch)
+    resources = _point_resources(tmp_path, monkeypatch)
     tid = await _seed(tmp_path, b"ok")
     write_run_file(tmp_path / "data", tid, "files", "bad/x.bin\ntts/ok.opus\n")
-    (share / "bad").mkdir(parents=True, exist_ok=True)
-    (share / "bad" / "x.bin").write_bytes(b"\x00\x01")
+    (resources / "bad").mkdir(parents=True, exist_ok=True)
+    (resources / "bad" / "x.bin").write_bytes(b"\x00\x01")
 
     boom_descriptor("bad/x.bin", monkeypatch)
     r = await api_client.get(f"/api/tasks/{tid}/result/feed")

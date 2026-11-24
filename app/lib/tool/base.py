@@ -168,16 +168,16 @@ async def read_run_mcp_text(run_path: str) -> str:
     return await _read_file(os.path.join(run_path, "result"))
 
 
-def _manifest_line(share_path: str) -> str:
+def _manifest_line(resource_path: str) -> str:
     size = mtime = None
-    full = None if "\x00" in share_path else resolve_path_sync(resources_dir(), share_path)
+    full = None if "\x00" in resource_path else resolve_path_sync(resources_dir(), resource_path)
     if full is not None:
         try:
             st = os.stat(full)
             size, mtime = st.st_size, int(st.st_mtime)
         except OSError:
             pass
-    return json.dumps({"path": share_path, "size": size, "mtime": mtime})
+    return json.dumps({"path": resource_path, "size": size, "mtime": mtime})
 
 
 async def _write_files_sidecar(run_path: str, files: tuple[str, ...]) -> None:

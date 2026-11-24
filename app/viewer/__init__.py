@@ -1,1 +1,1 @@
-"""Shows shared files to whoever opens the link."""
+"""Shows resource files to whoever opens the link."""

@@ -80,9 +80,9 @@ async def _binary_result(local_path: str) -> ToolResult:
     Returns:
         A note on how to download the saved copy and its resource path.
     """
-    share_rel = f"downloads/{os.path.basename(local_path)}"
-    text = await binary_download_notice(share_rel)
-    return ToolResult(text=text, files=(share_rel,))
+    resource_path = f"downloads/{os.path.basename(local_path)}"
+    text = await binary_download_notice(resource_path)
+    return ToolResult(text=text, files=(resource_path,))
 
 
 class _WebFetchTool(Tool):

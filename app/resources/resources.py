@@ -1,4 +1,4 @@
-"""Share a folder of files over WebDAV and as MCP resources."""
+"""Serve a folder of files over WebDAV and as MCP resources."""
 
 import asyncio
 import mimetypes
@@ -56,7 +56,7 @@ async def binary_download_notice(path: str) -> str:
     """Build the notice shown in place of a binary file.
 
     Args:
-        path: File path under the shared folder.
+        path: File path under the resources folder.
 
     Returns:
         Text with the size of the file and a command that downloads it.
@@ -77,11 +77,11 @@ def create_dav_app(root: str) -> WsgiDAVApp:
     """Create a WebDAV app that serves a folder to anyone.
 
     Clients may only write inside the upload folder, and the rest of the
-    share is read only. A write, delete, or move drops the render entries
+    resources folder is read only. A write, delete, or move drops the render entries
     for the paths it touched.
 
     Args:
-        root: Folder to share.
+        root: Folder to serve.
 
     Returns:
         The WebDAV app.
@@ -90,8 +90,8 @@ def create_dav_app(root: str) -> WsgiDAVApp:
     os.makedirs(upload_dir, exist_ok=True)
     config = {
         "provider_mapping": {
-            "/": CacheInvalidatingProvider(root, share_root=root, readonly=True, fs_opts={}),
-            f"/{_UPLOAD_DIR}": CacheInvalidatingProvider(upload_dir, share_root=root, fs_opts={}),
+            "/": CacheInvalidatingProvider(root, resources_root=root, readonly=True, fs_opts={}),
+            f"/{_UPLOAD_DIR}": CacheInvalidatingProvider(upload_dir, resources_root=root, fs_opts={}),
         },
         "simple_dc": {"user_mapping": {"*": True}},
         "enable_propfind_depth_1": True,
@@ -138,7 +138,7 @@ async def _list_files(root: str, path: str) -> str | None:
     """List the files under a folder with their sizes, one per line.
 
     Args:
-        root: Share root the paths are relative to.
+        root: Resources root the paths are relative to.
         path: Folder to list, relative to root. It is empty for the root
             itself.
 
@@ -153,7 +153,7 @@ def _folder_listing(root: str, path: str) -> str | None:
     """List the files under a folder with their sizes, one per line.
 
     Args:
-        root: Share root the paths are relative to.
+        root: Resources root the paths are relative to.
         path: Folder to list, relative to root. It is empty for the root
             itself.
 
@@ -272,7 +272,7 @@ def register_resources(mcp: FastMCP, root: str) -> None:
 
     Args:
         mcp: Server to add the resources to.
-        root: Folder to share.
+        root: Folder to serve.
     """
     mcp.add_middleware(_FileListMiddleware(root))
 

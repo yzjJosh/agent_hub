@@ -1,4 +1,4 @@
-"""Take a screenshot of a webpage and save it in this server's share."""
+"""Take a screenshot of a webpage and save it in this server's resources folder."""
 
 from __future__ import annotations
 
@@ -102,8 +102,8 @@ class _WebScreenshotTool(Tool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        text, share_rel = await _screenshot_impl(params["url"], params.get("full_page", True))
-        return ToolResult(text=text, files=(share_rel,))
+        text, resource_path = await _screenshot_impl(params["url"], params.get("full_page", True))
+        return ToolResult(text=text, files=(resource_path,))
 
 
 web_screenshot_tool = _WebScreenshotTool()

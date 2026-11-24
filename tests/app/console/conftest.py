@@ -16,7 +16,7 @@ from starlette.routing import Mount
 import app.lib.db.store as store_module
 from app.console.api import ConsolePathSanitizer, ConsoleSecurityMiddleware, build_api_routes
 from app.lib.db.store import TaskRecord, TaskView
-from tests.app.conftest import point_share_env
+from tests.app.conftest import configure_resource_env
 
 POLL_SLEEP_S = 0.01
 
@@ -25,8 +25,8 @@ POLL_SLEEP_S = 0.01
 async def console_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
-    """Set up the console api for a test and give back the client and the share folder."""
-    share, data = point_share_env(tmp_path, monkeypatch)
+    """Set up the console api for a test and give back the client and the resources folder."""
+    resources, data = configure_resource_env(tmp_path, monkeypatch)
     store_module.init_store(str(data / "records.db"))
     await store_module.task_store.open()
     app = Starlette(routes=[Mount("/api", build_api_routes())])
@@ -34,7 +34,7 @@ async def console_env(
     app.add_middleware(ConsolePathSanitizer)
     client = httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
     try:
-        yield client, share
+        yield client, resources
     finally:
         await client.aclose()
         await store_module.task_store.close()

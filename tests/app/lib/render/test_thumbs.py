@@ -56,9 +56,9 @@ def _thumb_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def _share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Give the test its own share dir."""
-    root = tmp_path / "share"
+def _resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Give the test its own resources dir."""
+    root = tmp_path / "resources"
     root.mkdir()
     monkeypatch.setenv("RESOURCES_DIR", str(root))
     return root
@@ -88,10 +88,10 @@ def test_engine_selection(kind: RenderKind, expected: str | None) -> None:
     assert thumbs.thumb_engine(kind) == expected
 
 
-def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _share: Path,
+def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _resources: Path,
                                                      monkeypatch: pytest.MonkeyPatch) -> None:
     """A PowerPoint thumbnail uses the saved PDF after conversion completes."""
-    (_share / "deck.pptx").write_bytes(b"PK\x03\x04 fake pptx")
+    (_resources / "deck.pptx").write_bytes(b"PK\x03\x04 fake pptx")
     key = "f" * 64
     seen: list[str] = []
 
@@ -112,10 +112,10 @@ def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _share: Pa
     assert seen == [str(_thumb_env / "render" / key / cache_module.OFFICE_PDF_ASSET)]
 
 
-def test_start_job_idempotent(_thumb_env: Path, _share: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_start_job_idempotent(_thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A second start for an in-flight key is a no-op, whatever the generating set says."""
-    (_share / "a.png").write_bytes((FIX / "small.png").read_bytes())
-    key = cache_module.key_for("a.png", int(os.stat(_share / "a.png").st_mtime))
+    (_resources / "a.png").write_bytes((FIX / "small.png").read_bytes())
+    key = cache_module.key_for("a.png", int(os.stat(_resources / "a.png").st_mtime))
     hold = asyncio.Event()
 
     async def held_image(_full: str, _key: str) -> None:
@@ -141,15 +141,15 @@ def test_start_job_idempotent(_thumb_env: Path, _share: Path, monkeypatch: pytes
     asyncio.run(run())
 
 
-def _copy_to_share(share: Path, name: str) -> tuple[str, str]:
-    """Put a fixture file in the share folder and give back its path and saved name."""
-    (share / name).write_bytes((FIX / name).read_bytes())
-    return name, cache_module.key_for(name, int(os.stat(share / name).st_mtime))
+def _copy_to_resources(resources: Path, name: str) -> tuple[str, str]:
+    """Put a fixture file in the resources folder and give back its path and saved name."""
+    (resources / name).write_bytes((FIX / name).read_bytes())
+    return name, cache_module.key_for(name, int(os.stat(resources / name).st_mtime))
 
 
-def test_image_engine_emits_1024x640(_thumb_env: Path, _share: Path) -> None:
+def test_image_engine_emits_1024x640(_thumb_env: Path, _resources: Path) -> None:
     """A started job turns an image into a 1024x640 PNG."""
-    path, key = _copy_to_share(_share, "small.png")
+    path, key = _copy_to_resources(_resources, "small.png")
 
     async def run() -> None:
         try:
@@ -164,9 +164,9 @@ def test_image_engine_emits_1024x640(_thumb_env: Path, _share: Path) -> None:
         assert im.size == (_THUMB_W, _THUMB_H)
 
 
-def test_pdf_engine_emits_1024x640(_thumb_env: Path, _share: Path) -> None:
+def test_pdf_engine_emits_1024x640(_thumb_env: Path, _resources: Path) -> None:
     """A started job turns a PDF into a 1024x640 picture of its first page."""
-    path, key = _copy_to_share(_share, "one.pdf")
+    path, key = _copy_to_resources(_resources, "one.pdf")
 
     async def run() -> None:
         try:
@@ -180,12 +180,12 @@ def test_pdf_engine_emits_1024x640(_thumb_env: Path, _share: Path) -> None:
         assert im.size == (_THUMB_W, _THUMB_H)
 
 
-def test_job_releases_entries_and_marks_failure(_thumb_env: Path, _share: Path) -> None:
+def test_job_releases_entries_and_marks_failure(_thumb_env: Path, _resources: Path) -> None:
     """A failing job writes a failure mark and releases both in-flight entries."""
 
     async def run() -> None:
         key = "d" * 64
-        (_share / "bad.png").write_bytes(b"not a png")
+        (_resources / "bad.png").write_bytes(b"not a png")
         try:
             assert thumbs.start_thumbnail_job(key, RenderKind.IMAGE, "bad.png") is True
             assert await _await_thumb_failed(key) == "failed"
@@ -198,12 +198,12 @@ def test_job_releases_entries_and_marks_failure(_thumb_env: Path, _share: Path) 
     asyncio.run(run())
 
 
-def test_live_job_set_releases_on_completion(_thumb_env: Path, _share: Path) -> None:
+def test_live_job_set_releases_on_completion(_thumb_env: Path, _resources: Path) -> None:
     """A finished job leaves the live-job set and the enqueued set."""
 
     async def run() -> None:
         key = "9" * 64
-        (_share / "gone.png").write_bytes(b"not a png")
+        (_resources / "gone.png").write_bytes(b"not a png")
         assert thumbs.start_thumbnail_job(key, RenderKind.IMAGE, "gone.png") is True
         assert len(_live_jobs()) == 1
         assert await _await_thumb_failed(key) == "failed"
@@ -216,13 +216,13 @@ def test_live_job_set_releases_on_completion(_thumb_env: Path, _share: Path) -> 
     asyncio.run(run())
 
 
-def test_parallel_jobs_reach_render_cap(_thumb_env: Path, _share: Path,
+def test_parallel_jobs_reach_render_cap(_thumb_env: Path, _resources: Path,
                                         monkeypatch: pytest.MonkeyPatch) -> None:
     """Two image jobs both reach the render cap, so one job does not hold the line."""
-    first, key_a = _copy_to_share(_share, "small.png")
+    first, key_a = _copy_to_resources(_resources, "small.png")
     second = "second.png"
-    (_share / second).write_bytes((FIX / "small.png").read_bytes())
-    key_b = cache_module.key_for(second, int(os.stat(_share / second).st_mtime))
+    (_resources / second).write_bytes((FIX / "small.png").read_bytes())
+    key_b = cache_module.key_for(second, int(os.stat(_resources / second).st_mtime))
     stats = {"now": 0, "peak": 0}
     both_in = asyncio.Event()
     release = asyncio.Event()
@@ -256,11 +256,11 @@ def test_parallel_jobs_reach_render_cap(_thumb_env: Path, _share: Path,
     assert stats["peak"] >= 2  # the renders overlapped behind the cap
 
 
-def test_generating_held_across_prepare(_thumb_env: Path, _share: Path,
+def test_generating_held_across_prepare(_thumb_env: Path, _resources: Path,
                                         monkeypatch: pytest.MonkeyPatch) -> None:
     """A doc job sitting in its prepare stage still reads generating, not pending."""
-    (_share / "a.md").write_text("# hi\n")
-    key = cache_module.key_for("a.md", int(os.stat(_share / "a.md").st_mtime))
+    (_resources / "a.md").write_text("# hi\n")
+    key = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
     release = asyncio.Event()
 
     async def slow_prepare(_kind: RenderKind, _key: str, _path: str, _full: str) -> str:
@@ -289,7 +289,7 @@ def test_generating_held_across_prepare(_thumb_env: Path, _share: Path,
 
 
 async def test_start_dir_thumbnails_counts_pending_and_failed(
-    _thumb_env: Path, _share: Path, monkeypatch: pytest.MonkeyPatch
+    _thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Starting a folder's thumbnails counts the files that still need one."""
 
@@ -297,9 +297,9 @@ async def test_start_dir_thumbnails_counts_pending_and_failed(
         raise RuntimeError("no browser in unit tests")
 
     monkeypatch.setattr(thumbs, "BrowserManager", SimpleNamespace(create=no_browser))
-    (_share / "a.md").write_text("# hi\n")
-    (_share / "b.opus").write_bytes(b"audio")
-    key_a = cache_module.key_for("a.md", int(os.stat(_share / "a.md").st_mtime))
+    (_resources / "a.md").write_text("# hi\n")
+    (_resources / "b.opus").write_bytes(b"audio")
+    key_a = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
     await cache_module.mark_failed(key_a, "thumb", "x")  # a failed thumbnail is started again
     try:
         n = await thumbs.start_dir_thumbnails("")
@@ -310,11 +310,11 @@ async def test_start_dir_thumbnails_counts_pending_and_failed(
         await thumbs.stop_thumbnails()
 
 
-async def test_start_dir_thumbnails_subdirectory_uses_share_relative_paths(
-    _thumb_env: Path, _share: Path
+async def test_start_dir_thumbnails_subdirectory_uses_resource_relative_paths(
+    _thumb_env: Path, _resources: Path
 ) -> None:
     """Starting a subfolder makes thumbnails for the files inside it."""
-    sub = _share / "upload" / "sub"
+    sub = _resources / "upload" / "sub"
     sub.mkdir(parents=True)
     photo = sub / "photo.png"
     photo.write_bytes((FIX / "small.png").read_bytes())
@@ -427,7 +427,7 @@ async def _published(_kind: RenderKind, _key: str, _path: str, _full: str) -> st
     return "published"
 
 
-def test_browser_create_failure_marks_job_failed(_thumb_env: Path, _share: Path,
+def test_browser_create_failure_marks_job_failed(_thumb_env: Path, _resources: Path,
                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     """A connect that finds no browser windows leaves a failure mark."""
 
@@ -436,7 +436,7 @@ def test_browser_create_failure_marks_job_failed(_thumb_env: Path, _share: Path,
 
     monkeypatch.setattr(thumbs, "BrowserManager", SimpleNamespace(create=no_browser))
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
-    (_share / "a.md").write_text("# hi\n")
+    (_resources / "a.md").write_text("# hi\n")
 
     async def run() -> None:
         try:
@@ -449,13 +449,13 @@ def test_browser_create_failure_marks_job_failed(_thumb_env: Path, _share: Path,
     asyncio.run(run())
 
 
-def _run_doc_render_job(_thumb_env: Path, _share: Path, monkeypatch: pytest.MonkeyPatch,
+def _run_doc_render_job(_thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch,
                         factory: Callable[[], _FakeManager]) -> tuple[str, str]:
     """Drive one doc render job to a terminal state and give back how it ended and its key."""
     _patch_browser(monkeypatch, factory)
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
-    (_share / "a.md").write_text("# hi\n")
-    key = cache_module.key_for("a.md", int(os.stat(_share / "a.md").st_mtime))
+    (_resources / "a.md").write_text("# hi\n")
+    key = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
 
     async def run() -> str:
         try:
@@ -472,11 +472,11 @@ def _run_doc_render_job(_thumb_env: Path, _share: Path, monkeypatch: pytest.Monk
     return asyncio.run(run()), key
 
 
-def test_doc_render_browser_call_sequence(_thumb_env: Path, _share: Path,
+def test_doc_render_browser_call_sequence(_thumb_env: Path, _resources: Path,
                                            monkeypatch: pytest.MonkeyPatch) -> None:
     """A doc render drives one browser manager from connect to cleanup."""
     calls, factory = _fake_manager_factory()
-    status, key = _run_doc_render_job(_thumb_env, _share, monkeypatch, factory)
+    status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "done"
     assert calls == ["create", "new_page", "set_viewport_size", "navigate", "screenshot", "close_page", "cleanup"]
     with Image.open(os.path.join(cache_module.render_root(), key, "thumb.png")) as im:
@@ -494,55 +494,55 @@ def test_doc_render_browser_call_sequence(_thumb_env: Path, _share: Path,
     ],
     ids=["wildcard-default-host", "specific-host", "ipv6-wildcard", "ipv6-host"],
 )
-def test_doc_render_opens_page_at_bind_address(_thumb_env: Path, _share: Path, monkeypatch: pytest.MonkeyPatch,
+def test_doc_render_opens_page_at_bind_address(_thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch,
                                                env: dict[str, str], base: str) -> None:
     """The browser opens the doc page at the address the server listens on."""
     _set_bind_env(monkeypatch, env)
     urls: list[str] = []
     _, factory = _fake_manager_factory(urls=urls)
-    status, key = _run_doc_render_job(_thumb_env, _share, monkeypatch, factory)
+    status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "done"
     assert urls == [f"{base}/view/doc/{key}?thumb=1"]
 
 
-def test_doc_render_failed_navigation_marks_failed(_thumb_env: Path, _share: Path,
+def test_doc_render_failed_navigation_marks_failed(_thumb_env: Path, _resources: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     """A page that does not load leaves a failure mark and still tears the browser down."""
     calls, factory = _fake_manager_factory(navigate_ok=False)
-    status, key = _run_doc_render_job(_thumb_env, _share, monkeypatch, factory)
+    status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
     assert calls == ["create", "new_page", "set_viewport_size", "navigate", "close_page", "cleanup"]
     assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
 
 
-def test_doc_render_failed_viewport_marks_failed(_thumb_env: Path, _share: Path,
+def test_doc_render_failed_viewport_marks_failed(_thumb_env: Path, _resources: Path,
                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     """A viewport that cannot be set leaves a failure mark and still tears the browser down."""
     calls, factory = _fake_manager_factory(viewport_ok=False)
-    status, key = _run_doc_render_job(_thumb_env, _share, monkeypatch, factory)
+    status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
     assert calls == ["create", "new_page", "set_viewport_size", "close_page", "cleanup"]
     assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
 
 
-def test_doc_render_new_page_failure_keeps_original_error(_thumb_env: Path, _share: Path,
+def test_doc_render_new_page_failure_keeps_original_error(_thumb_env: Path, _resources: Path,
                                                           monkeypatch: pytest.MonkeyPatch) -> None:
     """A page open that raises keeps the original error on the mark and still cleans up."""
     calls, factory = _fake_manager_factory(new_page_error=RuntimeError("no browser windows"))
-    status, key = _run_doc_render_job(_thumb_env, _share, monkeypatch, factory)
+    status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
     mark = _thumb_env / "render" / ".state" / f"{key}.thumb-failed"
     assert "no browser windows" in mark.read_text()
     assert calls == ["create", "new_page", "cleanup"]
 
 
-def test_browser_cycles_are_fresh_per_job(_thumb_env: Path, _share: Path,
+def test_browser_cycles_are_fresh_per_job(_thumb_env: Path, _resources: Path,
                                           monkeypatch: pytest.MonkeyPatch) -> None:
     """Each doc render connects and tears down its own browser."""
     calls, factory = _fake_manager_factory()
     _patch_browser(monkeypatch, factory)
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
-    (_share / "a.md").write_text("# hi\n")
+    (_resources / "a.md").write_text("# hi\n")
 
     async def run() -> None:
         try:
@@ -560,7 +560,7 @@ def test_browser_cycles_are_fresh_per_job(_thumb_env: Path, _share: Path,
     assert calls.count("cleanup") == 2
 
 
-def test_browser_guard_serializes_cycles(_thumb_env: Path, _share: Path,
+def test_browser_guard_serializes_cycles(_thumb_env: Path, _resources: Path,
                                          monkeypatch: pytest.MonkeyPatch) -> None:
     """Two doc renders racing the connect do not interleave their browser cycles."""
     _, factory = _fake_manager_factory()
@@ -578,10 +578,10 @@ def test_browser_guard_serializes_cycles(_thumb_env: Path, _share: Path,
 
     monkeypatch.setattr(thumbs, "BrowserManager", SimpleNamespace(create=racy_factory))
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
-    (_share / "a.md").write_text("# hi\n")
-    (_share / "b.md").write_text("# hai\n")
-    key_a = cache_module.key_for("a.md", int(os.stat(_share / "a.md").st_mtime))
-    key_b = cache_module.key_for("b.md", int(os.stat(_share / "b.md").st_mtime))
+    (_resources / "a.md").write_text("# hi\n")
+    (_resources / "b.md").write_text("# hai\n")
+    key_a = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
+    key_b = cache_module.key_for("b.md", int(os.stat(_resources / "b.md").st_mtime))
 
     async def run() -> None:
         try:
@@ -600,11 +600,11 @@ def test_browser_guard_serializes_cycles(_thumb_env: Path, _share: Path,
 @pytest.mark.live
 @pytest.mark.timeout(90)
 def test_live_cdp_doc_thumbnail(
-    _thumb_env: Path, _share: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    _thumb_env: Path, _resources: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real Chrome shoots a doc page and saves it as a thumbnail."""
     monkeypatch.setattr(store_module, "_DB_PATH", str(tmp_path / "records.db"))
-    (_share / "sample.md").write_bytes((FIX / "sample.md").read_bytes())
+    (_resources / "sample.md").write_bytes((FIX / "sample.md").read_bytes())
     server = uvicorn.Server(uvicorn.Config(build_app(), host="127.0.0.1", port=0, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

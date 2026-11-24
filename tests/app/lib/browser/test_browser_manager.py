@@ -2441,7 +2441,7 @@ class TestBrowserManagerMoveMouseToRelative:
 
 
 # ---------------------------------------------------------------------------
-# Acting at a share of the window
+# Acting at a relative viewport coordinate
 # ---------------------------------------------------------------------------
 
 
@@ -2532,10 +2532,10 @@ def _wide_window_viewport() -> Viewport:
 
 
 class TestBrowserManagerClickAtRelative:
-    """Tests for clicking a spot given as a share of the window."""
+    """Tests for clicking a spot given as a viewport ratio."""
 
     async def test_click_at_relative_scrolled_viewport(self: Self) -> None:
-        """A share on a scrolled window clicks the window center."""
+        """A relative viewport coordinate on a scrolled window clicks the window center."""
         mgr, mock_page, tab = await _make_manager(session=_layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y))
 
         result = await mgr.click_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO, viewport=_scrolled_viewport())
@@ -2544,7 +2544,7 @@ class TestBrowserManagerClickAtRelative:
         mock_page.mouse.click.assert_called_once_with(_HALF_VIEWPORT_WIDTH, _HALF_VIEWPORT_HEIGHT)
 
     async def test_click_at_relative_unscrolled_viewport(self: Self) -> None:
-        """A share on an unscrolled window clicks the ratio times the window size."""
+        """A relative viewport coordinate on an unscrolled window clicks the ratio times the window size."""
         mgr, mock_page, tab = await _make_manager()
 
         result = await mgr.click_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO, viewport=_unscrolled_viewport())
@@ -2564,7 +2564,7 @@ class TestBrowserManagerClickAtRelative:
         mock_page.mouse.click.assert_called_once_with(_HALF_VIEWPORT_WIDTH, _HALF_VIEWPORT_HEIGHT)
 
     async def test_click_at_relative_cdp_read_failure(self: Self) -> None:
-        """A share click gives back false and clicks nothing when the window cannot be read."""
+        """A relative viewport click gives back false and clicks nothing when the window cannot be read."""
         mgr, mock_page, tab = await _make_manager(attach_session=False)
 
         result = await mgr.click_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO)
@@ -2573,7 +2573,7 @@ class TestBrowserManagerClickAtRelative:
         mock_page.mouse.click.assert_not_called()
 
     async def test_click_at_relative_uses_the_window_size(self: Self) -> None:
-        """A share runs over the window size, the scrollbar included, past the page offset."""
+        """A viewport ratio runs over the window size, the scrollbar included, past the page offset."""
         mgr, mock_page, tab = await _make_manager(session=_layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y))
 
         result = await mgr.click_at_relative(tab, 1, 1, viewport=_wide_window_viewport())
@@ -2582,7 +2582,7 @@ class TestBrowserManagerClickAtRelative:
         mock_page.mouse.click.assert_called_once_with(float(_WINDOW_WIDER_THAN_CLIENT), float(_WINDOW_TALLER_THAN_CLIENT))
 
     async def test_click_at_relative_unknown_target(self: Self) -> None:
-        """Clicking a share in a tab that is not there gives back false."""
+        """Clicking a relative viewport coordinate in a tab that is not there gives back false."""
         mgr = await _empty_manager()
 
         result = await mgr.click_at_relative("nonexistent", _CENTER_RATIO, _CENTER_RATIO)
@@ -2666,10 +2666,10 @@ class TestBrowserManagerTypeTextAt:
 
 
 class TestBrowserManagerTypeTextAtRelative:
-    """Tests for typing text at a spot given as a share of the window."""
+    """Tests for typing text at a spot given as a viewport ratio."""
 
     async def test_type_text_at_relative_scrolled_viewport(self: Self) -> None:
-        """A share on a scrolled window types at the window center."""
+        """A relative viewport coordinate on a scrolled window types at the window center."""
         mgr, mock_page, tab = await _make_manager(session=_layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y))
 
         result = await mgr.type_text_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO, _TYPE_TEXT, viewport=_scrolled_viewport())
@@ -2679,7 +2679,7 @@ class TestBrowserManagerTypeTextAtRelative:
         mock_page.keyboard.type.assert_called_once_with(_TYPE_TEXT)
 
     async def test_type_text_at_relative_unscrolled_viewport(self: Self) -> None:
-        """A share on an unscrolled window types at the ratio times the window size."""
+        """A relative viewport coordinate on an unscrolled window types at the ratio times the window size."""
         mgr, mock_page, tab = await _make_manager()
 
         result = await mgr.type_text_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO, _TYPE_TEXT, viewport=_unscrolled_viewport())
@@ -2689,7 +2689,7 @@ class TestBrowserManagerTypeTextAtRelative:
         mock_page.keyboard.type.assert_called_once_with(_TYPE_TEXT)
 
     async def test_type_text_at_relative_uses_the_window_size(self: Self) -> None:
-        """A share runs over the window size, the scrollbar included, past the page offset."""
+        """A viewport ratio runs over the window size, the scrollbar included, past the page offset."""
         mgr, mock_page, tab = await _make_manager(session=_layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y))
 
         result = await mgr.type_text_at_relative(tab, 1, 1, _TYPE_TEXT, viewport=_wide_window_viewport())
@@ -2699,7 +2699,7 @@ class TestBrowserManagerTypeTextAtRelative:
         mock_page.keyboard.type.assert_called_once_with(_TYPE_TEXT)
 
     async def test_type_text_at_relative_cdp_read_failure(self: Self) -> None:
-        """A share typing gives back false and types nothing when the window cannot be read."""
+        """Relative viewport typing gives back false and types nothing when the window cannot be read."""
         mgr, mock_page, tab = await _make_manager(attach_session=False)
 
         result = await mgr.type_text_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO, _TYPE_TEXT)
@@ -2743,10 +2743,10 @@ class TestBrowserManagerScrollBy:
 
 
 class TestBrowserManagerScrollByRelative:
-    """Tests for scrolling a share of the window in each direction."""
+    """Tests for scrolling by a viewport ratio in each direction."""
 
     async def test_scroll_by_relative_delegates_scaled_distance(self: Self) -> None:
-        """The shares turn into pixel distances, with no page position."""
+        """The viewport ratios turn into pixel distances, with no page position."""
         mgr, mock_page, tab = await _make_manager()
 
         result = await mgr.scroll_by_relative(tab, _REL_SCROLL_DX, _REL_SCROLL_DY, viewport=_scrolled_viewport())
@@ -2757,7 +2757,7 @@ class TestBrowserManagerScrollByRelative:
         assert sum(abs(wheel_call.args[1]) for wheel_call in wheel_calls) == _REL_SCROLL_HEIGHT
 
     async def test_scroll_by_relative_uses_the_window_size(self: Self) -> None:
-        """The shares scale by the window size, the scrollbar included."""
+        """The viewport ratios scale by the window size, the scrollbar included."""
         mgr, mock_page, tab = await _make_manager()
 
         result = await mgr.scroll_by_relative(tab, _REL_SCROLL_DX, _REL_SCROLL_DY, viewport=_wide_window_viewport())
@@ -2780,7 +2780,7 @@ class TestBrowserManagerScrollByRelative:
         assert sum(abs(wheel_call.args[1]) for wheel_call in wheel_calls) == _REL_SCROLL_HEIGHT
 
     async def test_scroll_by_relative_cdp_read_failure(self: Self) -> None:
-        """A share scroll gives back false and scrolls nothing when the window cannot be read."""
+        """A relative viewport scroll gives back false and scrolls nothing when the window cannot be read."""
         mgr, mock_page, tab = await _make_manager(attach_session=False)
 
         result = await mgr.scroll_by_relative(tab, _REL_SCROLL_DX, _REL_SCROLL_DY)
@@ -2789,7 +2789,7 @@ class TestBrowserManagerScrollByRelative:
         mock_page.mouse.wheel.assert_not_called()
 
     async def test_scroll_by_relative_unknown_target(self: Self) -> None:
-        """Scrolling a share in a tab that is not there gives back false."""
+        """Scrolling by a viewport ratio in a tab that is not there gives back false."""
         mgr = await _empty_manager()
 
         result = await mgr.scroll_by_relative("nonexistent", _REL_SCROLL_DX, _REL_SCROLL_DY)
@@ -2875,7 +2875,7 @@ class TestBrowserManagerMoveMouseToRelativeViewport:
     """Tests for moving the mouse by fraction with a captured window."""
 
     async def test_move_mouse_to_relative_scrolled_viewport_uses_viewport_coordinates(self: Self) -> None:
-        """A share on a scrolled window moves the mouse in the window, not on the page."""
+        """A relative viewport coordinate on a scrolled window moves the mouse in the window, not on the page."""
         mgr, mock_page, tab = await _make_manager()
 
         result = await mgr.move_mouse_to_relative(tab, _CENTER_RATIO, _CENTER_RATIO, viewport=_scrolled_viewport())
@@ -3427,7 +3427,7 @@ class TestViewportGeometryLive:
     """Live tests for the window geometry a snapshot captures."""
 
     async def test_snapshot_page_y_and_click_at_relative_center(self, browser_manager: BrowserManager, tmp_path: Path) -> None:
-        """A scrolled snapshot reports where the window is, and a share click lands at the window center."""
+        """A scrolled snapshot reports where the window is, and a relative viewport click lands at the window center."""
         page_file = tmp_path / "geometry.html"
         page_file.write_text(_GEOMETRY_PAGE_HTML)
         mgr = browser_manager
@@ -4055,10 +4055,10 @@ class TestBrowserManagerReplaceInputTextAt:
 
 
 class TestBrowserManagerReplaceInputTextAtRelative:
-    """Tests for replacing a piece of a field's text at a spot given as a share of the window."""
+    """Tests for replacing a piece of a field's text at a spot given as a viewport ratio."""
 
     async def test_replace_input_text_at_relative_scrolled_viewport(self: Self) -> None:
-        """A share on a scrolled window edits the field at the window center."""
+        """A relative viewport coordinate on a scrolled window edits the field at the window center."""
         session = _layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y)
         evaluate = _field_evaluate(_selected_ok(), _REPLACED_FIELD_TEXT)
         mgr, mock_page, tab = await _make_field_manager(evaluate, session=session)
@@ -4093,7 +4093,7 @@ class TestBrowserManagerReplaceInputTextAtRelative:
         mock_page.keyboard.insert_text.assert_not_called()
 
     async def test_replace_input_text_at_relative_unknown_target(self: Self) -> None:
-        """Editing a share in a tab that is not there gives back false."""
+        """Editing a relative viewport coordinate in a tab that is not there gives back false."""
         mgr = await _empty_manager()
 
         result = await mgr.replace_input_text_at_relative("nonexistent", _CENTER_RATIO, _CENTER_RATIO, "quick", "slow")

@@ -20,8 +20,8 @@ def _point_resources_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("RESOURCES_DIR", str(tmp_path))
 
 
-def _share_file(tmp_path: Path, rel: str, data: bytes = b"fake media") -> Path:
-    """Create a file in the resource share and return its absolute path."""
+def _resource_file(tmp_path: Path, rel: str, data: bytes = b"fake media") -> Path:
+    """Create a file in the resources folder and return its absolute path."""
     path = tmp_path / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -97,10 +97,10 @@ class TestResourcePathValidation:
         assert "send_or_receive_file" in result
         mock_resolve.assert_not_called()
 
-    async def test_path_escaping_share_is_rejected(
+    async def test_path_escaping_resources_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A path that points outside the share is turned down and shows nothing."""
+        """A path that points outside the resources folder is turned down and shows nothing."""
         _point_resources_at(tmp_path, monkeypatch)
         outside = tmp_path.parent / "outside"
         outside.mkdir()
@@ -131,9 +131,9 @@ class TestConversion:
     async def test_returns_converted_text(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A file in the share comes back as text."""
+        """A file in the resources folder comes back as text."""
         _point_resources_at(tmp_path, monkeypatch)
-        media = _share_file(tmp_path, "upload/lecture.mp4")
+        media = _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = ("A lecture about AI.", False)
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
@@ -146,7 +146,7 @@ class TestConversion:
     ) -> None:
         """A file that cannot be turned into text gives back a failed tool message with the error text."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/clip.mp3")
+        _resource_file(tmp_path, "upload/clip.mp3")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.side_effect = ResolveError(
                 "ASR transcription failed (HTTP 500): boom"
@@ -163,7 +163,7 @@ class TestConversion:
         """An audio file with no ASR server set fails with a message that names the variable."""
         _point_resources_at(tmp_path, monkeypatch)
         monkeypatch.delenv("ASR_SERVER_URL", raising=False)
-        _share_file(tmp_path, "upload/clip.wav", _AUDIO_FIXTURE.read_bytes())
+        _resource_file(tmp_path, "upload/clip.wav", _AUDIO_FIXTURE.read_bytes())
 
         result = await run_text(read_media_or_doc_tool, "upload/clip.wav")
 
@@ -181,7 +181,7 @@ class TestConversion:
     ) -> None:
         """A download notice for a binary file comes back unchanged."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/archive.zip")
+        _resource_file(tmp_path, "upload/archive.zip")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             notice = (
                 "Binary file with size 10 bytes. Please use WebDAV to download "
@@ -201,7 +201,7 @@ class TestTreeConversion:
     ) -> None:
         """A page tree comes back as markdown, not raw JSON."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/page.html", b"<html></html>")
+        _resource_file(tmp_path, "upload/page.html", b"<html></html>")
         tree = {
             "role": "document",
             "children": [
@@ -229,7 +229,7 @@ class TestTreeConversion:
     ) -> None:
         """A page tree with a table comes back as a pipe table, not raw JSON."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/page.html", b"<html></html>")
+        _resource_file(tmp_path, "upload/page.html", b"<html></html>")
         tree = {
             "role": "document",
             "children": [
@@ -268,7 +268,7 @@ class TestTreeConversion:
     ) -> None:
         """JSON with no role key comes back unchanged."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/data.json")
+        _resource_file(tmp_path, "upload/data.json")
         raw_json = json.dumps(
             {"current_condition": [{"temp_C": "25", "weatherDesc": [{"value": "Sunny"}]}]}
         )
@@ -283,7 +283,7 @@ class TestTreeConversion:
     ) -> None:
         """Non-JSON text content is returned unchanged."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/notes.txt")
+        _resource_file(tmp_path, "upload/notes.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = ("Plain text content", False)
             result = await run_text(read_media_or_doc_tool, "upload/notes.txt")
@@ -299,7 +299,7 @@ class TestPrompt:
     ) -> None:
         """A prompt on unprocessed content comes back as the LLM answer."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -315,7 +315,7 @@ class TestPrompt:
     ) -> None:
         """The prompt is handed to the resolver as its context."""
         _point_resources_at(tmp_path, monkeypatch)
-        media = _share_file(tmp_path, "upload/lecture.mp4")
+        media = _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -330,7 +330,7 @@ class TestPrompt:
     ) -> None:
         """With no prompt, the raw content comes back and the LLM is not called."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -345,7 +345,7 @@ class TestPrompt:
     ) -> None:
         """Content that is already worked on comes back as is even with a prompt."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -360,7 +360,7 @@ class TestPrompt:
     ) -> None:
         """A failed answer gives back a failed tool message with the error text."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -380,7 +380,7 @@ class TestMaxChar:
     ) -> None:
         """Text over the 25000 character default limit comes back whole, with no note."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/big.txt")
+        _resource_file(tmp_path, "upload/big.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = (
                 "x" * (DEFAULT_TOOL_OUTPUT_LEN_LIMIT + _OVERFLOW), False
@@ -395,7 +395,7 @@ class TestMaxChar:
     ) -> None:
         """Text under the limit is returned in full."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/small.txt")
+        _resource_file(tmp_path, "upload/small.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = ("short content", False)
             result = await run_text(read_media_or_doc_tool, "upload/small.txt")
@@ -411,7 +411,7 @@ class TestCaching:
     ) -> None:
         """Two calls for the same file only read the file once."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = ("A lecture about AI.", False)
             first = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
@@ -426,7 +426,7 @@ class TestCaching:
     ) -> None:
         """A second call with the same prompt still reuses the saved result."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -444,7 +444,7 @@ class TestCaching:
     ) -> None:
         """A second call with a different prompt reads the file again."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/lecture.mp4")
+        _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
@@ -460,7 +460,7 @@ class TestCaching:
     ) -> None:
         """A file that changes is read again."""
         _point_resources_at(tmp_path, monkeypatch)
-        path = _share_file(tmp_path, "upload/lecture.mp4", b"AAAA")
+        path = _resource_file(tmp_path, "upload/lecture.mp4", b"AAAA")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.return_value = ("A lecture about AI.", False)
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
@@ -474,7 +474,7 @@ class TestCaching:
     ) -> None:
         """A run that fails is not saved, so the same call runs again."""
         _point_resources_at(tmp_path, monkeypatch)
-        _share_file(tmp_path, "upload/clip.mp3")
+        _resource_file(tmp_path, "upload/clip.mp3")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
             mock_resolve.side_effect = ResolveError("boom")
             first = await run_text(read_media_or_doc_tool, "upload/clip.mp3")

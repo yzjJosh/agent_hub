@@ -227,7 +227,7 @@ class TestCreateDavApp:
             yield client
 
     async def test_serves_read_access_everywhere(self, client: httpx.AsyncClient) -> None:
-        """PROPFIND listings and GET reads work on every part of the share."""
+        """PROPFIND listings and GET reads work on every part of the resources folder."""
         response = await client.request("PROPFIND", "/dav/", headers={"Depth": "1"})
         assert response.status_code == 207
         assert "a.txt" in response.text

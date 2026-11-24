@@ -401,7 +401,7 @@ async def _task_detail_impl(task_id: str) -> JSONResponse:
         task_id: Which task to look at.
 
     Returns:
-        The task, its subtasks, its file sizes, and its shared files, or an
+        The task, its subtasks, its file sizes, and its resource files, or an
         error reply.
     """
     view = await task_view(task_id)
@@ -780,7 +780,7 @@ def _parent_dir(rel: str) -> str | None:
     """Get the folder that holds a folder.
 
     Args:
-        rel: A path inside the shared folder.
+        rel: A path inside the resources folder.
 
     Returns:
         The path of the folder above it, empty when that is the top folder, or
@@ -820,12 +820,12 @@ def _dir_entry(base: str, entry: os.DirEntry) -> dict | None:
     """Describe one file or folder for the page, without its thumbnail state.
 
     Args:
-        base: Where the shared folder is on disk.
+        base: Where the resources folder is on disk.
         entry: The file or folder to describe.
 
     Returns:
         The file or folder as JSON, or None when it is gone or sits outside
-        the shared folder.
+        the resources folder.
     """
     try:
         st = entry.stat()
@@ -856,7 +856,7 @@ def _file_fact(full: str, rel: str, mtime: int) -> dict:
 
     Args:
         full: Where the file is on disk.
-        rel: A path inside the shared folder.
+        rel: A path inside the resources folder.
         mtime: When the file last changed.
 
     Returns:
@@ -875,7 +875,7 @@ def _scan_dir(root: str, rel: str) -> tuple[str, list[dict]] | None:
     """Describe everything inside one folder.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         rel: A path inside that folder, empty for the folder itself.
 
     Returns:
@@ -904,7 +904,7 @@ async def _list_dir_listing(root: str, rel: str) -> dict | None:
     The path in the answer is the tidy path of the folder that was listed.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         rel: A path inside that folder, empty for the folder itself.
 
     Returns:
@@ -920,10 +920,10 @@ async def _list_dir_listing(root: str, rel: str) -> dict | None:
 
 
 async def _resources_impl(path: str | None) -> Response:
-    """List what sits inside one shared folder.
+    """List what sits inside one resource folder.
 
     Args:
-        path: A path inside the shared folder, or None for the top folder.
+        path: A path inside the resources folder, or None for the top folder.
 
     Returns:
         What sits inside the folder, or an error reply.
@@ -950,7 +950,7 @@ def _search_match(rel: str, entry: os.DirEntry, ancestors: list[str]) -> dict | 
     Only a file carries a size, a type, and a thumbnail.
 
     Args:
-        rel: The path of the hit inside the shared folder.
+        rel: The path of the hit inside the resources folder.
         entry: The file or folder that matched.
         ancestors: The names of the folders above it.
 
@@ -980,11 +980,11 @@ def _search_match(rel: str, entry: os.DirEntry, ancestors: list[str]) -> dict | 
 def _search_tree(root: str, q: str, limit: int, node_cap: int = _SEARCH_NODE_CAP) -> tuple[list[dict], bool]:
     """Find files and folders whose path holds a piece of text.
 
-    Anything outside the shared folder is skipped. The search stops once it
+    Anything outside the resources folder is skipped. The search stops once it
     has looked at enough places.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         q: The text to look for.
         limit: How many hits to send back at most.
         node_cap: How many places to look at most.
@@ -1051,7 +1051,7 @@ def _parse_search_limit(raw: str | None) -> int | None:
 
 
 async def _resources_search_impl(q: str, limit: int) -> JSONResponse:
-    """Search the shared folder.
+    """Search the resources folder.
 
     Args:
         q: The text to look for.
@@ -1079,17 +1079,17 @@ async def _resources_search(request: Request) -> Response:
 
 
 async def _dav_download_impl(path: str | None) -> Response:
-    """Send one shared file for the browser to save.
+    """Send one resource file for the browser to save.
 
     Args:
-        path: A path inside the shared folder, or None.
+        path: A path inside the resources folder, or None.
 
     Returns:
         The file to save, or an error reply when the path is missing, is not
         allowed, or has no file.
     """
     if path is None or not path.strip():
-        return error_response(400, "bad_param", "path must be a share-relative file path.")
+        return error_response(400, "bad_param", "path must be a resource-relative file path.")
     rel = path.strip("/")
     if "\x00" in rel:
         return error_response(400, "bad_param", f"Invalid path: '{path}'.")
@@ -1100,7 +1100,7 @@ async def _dav_download_impl(path: str | None) -> Response:
 
 
 async def dav_download(request: Request) -> Response:
-    """Send a shared file so the browser saves it instead of showing it.
+    """Send a resource file so the browser saves it instead of showing it.
 
     This route must be added before the /dav service.
 
@@ -1125,7 +1125,7 @@ async def _vnc_status(_request: Request) -> JSONResponse:
 
 
 async def _view(request: Request) -> Response:
-    """Handle a request to view a shared file."""
+    """Handle a request to view a resource file."""
     path = request.path_params["path"]
     if request.method == "GET":
         await activity.record(path)
@@ -1133,7 +1133,7 @@ async def _view(request: Request) -> Response:
 
 
 async def _retry_view(request: Request) -> Response:
-    """Handle a request to convert a shared file again."""
+    """Handle a request to convert a resource file again."""
     return await retry_view_impl(request.path_params["path"])
 
 
@@ -1221,7 +1221,7 @@ def _presented_file_facts(root: str, rel: str) -> tuple[str, os.stat_result] | N
     """Find where a presented file is and read its facts from disk.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         rel: The path of the file inside it.
 
     Returns:
@@ -1237,7 +1237,7 @@ async def _presented_file(root: str, rel: str) -> dict:
     """Describe one file a presentation carries, with the facts read from disk.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         rel: The path of the file inside it.
 
     Returns:
@@ -1274,7 +1274,7 @@ async def _presented_row(root: str, p: Presentation) -> dict:
     """Describe one presentation and how many of its files are still there.
 
     Args:
-        root: Where the shared folder is on disk.
+        root: Where the resources folder is on disk.
         p: The presentation to describe.
 
     Returns:
@@ -1318,7 +1318,7 @@ async def _presentations_rows(presentations: list[Presentation]) -> list[dict]:
 
 
 async def _presentations_impl() -> Response:
-    """List the presentations newest first, within the shared window.
+    """List the presentations newest first, within the retention window.
 
     Returns:
         The presentations with their files, or an error reply.
@@ -1340,7 +1340,7 @@ def build_api_routes() -> Router:
     """Build the routes under /api.
 
     The catch all route must stay last. The view retry route takes only POST
-    and comes before the view route, so a shared file named retry can still be
+    and comes before the view route, so a resource file named retry can still be
     viewed.
 
     Returns:

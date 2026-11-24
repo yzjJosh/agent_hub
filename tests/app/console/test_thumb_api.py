@@ -20,19 +20,19 @@ _JOB_WAIT_S = 5
 
 @pytest.fixture
 async def thumb_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
-    """A test client for the thumb api and the share folder."""
+    """A test client for the thumb api and the resources folder."""
     await thumbs.stop_thumbnails()
     async with console_env(tmp_path, monkeypatch) as env:
         yield env
 
 
-def _seed_png(share: Path, rel: str) -> str:
+def _seed_png(resources: Path, rel: str) -> str:
     def chunk(typ: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + typ + data + struct.pack(">I", 0)
 
     png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
            + chunk(b"IDAT", b"\x00") + chunk(b"IEND", b""))
-    p = share / rel
+    p = resources / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(png)
     return rel
@@ -46,17 +46,17 @@ def _thumb_job_task(key: str) -> asyncio.Task:
     return task
 
 
-def _seed_md(share: Path, rel: str) -> str:
-    p = share / rel
+def _seed_md(resources: Path, rel: str) -> str:
+    p = resources / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("# hi\n", encoding="utf-8")
     return rel
 
 
 async def test_thumb_hit_serves_png(thumb_api: tuple[httpx.AsyncClient, Path]) -> None:
-    c, share = thumb_api
-    rel = _seed_png(share, "upload/a.png")
-    st = (share / rel).stat()
+    c, resources = thumb_api
+    rel = _seed_png(resources, "upload/a.png")
+    st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
     key_dir = os.path.join(cache.render_root(), key)
     os.makedirs(key_dir, exist_ok=True)
@@ -72,9 +72,9 @@ async def test_thumb_not_ready_409(
     thumb_api: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Asking for a thumbnail that is not made yet gives 409 not_ready and queues the work."""
-    c, share = thumb_api
-    rel = _seed_png(share, "upload/b.png")
-    key = cache.key_for(rel, int((share / rel).stat().st_mtime))
+    c, resources = thumb_api
+    rel = _seed_png(resources, "upload/b.png")
+    key = cache.key_for(rel, int((resources / rel).stat().st_mtime))
     hold = asyncio.Event()
 
     async def held_image(_full: str, _key: str) -> None:
@@ -106,9 +106,9 @@ async def test_thumb_missing_file_404(thumb_api: tuple[httpx.AsyncClient, Path])
 
 
 async def test_thumbs_dir_returns_queued_count(thumb_api: tuple[httpx.AsyncClient, Path]) -> None:
-    c, share = thumb_api
-    _seed_png(share, "gallery/a.png")
-    _seed_png(share, "gallery/b.png")
+    c, resources = thumb_api
+    _seed_png(resources, "gallery/a.png")
+    _seed_png(resources, "gallery/b.png")
     r = await c.post("/api/resources/thumbs", params={"path": "gallery"})
     assert r.status_code == 200
     assert r.json()["queued"] == 2
@@ -122,9 +122,9 @@ async def test_thumbs_missing_dir_404(thumb_api: tuple[httpx.AsyncClient, Path])
 
 
 async def test_listing_gains_thumb_field_for_files_only(thumb_api: tuple[httpx.AsyncClient, Path]) -> None:
-    c, share = thumb_api
-    _seed_png(share, "gallery/a.png")
-    (share / "gallery" / "sub").mkdir()
+    c, resources = thumb_api
+    _seed_png(resources, "gallery/a.png")
+    (resources / "gallery" / "sub").mkdir()
     r = await c.get("/api/resources", params={"path": "gallery"})
     assert r.status_code == 200
     entries = {e["name"]: e for e in r.json()["entries"]}
@@ -138,9 +138,9 @@ async def test_thumb_failed_doc_with_published_doc_requeues(
     thumb_api: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A published document with a stale thumb-failed marker is re-queued on poll."""
-    c, share = thumb_api
-    rel = _seed_md(share, "upload/notes.md")
-    st = (share / rel).stat()
+    c, resources = thumb_api
+    rel = _seed_md(resources, "upload/notes.md")
+    st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
     await cache.write_doc(key, '<div class="md-doc">hi</div>', None, {})
     await cache.mark_failed(key, "thumb", "stale failure")
@@ -188,9 +188,9 @@ async def test_thumb_failed_media_is_not_requeued(
     thumb_api: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed media thumbnail stays 409 and is not re-rendered on every poll."""
-    c, share = thumb_api
-    rel = _seed_png(share, "upload/c.png")
-    st = (share / rel).stat()
+    c, resources = thumb_api
+    rel = _seed_png(resources, "upload/c.png")
+    st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
     await _poll_failed_key(c, key, rel, "corrupt", monkeypatch)
 
@@ -199,8 +199,8 @@ async def test_thumb_failed_doc_without_page_is_not_requeued(
     thumb_api: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed document thumbnail whose page is not published stays 409 and is not re-rendered."""
-    c, share = thumb_api
-    rel = _seed_md(share, "upload/notes.md")
-    st = (share / rel).stat()
+    c, resources = thumb_api
+    rel = _seed_md(resources, "upload/notes.md")
+    st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
     await _poll_failed_key(c, key, rel, "stale failure", monkeypatch)

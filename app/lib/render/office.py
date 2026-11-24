@@ -103,7 +103,7 @@ async def start_office_conversion(path: str, key: str, full_path: str,
     waiting for it to finish.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         key: The name the file is saved under.
         full_path: Where the file is on disk.
         timeout: How long the conversion may run before it fails.
@@ -130,7 +130,7 @@ async def _claim(key: str, path: str, full_path: str, gate: asyncio.Event | None
 
     Args:
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         gate: The gate the waiters for this file sleep on, or None for a gateless claim.
         timeout: How long the conversion may run before it fails.
@@ -161,7 +161,7 @@ async def _wait_on_gate(key: str, path: str, full_path: str, gate: asyncio.Event
 
     Args:
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         gate: The gate this caller first found waiting on.
         timeout: How long the conversion may run before it fails.
@@ -198,7 +198,7 @@ async def retry_office_conversion(path: str, key: str, full_path: str) -> None:
     first. A conversion already going is joined instead.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         key: The name the file is saved under.
         full_path: Where the file is on disk.
     """
@@ -223,7 +223,7 @@ async def ensure_doc_for_thumb(kind: RenderKind, key: str, path: str, full_path:
     Args:
         kind: What sort of file this is.
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
 
     Returns:
@@ -242,7 +242,7 @@ async def _ensure_office(key: str, path: str, full_path: str) -> str:
 
     Args:
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
 
     Returns:
@@ -271,7 +271,7 @@ async def _ensure_doc_kind(kind: RenderKind, key: str, path: str, full_path: str
     Args:
         kind: What sort of file this is.
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
 
     Returns:
@@ -293,7 +293,7 @@ async def _doc_fragment_for_key(kind: RenderKind, path: str, full_path: str) -> 
 
     Args:
         kind: What sort of file this is.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
 
     Returns:
@@ -334,7 +334,7 @@ async def _run_conversion(key: str, path: str, full_path: str, kind: RenderKind,
 
     Args:
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         kind: What sort of file this is.
         timeout: How long the conversion may run before it fails.
@@ -358,7 +358,7 @@ async def _conversion(
 
     Args:
         key: The name the file is saved under.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         kind: What sort of file this is.
         timeout: How long the conversion may run before it fails.
@@ -388,7 +388,7 @@ def _office_meta(path: str, full_path: str, kind: RenderKind, engine: str) -> di
     """Collect the facts saved with a converted Office file.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         kind: What sort of file this is.
         engine: What made the page.
@@ -497,7 +497,7 @@ async def _sheet_tables(path: str, full_path: str, kind: RenderKind) -> tuple[st
     """Turn a spreadsheet into tables.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
         kind: What sort of spreadsheet this is.
 

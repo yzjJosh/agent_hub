@@ -18,7 +18,7 @@ _TTS_OUTPUT_DIR = "tts"
 
 
 async def _synthesize(text: str, format: str) -> ToolResult:
-    """Turn text into speech and save it in this server's share.
+    """Turn text into speech and save it in this server's resources folder.
 
     Args:
         text: The words to say.

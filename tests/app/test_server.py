@@ -39,7 +39,7 @@ from tests.app.conftest import (
     seed_task,
     skip_if_no_chrome,
     write_run_file,
-    write_share_file,
+    write_resource_file,
 )
 
 _ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -317,11 +317,11 @@ async def test_service_mounts_keep_skip_behavior(path: str, status: int) -> None
         assert "cache-control" not in r.headers
 
 
-async def test_dav_download_route_wins_over_dav_mount(dav_share: Path) -> None:
-    """The /dav/dl download route wins even when a share file is named dl."""
-    (dav_share / "dl").write_text("i am the share file named dl")
-    (dav_share / "upload").mkdir()
-    (dav_share / "upload" / "x.txt").write_text("hello download")
+async def test_dav_download_route_wins_over_dav_mount(dav_resources_dir: Path) -> None:
+    """The /dav/dl download route wins even when a resource file is named dl."""
+    (dav_resources_dir / "dl").write_text("i am the resource file named dl")
+    (dav_resources_dir / "upload").mkdir()
+    (dav_resources_dir / "upload" / "x.txt").write_text("hello download")
     app = build_app()
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.get("/dav/dl", params={"path": "upload/x.txt"})
@@ -396,7 +396,7 @@ async def test_routing_over_real_socket(app_http: SimpleNamespace) -> None:
 async def test_dav_serves_seeded_bytes(app_http: SimpleNamespace) -> None:
     """The file server hands back the exact bytes of a seeded file, and a missing path gets a 404."""
     rel = "downloads/e2e-seeded.png"
-    write_share_file(app_http.share, rel, E2E_PNG)
+    write_resource_file(app_http.resources_dir, rel, E2E_PNG)
     async with httpx.AsyncClient(base_url=app_http.base_url, timeout=10) as c:
         d = await c.get("/dav/" + rel)
         assert d.status_code == 200
@@ -831,7 +831,7 @@ async def test_result_files_share_the_resource_viewer_mechanism(console_stub: Si
     await seed_task(_RF_TID, "generate_image", E2E_STARTED_AT, "completed", ended_at=E2E_ENDED_AT)
     write_run_file(console_stub.data_dir, _RF_TID, "result", _RF_RESULT_TEXT)
     write_run_file(console_stub.data_dir, _RF_TID, "files", _RF_SIDE_CAR)
-    write_share_file(console_stub.share, _RF_LIVE, E2E_PNG)
+    write_resource_file(console_stub.resources_dir, _RF_LIVE, E2E_PNG)
     base = console_stub.base_url
     async with httpx.AsyncClient(base_url=base, timeout=10) as c:
         r = await c.get(f"/api/tasks/{_RF_TID}")
@@ -1147,7 +1147,7 @@ _ROOT_TOOLS_RENDERED_JS = """
 @skip_if_no_chrome
 async def test_root_path_normalizes_to_tools_and_nav_survives(console_stub: SimpleNamespace) -> None:
     """Going back to / shows the Tools screen and later clicks still work."""
-    write_share_file(console_stub.share, "downloads/e2e-seed.txt", b"seed")
+    write_resource_file(console_stub.resources_dir, "downloads/e2e-seed.txt", b"seed")
     async with e2e_page(_DESKTOP_VIEWPORT) as (mgr, tab):
         await mgr.navigate(tab, console_stub.base_url + "/tools")
         await _wait_for(mgr, tab, "() => document.querySelector('#l1-list .l1-row') !== null", _WAIT_TIMEOUT_MS)
@@ -1205,8 +1205,8 @@ _CHAIN_STATE_JS = """
 @skip_if_no_chrome
 async def test_resources_search_dir_click_expands_chain(console_stub: SimpleNamespace) -> None:
     """Clicking a folder found by search opens it and every folder above it."""
-    write_share_file(console_stub.share, _SEARCH_MATCH + "/alpha.txt", b"e2e search click")
-    write_share_file(console_stub.share, _SEARCH_MATCH + "/beta.txt", b"e2e search click")
+    write_resource_file(console_stub.resources_dir, _SEARCH_MATCH + "/alpha.txt", b"e2e search click")
+    write_resource_file(console_stub.resources_dir, _SEARCH_MATCH + "/beta.txt", b"e2e search click")
     base = console_stub.base_url
     async with httpx.AsyncClient(base_url=base, timeout=10) as c:
         body = (await c.get("/api/resources")).json()
@@ -1250,8 +1250,8 @@ _CRUMB_LIVE_TREE_JS = """
 @skip_if_no_chrome
 async def test_resources_crumb_click_clears_active_search(console_stub: SimpleNamespace) -> None:
     """Clicking a crumb during a search brings back the tree and the arrow keys work again."""
-    write_share_file(console_stub.share, _CRUMB_FILE, b"e2e crumb click")
-    write_share_file(console_stub.share, _CRUMB_MID + "/capture_e2e.png", E2E_PNG)
+    write_resource_file(console_stub.resources_dir, _CRUMB_FILE, b"e2e crumb click")
+    write_resource_file(console_stub.resources_dir, _CRUMB_MID + "/capture_e2e.png", E2E_PNG)
     base = console_stub.base_url
     async with e2e_page(_DESKTOP_VIEWPORT) as (mgr, tab):
         await mgr.navigate(tab, base + "/resources")
@@ -1296,7 +1296,7 @@ _INDENT_PADS_JS = """
 @skip_if_no_chrome
 async def test_resources_tree_indent(console_stub: SimpleNamespace, viewport: dict, expected: dict) -> None:
     """Tree rows step further right at each level, and the step is wider on a phone."""
-    write_share_file(console_stub.share, _INDENT_MID + "/leaf.txt", b"e2e indent")
+    write_resource_file(console_stub.resources_dir, _INDENT_MID + "/leaf.txt", b"e2e indent")
     base = console_stub.base_url
     async with e2e_page(viewport) as (mgr, tab):
         await mgr.navigate(tab, base + "/resources")
@@ -1328,7 +1328,7 @@ _WELL_FIT_JS = """
 @skip_if_no_chrome
 async def test_resources_preview_well_fits_viewport(console_stub: SimpleNamespace, viewport: dict) -> None:
     """A selected doc's preview well stays inside the viewport, right edge included."""
-    write_share_file(console_stub.share, _WELL_DOC, b"# e2e plan\n\nThe plan body.\n")
+    write_resource_file(console_stub.resources_dir, _WELL_DOC, b"# e2e plan\n\nThe plan body.\n")
     base = console_stub.base_url
     async with e2e_page(viewport) as (mgr, tab):
         await mgr.navigate(tab, base + "/resources?select=" + _WELL_DOC)
@@ -1372,7 +1372,7 @@ def _seed_trunc_files(root: Path) -> None:
 @skip_if_no_chrome
 async def test_resources_search_truncated_note(console_stub: SimpleNamespace) -> None:
     """A search that is cut short shows a note under the results, a full one does not."""
-    _seed_trunc_files(console_stub.share / _TRUNC_ROOT)
+    _seed_trunc_files(console_stub.resources_dir / _TRUNC_ROOT)
     base = console_stub.base_url
     async with e2e_page(_DESKTOP_VIEWPORT) as (mgr, tab):
         await mgr.navigate(tab, base + "/resources")
@@ -2933,7 +2933,7 @@ async def test_served_pdf_renders_and_remains_usable_after_zoom(
 ) -> None:
     """A real PDF draws and remains readable after repeated zoom changes."""
     page = _parameter_page
-    await asyncio.to_thread(write_share_file, console_stub.share, "upload/contract.pdf", pdf_bytes)
+    await asyncio.to_thread(write_resource_file, console_stub.resources_dir, "upload/contract.pdf", pdf_bytes)
     await _served_surface(console_stub, page, width)
     await page.evaluate("""async () => {
       const { mountPdfViewer } = await import('/assets/js/pdf-viewer.js');
@@ -2973,7 +2973,7 @@ async def test_served_pdf_load_failure_offers_raw_file(
 ) -> None:
     """A PDF load failure leaves an explanation and access to the raw file."""
     page = _parameter_page
-    await asyncio.to_thread(write_share_file, console_stub.share, "upload/broken.pdf", b"invalid pdf")
+    await asyncio.to_thread(write_resource_file, console_stub.resources_dir, "upload/broken.pdf", b"invalid pdf")
     await _served_surface(console_stub, page, 390)
     await page.evaluate("""async () => {
       const { mountPdfViewer } = await import('/assets/js/pdf-viewer.js');
@@ -3020,7 +3020,7 @@ async def test_served_image_viewer_fits_and_zooms(
 ) -> None:
     """An image fits the available space and responds to zoom controls."""
     page = _parameter_page
-    await asyncio.to_thread(write_share_file, console_stub.share, "upload/contract.png", E2E_PNG)
+    await asyncio.to_thread(write_resource_file, console_stub.resources_dir, "upload/contract.png", E2E_PNG)
     await _served_surface(console_stub, page, width)
     await page.evaluate("""async () => {
       const { renderView } = await import('/assets/js/viewer.js');
@@ -3048,7 +3048,7 @@ async def test_served_image_load_failure_keeps_download(
 ) -> None:
     """An image that cannot display keeps a usable download action."""
     page = _parameter_page
-    await asyncio.to_thread(write_share_file, console_stub.share, "upload/broken.png", b"invalid image")
+    await asyncio.to_thread(write_resource_file, console_stub.resources_dir, "upload/broken.png", b"invalid image")
     await _served_surface(console_stub, page, 390)
     await page.evaluate("""async () => {
       const { renderView } = await import('/assets/js/viewer.js');
@@ -3666,7 +3666,7 @@ async def test_parameter_ui_empty_resources_and_lists_stay_editable(
     await page.goto(url)
     field = page.locator('[data-parameter-field="items"]')
     if kind in {"resource", "resource_list"}:
-        write_share_file(console_stub.share, "upload/sample.png", E2E_PNG)
+        write_resource_file(console_stub.resources_dir, "upload/sample.png", E2E_PNG)
         fact = {"name": "sample.png", "path": "upload/sample.png", "type": "file", "size": len(E2E_PNG),
                 "kind": "image", "mtime": 0, "thumb": {"status": "done", "url": "/dav/upload/sample.png"}}
         console_stub.pin_body(r"/api/resources$", {"path": "upload", "entries": [fact]})
@@ -3737,7 +3737,7 @@ async def _parameter_resource_alignment(page: Page, name: str) -> None:
 async def test_parameter_ui_native_resource_workflow(console_stub: SimpleNamespace, _parameter_page: Page) -> None:
     """Native resources retain previews, viewer links, removal and collection behavior."""
     page = _parameter_page
-    write_share_file(console_stub.share, "upload/sample.png", E2E_PNG)
+    write_resource_file(console_stub.resources_dir, "upload/sample.png", E2E_PNG)
     params = [
         {"name": "image", "type": "string", "kind": "resource"},
         {"name": "images", "type": "array", "item_type": "string", "kind": "resource_list"},

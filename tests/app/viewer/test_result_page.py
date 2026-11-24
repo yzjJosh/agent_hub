@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from tests.app.conftest import seed_task, write_run_file, write_share_file
+from tests.app.conftest import seed_task, write_resource_file, write_run_file
 
 
 async def _client(app_http: SimpleNamespace) -> httpx.AsyncClient:
@@ -35,9 +35,9 @@ async def _seed_result(app_http: SimpleNamespace, tid: str, body: bytes) -> None
 
 
 async def _seed_files_run(app_http: SimpleNamespace, tid: str, body: bytes) -> None:
-    """A run whose body is given and whose files sidecar names one share file."""
+    """A run whose body is given and whose files sidecar names one resource file."""
     await _seed_result(app_http, tid, body)
-    write_share_file(app_http.share, "downloads/notes.txt", b"line one\nline two\n")
+    write_resource_file(app_http.resources_dir, "downloads/notes.txt", b"line one\nline two\n")
     write_run_file(app_http.data_dir, tid, "files",
                    b'{"path": "downloads/notes.txt", "size": 18, "mtime": 1756800000}\n')
 
@@ -112,7 +112,7 @@ async def test_page_files_divider(app_http: SimpleNamespace) -> None:
     assert 'data-path="downloads/notes.txt"' not in html    # no file block
     assert "vp-file-block" not in html
     assert "notes.txt" not in html
-    assert "18 B" not in html                               # no live share size
+    assert "18 B" not in html                               # no live resource size
 
 
 async def test_page_files_only_subtext(app_http: SimpleNamespace) -> None:
@@ -204,18 +204,18 @@ async def test_page_gc_expired(app_http: SimpleNamespace) -> None:
 
 
 async def test_page_record_miss_delegates(app_http: SimpleNamespace) -> None:
-    # With no record and no share file, the page says the link is not valid.
+    # With no record and no resource file, the page says the link is not valid.
     async with await _client(app_http) as c:
         r = await c.get("/view/result/pg-norecord")
     assert r.status_code == 200
     assert 'class="vp-expired"' in r.text
 
 
-async def test_page_record_miss_delegates_to_share_file(app_http: SimpleNamespace) -> None:
-    write_share_file(app_http.share, "result/pg-sfile", b"hello share file\n")
+async def test_page_record_miss_delegates_to_resource_file(app_http: SimpleNamespace) -> None:
+    write_resource_file(app_http.resources_dir, "result/pg-sfile", b"hello resource file\n")
     async with await _client(app_http) as c:
         r = await c.get("/view/result/pg-sfile")
     assert r.status_code == 200
-    assert 'class="view-page vp-solo"' in r.text          # the share file page
+    assert 'class="view-page vp-solo"' in r.text          # the resource file page
     assert 'class="vp-expired"' not in r.text
-    assert 'class="vp-prov"' not in r.text                 # no result chip on the share page
+    assert 'class="vp-prov"' not in r.text                 # no result chip on the resource page

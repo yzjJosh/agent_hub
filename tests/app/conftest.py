@@ -61,23 +61,23 @@ def frontend_assets() -> Iterator[TestClient]:
         client.close()
 
 
-def point_share_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Make fresh share and data dirs and point the app at them.
+def configure_resource_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Make fresh resources and data dirs and point the app at them.
 
     Args:
         tmp_path: Folder the new dirs are made in.
         monkeypatch: Lets the test change the environment.
 
     Returns:
-        The share dir and the data dir.
+        The resources dir and the data dir.
     """
-    share = tmp_path / "res"
-    share.mkdir()
+    resources = tmp_path / "res"
+    resources.mkdir()
     data = tmp_path / "data"
     data.mkdir()
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
     monkeypatch.setenv("DATA_DIR", str(data))
-    return share, data
+    return resources, data
 
 
 DAV_BASE_URL = "http://dav.test"
@@ -220,12 +220,12 @@ async def live_image_run(tool: Tool, target: str, **kwargs: str | bool | list[st
 
 
 @pytest.fixture
-def dav_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A fresh share dir that the app serves files from."""
-    share = tmp_path / "res"
-    share.mkdir()
-    monkeypatch.setenv("RESOURCES_DIR", str(share))
-    return share
+def dav_resources_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fresh resources dir that the app serves files from."""
+    resources = tmp_path / "res"
+    resources.mkdir()
+    monkeypatch.setenv("RESOURCES_DIR", str(resources))
+    return resources
 
 
 @pytest.fixture
@@ -239,21 +239,21 @@ def spaced_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _pin_share_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+def _pin_resource_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """Point RESOURCES_DIR and DATA_DIR at throwaway dirs so no test can touch the live ones."""
-    share = tmp_path_factory.mktemp("share-pin")
+    resources = tmp_path_factory.mktemp("resources-pin")
     data = tmp_path_factory.mktemp("data-pin")
-    previous_share = os.environ.get("RESOURCES_DIR")
+    previous_resources = os.environ.get("RESOURCES_DIR")
     previous_data = os.environ.get("DATA_DIR")
-    os.environ["RESOURCES_DIR"] = str(share)
+    os.environ["RESOURCES_DIR"] = str(resources)
     os.environ["DATA_DIR"] = str(data)
     try:
         yield
     finally:
-        if previous_share is None:
+        if previous_resources is None:
             os.environ.pop("RESOURCES_DIR", None)
         else:
-            os.environ["RESOURCES_DIR"] = previous_share
+            os.environ["RESOURCES_DIR"] = previous_resources
         if previous_data is None:
             os.environ.pop("DATA_DIR", None)
         else:
@@ -978,9 +978,9 @@ def xlsx_body() -> bytes:
     return buf.getvalue()
 
 
-def write_share_file(share: Path | str, rel: str, data: bytes) -> Path:
-    """Write bytes at <share>/<rel> and give back the path, making parent folders."""
-    path = Path(share) / rel
+def write_resource_file(resources: Path | str, rel: str, data: bytes) -> Path:
+    """Write bytes at <resources>/<rel> and give back the path, making parent folders."""
+    path = Path(resources) / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
@@ -993,15 +993,15 @@ def log_lines(count: int) -> str:
 
 @pytest.fixture
 async def app_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SimpleNamespace]:
-    """The whole app running on a real port, with its own temp store and share dir.
+    """The whole app running on a real port, with its own temp store and resources dir.
 
-    Gives back base_url, port, data_dir, and share. Seed the store and the share
-    after the fixture starts, not before. Do not use this fixture together with
-    api_client, console_env, or task_store in the same test.
+    Gives back base_url, port, data_dir, and resources_dir. Seed the store and the
+    resources dir after the fixture starts, not before. Do not use this fixture
+    together with api_client, console_env, or task_store in the same test.
     """
-    share, data = point_share_env(tmp_path, monkeypatch)
+    resources, data = configure_resource_env(tmp_path, monkeypatch)
     monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
-    monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(share))
+    monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(resources))
     server = uvicorn.Server(uvicorn.Config(server_module.build_app(), host=_APP_HTTP_HOST, port=0, log_level="warning"))
     task = asyncio.create_task(server.serve(), name="app_http")
     deadline = time.monotonic() + _APP_HTTP_START_TIMEOUT_S
@@ -1014,7 +1014,7 @@ async def app_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
             raise AssertionError("app_http: uvicorn did not start in time")
         await asyncio.sleep(_APP_HTTP_POLL_S)
     port = server.servers[0].sockets[0].getsockname()[1]
-    yield SimpleNamespace(base_url=f"http://{_APP_HTTP_HOST}:{port}", port=port, data_dir=data, share=share)
+    yield SimpleNamespace(base_url=f"http://{_APP_HTTP_HOST}:{port}", port=port, data_dir=data, resources_dir=resources)
     server.should_exit = True
     await asyncio.wait_for(task, timeout=_APP_HTTP_STOP_TIMEOUT_S)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -1152,7 +1152,7 @@ async def _stub_start(server: uvicorn.Server, task: asyncio.Task) -> int:
     return server.servers[0].sockets[0].getsockname()[1]
 
 
-def _stub_namespace(share: Path, data: Path, knobs: list[dict], last_call: dict, port: int) -> SimpleNamespace:
+def _stub_namespace(resources: Path, data: Path, knobs: list[dict], last_call: dict, port: int) -> SimpleNamespace:
     def force_status(pattern: str, status: int, *, code: str = "internal", message: str = "stub failure") -> None:
         knobs.append(_stub_knob(pattern, status, code, message, None, False, None))
 
@@ -1173,7 +1173,7 @@ def _stub_namespace(share: Path, data: Path, knobs: list[dict], last_call: dict,
         base_url=f"http://{_CONSOLE_STUB_HOST}:{port}",
         port=port,
         data_dir=data,
-        share=share,
+        resources_dir=resources,
         seed_task=seed_task,
         finish=stub_finish,
         force_status=force_status,
@@ -1192,9 +1192,9 @@ async def console_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Async
     the fixture starts, and steer replies with the knobs. Do not use this
     fixture together with app_http, api_client, or console_env in the same test.
     """
-    share, data = point_share_env(tmp_path, monkeypatch)
+    resources, data = configure_resource_env(tmp_path, monkeypatch)
     monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
-    monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(share))
+    monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(resources))
     knobs: list[dict] = []
     last_call = {"id": None}
     server = uvicorn.Server(
@@ -1203,7 +1203,7 @@ async def console_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Async
     task = asyncio.create_task(server.serve(), name="console_stub")
     port = await _stub_start(server, task)
     monkeypatch.setenv("DAV_BASE_URL", f"http://{_CONSOLE_STUB_HOST}:{port}")
-    yield _stub_namespace(share, data, knobs, last_call, port)
+    yield _stub_namespace(resources, data, knobs, last_call, port)
     server.should_exit = True
     await asyncio.wait_for(task, timeout=_CONSOLE_STUB_STOP_TIMEOUT_S)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:

@@ -984,7 +984,7 @@ class BrowserManager:
             return False
 
     async def scroll_by_relative(self, target_id: str, dx: float, dy: float, viewport: Optional[Viewport] = None, verbose: bool = False) -> bool:
-        """Scroll the page a share of the window in each direction.
+        """Scroll the page a fraction of the window in each direction.
 
         Args:
             target_id: The tab to scroll.
@@ -1055,7 +1055,7 @@ class BrowserManager:
             return False
 
     async def move_mouse_to_relative(self, target_id: str, x_ratio: float, y_ratio: float, viewport: Optional[Viewport] = None, verbose: bool = False) -> bool:
-        """Move the mouse to a spot given as a share of the window.
+        """Move the mouse to a spot given as a fraction of the window.
 
         Args:
             target_id: The tab to move the mouse in.
@@ -1065,7 +1065,7 @@ class BrowserManager:
             verbose: Print progress lines when True.
 
         Returns:
-            True if the mouse moved. False if a share is outside 0 to 1.
+            True if the mouse moved. False if a ratio is outside 0 to 1.
         """
         if not (0 <= x_ratio <= 1) or not (0 <= y_ratio <= 1):
             print(f"[BrowserManager.move_mouse_to_relative] Error: ratios must be 0-1, got ({x_ratio}, {y_ratio})", file=sys.stderr)
@@ -1139,7 +1139,7 @@ class BrowserManager:
             return False
 
     async def click_at_relative(self, target_id: str, x: float, y: float, viewport: Optional[Viewport] = None, verbose: bool = False) -> bool:
-        """Click a spot given as a share of the window.
+        """Click a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 
@@ -1210,7 +1210,7 @@ class BrowserManager:
             return False
 
     async def type_text_at_relative(self, target_id: str, x: float, y: float, text: str, submit: bool = False, viewport: Optional[Viewport] = None, verbose: bool = False) -> bool:
-        """Type text at a spot given as a share of the window.
+        """Type text at a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 
@@ -1321,7 +1321,7 @@ class BrowserManager:
             frame = child
 
     async def replace_input_text_at_relative(self, target_id: str, x: float, y: float, old_text: str, new_text: str, viewport: Optional[Viewport] = None, verbose: bool = False) -> bool:
-        """Replace a piece of the text in the field at a spot given as a share of the window.
+        """Replace a piece of the text in the field at a spot given as a fraction of the window.
 
         The spot is where the caller last saw it, counted on the whole page.
 

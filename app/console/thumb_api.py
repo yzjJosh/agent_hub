@@ -1,4 +1,4 @@
-"""Endpoints for the small pictures of shared files."""
+"""Endpoints for the small pictures of resource files."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ __all__ = ["thumb_impl", "thumbs_impl"]
 
 
 async def thumb_impl(path: str | None) -> Response:
-    """Send the small picture of a shared file.
+    """Send the small picture of a resource file.
 
     A file whose picture is not made yet gets one lined up and comes back as
     not ready, so the caller can ask again. A failed document picture is
@@ -24,7 +24,7 @@ async def thumb_impl(path: str | None) -> Response:
     picture is left alone. Only a missing file comes back as not found.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The picture, or an error reply.
@@ -52,10 +52,10 @@ async def thumb_impl(path: str | None) -> Response:
 
 
 async def thumbs_impl(path: str | None) -> Response:
-    """Line up the small pictures for one shared folder.
+    """Line up the small pictures for one resource folder.
 
     Args:
-        path: A folder inside the shared folder.
+        path: A folder inside the resources folder.
 
     Returns:
         How many pictures were lined up, or an error reply.

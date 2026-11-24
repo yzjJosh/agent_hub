@@ -20,7 +20,7 @@ _TEXT_KIND_TOKENS = {k.value for k in TEXT_FAMILY_KINDS}
 
 
 async def result_files_for(data_dir: str, run_dir: str) -> list[str]:
-    """Get the shared file paths saved with a run.
+    """Get the resource file paths saved with a run.
 
     Args:
         data_dir: Where run folders are kept.

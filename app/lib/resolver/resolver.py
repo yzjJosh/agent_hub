@@ -746,7 +746,7 @@ async def _resolve_office_doc(path: str, mime_type: str, context: str, verbose: 
 
 
 async def _save_binary_file(path: str, verbose: bool) -> Tuple[str, bool]:
-    """Copy a file that cannot be read into the share people download from.
+    """Copy a file that cannot be read into the resources folder.
 
     Args:
         path: The file to copy.
@@ -777,12 +777,12 @@ def _copy_into_downloads(src: str, dest: str) -> None:
 
 
 def _binary_download_dest(path: str) -> str:
-    """Where a copy of a file goes in the share people download from."""
+    """Where a copy of a file goes in the resources folder."""
     return os.path.join(paths.resources_dir(), _BINARY_DOWNLOAD_DIR, os.path.basename(path))
 
 
 async def _passthrough_binary(path: str, verbose: bool) -> Tuple[str, bool]:
-    """Copy a binary file into the share people download from.
+    """Copy a binary file into the resources folder.
 
     Returns:
         The tag and the path of the copy.
@@ -801,7 +801,7 @@ async def _passthrough_binary(path: str, verbose: bool) -> Tuple[str, bool]:
 
 
 async def _maybe_binary_passthrough(path: str, mime_type: Optional[str], verbose: bool) -> Optional[Tuple[str, bool]]:
-    """Copy a small binary file into the share people download from.
+    """Copy a small binary file into the resources folder.
 
     Returns:
         The tag and the path of the copy, or None when the file is text or

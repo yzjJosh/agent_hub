@@ -17,17 +17,17 @@ MCP_URL environment variable to talk to another server.
 
 For tools call, a value that names a resource already on the server is sent
 as it is. A value that names a local file is uploaded to the upload folder of
-the share first, under a new random name that keeps the file suffix, and the
-tool gets that path. The upload is deleted once the call ends, whether it
-worked or not. A delete that fails only prints a warning, and the exit status
+the resources folder first, under a new random name that keeps the file suffix,
+and the tool gets that path. The upload is deleted once the call ends, whether
+it worked or not. A delete that fails only prints a warning, and the exit status
 stays the same.
 
 An array parameter takes a JSON array, a comma separated list, or the word
 null, which is sent as a null value. Each item in the list is looked up the
 same way as a single resource value.
 
-resources upload writes the local file to the share path and prints that
-path. resources delete removes the share path and prints it. The server
+resources upload writes the local file to the resource path and prints that
+path. resources delete removes the resource path and prints it. The server
 decides what may be written or removed, and a refused request exits 1 with
 the status and message the server sent.
 
@@ -271,7 +271,7 @@ async def _cleanup_upload(mcp_url: str, resource_path: str) -> None:
 
     Args:
         mcp_url: The server URL.
-        resource_path: The share path to delete.
+        resource_path: The resource path to delete.
     """
     try:
         await _dav_delete(mcp_url, resource_path)
@@ -289,7 +289,7 @@ async def _resolve_resource_path(
 ) -> tuple[str, str | None]:
     """Turn a resource path argument into a value the tool can take.
 
-    A value that names a local file is uploaded to the share first.
+    A value that names a local file is uploaded to the resources folder first.
 
     Args:
         session: The open server session.
@@ -297,7 +297,7 @@ async def _resolve_resource_path(
         value: The argument value to look at.
 
     Returns:
-        The value to pass to the tool, and the uploaded share path to clean
+        The value to pass to the tool, and the uploaded resource path to clean
         up later. The second one is None when nothing was uploaded.
     """
     uris = [r.uri for r in (await session.list_resources()).resources]
@@ -385,7 +385,7 @@ async def _resolve_resource_params(
 ) -> dict:
     """Turn every resource path parameter into a value the tool can take.
 
-    A value that names a local file is uploaded to the share first. Each item
+    A value that names a local file is uploaded to the resources folder first. Each item
     of a list parameter is looked up the same way. A null value is left alone.
 
     Args:
@@ -393,7 +393,7 @@ async def _resolve_resource_params(
         url: The server URL.
         params: The parsed parameters, changed in place.
         schema: The schema the parameters were parsed from.
-        uploaded: Gets each uploaded share path added to it as it happens.
+        uploaded: Gets each uploaded resource path added to it as it happens.
 
     Returns:
         The parameters with their new values.
@@ -562,14 +562,14 @@ def _build_resources_parser(sub: argparse.ArgumentParser) -> None:
     p.set_defaults(func=_read_resource)
 
     p = resources_sub.add_parser(
-        "upload", help="Upload a local file to a share path via WebDAV"
+        "upload", help="Upload a local file to a resource path via WebDAV"
     )
     p.add_argument("local_path", help="Path to the local file to upload")
-    p.add_argument("resource_path", help="Share path to write, e.g. upload/notes.txt")
+    p.add_argument("resource_path", help="Resource path to write, e.g. upload/notes.txt")
     p.set_defaults(func=_upload_resource, uses_mcp=False)
 
-    p = resources_sub.add_parser("delete", help="Delete one share path via WebDAV")
-    p.add_argument("resource_path", help="Share path to delete, e.g. upload/notes.txt")
+    p = resources_sub.add_parser("delete", help="Delete one resource path via WebDAV")
+    p.add_argument("resource_path", help="Resource path to delete, e.g. upload/notes.txt")
     p.set_defaults(func=_delete_resource, uses_mcp=False)
 
     p = resources_sub.add_parser(

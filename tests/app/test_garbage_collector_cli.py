@@ -47,7 +47,7 @@ def _run_gc_cli(
 
 
 def _seed_render_entry(data: Path, resources: Path, rel: str, content: str) -> Path:
-    """Make a share file plus the render folder for it, and give back that folder."""
+    """Make a resource file plus the render folder for it, and give back that folder."""
     src = resources / rel
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text(content, encoding="utf-8")

@@ -118,31 +118,31 @@ def _is_binary(raw: bytes) -> bool:
     return b"\x00" in raw
 
 
-def _share_path(filename: str) -> str:
-    """Return where a file goes inside this server's share."""
+def _resource_file_path(filename: str) -> str:
+    """Return where a file goes inside this server's resources folder."""
     return os.path.join(resources_dir(), _BINARY_DIR, filename)
 
 
 def _save_binary(raw: bytes, filename: str) -> str:
-    """Save a binary file into this server's share.
+    """Save a binary file into this server's resources folder.
 
     Returns:
         The path of the saved copy relative to the resource root.
     """
-    dest = _share_path(filename)
+    dest = _resource_file_path(filename)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "wb") as f:
         f.write(raw)
     return f"{_BINARY_DIR}/{filename}"
 
 
-def _move_to_share(tmp_path: str, filename: str) -> str:
-    """Move a file into this server's share.
+def _move_to_resources(tmp_path: str, filename: str) -> str:
+    """Move a file into this server's resources folder.
 
     Returns:
         The path of the moved copy relative to the resource root.
     """
-    dest = _share_path(filename)
+    dest = _resource_file_path(filename)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.move(tmp_path, dest)
     return f"{_BINARY_DIR}/{filename}"
@@ -164,8 +164,8 @@ async def _render_blob(raw: bytes, repo: str, path: str, ref_name: str) -> str |
     text = await asyncio.to_thread(_render_text, raw, repo, path, ref_name)
     if text is not None:
         return text
-    share_rel = await asyncio.to_thread(_save_binary, raw, os.path.basename(path))
-    return ToolResult(text=await binary_download_notice(share_rel), files=(share_rel,))
+    resource_path = await asyncio.to_thread(_save_binary, raw, os.path.basename(path))
+    return ToolResult(text=await binary_download_notice(resource_path), files=(resource_path,))
 
 
 def _stage_blob(stdout: str) -> str:
@@ -225,15 +225,15 @@ def _drop_staged(tmp_path: str) -> None:
 async def _render_staged(tmp_path: str, repo: str, path: str, ref_name: str) -> str | ToolResult:
     """Return a staged file's text with a heading, or a download note when it is binary.
 
-    A binary file is moved into this server's share. The staged file is removed.
+    A binary file is moved into this server's resources folder. The staged file is removed.
     """
     try:
         raw = await asyncio.to_thread(_read_staged, tmp_path)
         text = await asyncio.to_thread(_render_text, raw, repo, path, ref_name)
         if text is not None:
             return text
-        share_rel = await asyncio.to_thread(_move_to_share, tmp_path, os.path.basename(path))
-        return ToolResult(text=await binary_download_notice(share_rel), files=(share_rel,))
+        resource_path = await asyncio.to_thread(_move_to_resources, tmp_path, os.path.basename(path))
+        return ToolResult(text=await binary_download_notice(resource_path), files=(resource_path,))
     finally:
         await asyncio.to_thread(_drop_staged, tmp_path)
 

@@ -3,7 +3,7 @@
 It writes the task records of the per-tool count table, 3 running, 188
 completed, 22 failed, and 2 cancelled, 215 in all. It also writes the named
 fixture tasks with their exact ids, start times, and params, their log and
-result files, and the share layout, into the preview's DATA_DIR and
+result files, and the resources layout, into the preview's DATA_DIR and
 RESOURCES_DIR. The named fixtures and their child records count toward the
 table, so the made up records fill in the rest.
 
@@ -88,8 +88,8 @@ _FIXTURES: list[tuple[str, str, str, int, int, dict, str | None]] = [
      {"url": "https://www.xiaohongshu.com/search_result?keyword=%E6%9D%AD%E5%B7%9E%E5%92%96%E5%95%A1"}, None),
     ("media-run-1", "generate_image", "running", 372, 0,
      {"prompt": "A harbor at dusk seen from a drone, cinematic", "aspect_ratio": "16:9"}, None),
-    # A finished run whose result text names two share files. gen_001.png is
-    # in the seeded share and gen_999.png is not.
+    # A finished run whose result text names two resource files. gen_001.png is
+    # in the seeded resources folder and gen_999.png is not.
     ("media-result-1", "generate_image", "completed", 7190, 114,
      {"prompt": "Watercolor fox on a rainy window seat", "aspect_ratio": "1:1"}, None),
     ("redfin-run-1", "redfin_search", "running", 41, 0,
@@ -392,8 +392,8 @@ def _seed_run_files(data_dir: str, rng: random.Random) -> None:
             fh.write(body)
 
 
-# Files to put in the share, with the size each one gets.
-_SHARE_FILES: list[tuple[str, int]] = [
+# Files to put in the resources folder, with the size each one gets.
+_RESOURCE_FILES: list[tuple[str, int]] = [
     ("downloads/1beebf7c2c7c4d42adf31a28d483affe.docx", 36864),
     ("downloads/9a2f83dae22a42a28cd6b1f975b4dec0.png", 200),
     ("downloads/d0f9a955df4b45b39bfba8e96a1777f2.png", 200),
@@ -428,9 +428,9 @@ _PNG_PALETTE: list[tuple[int, int, int]] = [
 ]
 
 
-def _seed_share(resources_dir: str, rng: random.Random) -> None:
+def _seed_resources(resources_dir: str, rng: random.Random) -> None:
     os.makedirs(resources_dir, exist_ok=True)
-    for rel, size in _SHARE_FILES:
+    for rel, size in _RESOURCE_FILES:
         path = os.path.join(resources_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         name = os.path.basename(rel)
@@ -476,7 +476,7 @@ def _seed_share(resources_dir: str, rng: random.Random) -> None:
 def _seed_sidecars(data_dir: str, resources_dir: str) -> None:
     """Write the files sidecar of the finished generate_image fixture.
 
-    It saved media_gen/gen_001.png, which is in the seeded share, and
+    It saved media_gen/gen_001.png, which is in the seeded resources folder, and
     media_gen/gen_999.png, which a later garbage collection has removed.
     """
     st = os.stat(os.path.join(resources_dir, "media_gen", "gen_001.png"))
@@ -499,7 +499,7 @@ async def main() -> None:
     try:
         await _seed_records(data_dir, now)
         await asyncio.to_thread(_seed_run_files, data_dir, random.Random(_RNG_SEED + 2))
-        await asyncio.to_thread(_seed_share, resources_dir, random.Random(_RNG_SEED + 3))
+        await asyncio.to_thread(_seed_resources, resources_dir, random.Random(_RNG_SEED + 3))
         await asyncio.to_thread(_seed_sidecars, data_dir, resources_dir)
     finally:
         await store_module.task_store.close()

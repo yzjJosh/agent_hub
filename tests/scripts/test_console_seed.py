@@ -1,6 +1,6 @@
 """Tests for the console preview seed data.
 
-The seed fills a throwaway data dir and share dir, and the tests read the
+The seed fills a throwaway data dir and resources dir, and the tests read the
 records and the files back.
 """
 
@@ -52,7 +52,7 @@ _ID_MEDIA_RESULT = "media-result-1"
 
 @pytest.fixture
 def seed_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Run the seed against throwaway data and share dirs, and give back both."""
+    """Run the seed against throwaway data and resources dirs, and give back both."""
     data_dir = tmp_path / "data"
     resources_dir = tmp_path / "resources"
     monkeypatch.setenv("DATA_DIR", str(data_dir))
@@ -85,7 +85,7 @@ def test_seed_records_match_the_41_table(seed_dirs: tuple[Path, Path]) -> None:
     db.close()
 
 
-def test_seed_run_files_and_share(seed_dirs: tuple[Path, Path]) -> None:
+def test_seed_run_files_and_resources(seed_dirs: tuple[Path, Path]) -> None:
     data_dir, resources_dir = seed_dirs
     runs = data_dir / "runs"
     assert (runs / _ID_C4A7 / "log").read_text(encoding="utf-8").count("\n") == _RUNNING_LOG_LINES

@@ -1,7 +1,7 @@
 """Speech endpoint shaped like the OpenAI audio API.
 
 Mounted at /v1, it serves POST /v1/audio/speech. Each call is also kept as a
-tool run. The audio file goes in the tts folder of the share, and a file
+tool run. The audio file goes in the tts folder of the resources folder, and a file
 nobody uses for 30 days is removed. The model, voice, and speed fields are
 taken but not used.
 """

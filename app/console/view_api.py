@@ -1,4 +1,4 @@
-"""Endpoints for viewing one shared file."""
+"""Endpoints for viewing one resource file."""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from app.console.errors import error_response
 from app.lib.render import cache, office
 from app.lib.render.classify import classify
 from app.lib.render.descriptor import (OFFICE_KINDS, build_descriptor,
-                                       converting_descriptor, resolve_view, share_path_for)
+                                       converting_descriptor, get_resource_path, resolve_view)
 
 __all__ = ["retry_view_impl", "view_impl"]
 
 
 async def _resolve_full(path: str) -> str | Response:
-    """Turn a shared path into a full path on disk.
+    """Turn a resource path into a full path on disk.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The full path. An error reply comes back when the path is not allowed
@@ -35,10 +35,10 @@ async def _resolve_full(path: str) -> str | Response:
 
 
 async def view_impl(path: str) -> Response:
-    """Describe one shared file for the viewer.
+    """Describe one resource file for the viewer.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The description of the file, or an error reply.
@@ -50,10 +50,10 @@ async def view_impl(path: str) -> Response:
 
 
 async def retry_view_impl(path: str) -> Response:
-    """Convert one shared office file again.
+    """Convert one resource office file again.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The description of the file while it converts, or an error reply.
@@ -64,9 +64,9 @@ async def retry_view_impl(path: str) -> Response:
     kind = await classify(full)
     if kind not in OFFICE_KINDS:
         return error_response(400, "bad_param", f"'{path}' is not a convertible Office file.")
-    share_path = share_path_for(full, path)
+    resource_path = get_resource_path(full, path)
     stat = await asyncio.to_thread(os.stat, full)
-    key = cache.key_for(share_path, int(stat.st_mtime))
-    await office.retry_office_conversion(share_path, key, full)
-    return JSONResponse(converting_descriptor(share_path, os.path.basename(share_path),
+    key = cache.key_for(resource_path, int(stat.st_mtime))
+    await office.retry_office_conversion(resource_path, key, full)
+    return JSONResponse(converting_descriptor(resource_path, os.path.basename(resource_path),
                                               stat.st_size, int(stat.st_mtime), kind))

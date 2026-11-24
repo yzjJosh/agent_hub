@@ -70,7 +70,7 @@ def test_adds_missing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_replaces_wrong_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wrong download values are set to the shared folder and the prompt off."""
+    """Wrong download values are set to the download folder and the prompt off."""
     _write_prefs(tmp_path, {"download": {"default_directory": "/root/Downloads",
                                           "prompt_for_download": True}})
     prefs = _run(tmp_path, monkeypatch)

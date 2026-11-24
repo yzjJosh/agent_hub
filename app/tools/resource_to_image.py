@@ -19,10 +19,10 @@ _RETRY_LINE = (
 
 
 def _not_found_error(path: str) -> str:
-    """Return the error text for a path that is not in the share."""
+    """Return the error text for a path that is not in the resources folder."""
     return (
         f"Resource not found: {path}. The resource path must already "
-        "exist in this server's resources share. Call the send_or_receive_file "
+        "exist in this server's resources folder. Call the send_or_receive_file "
         "tool for instructions to upload the file, then retry this tool with "
         "the uploaded file's resource path (e.g. 'upload/<filename>')."
     )
@@ -85,16 +85,16 @@ def _success_message(path: str, url: str, ready: bool) -> str:
 
 
 def _thumb_target(path: str) -> tuple[str, int]:
-    """Find where a file in the share is and when it last changed.
+    """Find where a file in the resources folder is and when it last changed.
 
     Args:
-        path: Path of the file in the share.
+        path: Path of the file in the resources folder.
 
     Returns:
         Where the file is on disk and when it last changed.
 
     Raises:
-        ValueError: If the path is not in the share or is a folder.
+        ValueError: If the path is not in the resources folder or is a folder.
     """
     target = resolve_path_sync(resources_dir(), path)
     if target is None or not (os.path.isfile(target) or os.path.isdir(target)):
@@ -105,16 +105,16 @@ def _thumb_target(path: str) -> tuple[str, int]:
 
 
 async def _resolve_thumb(path: str) -> tuple[RenderKind, str, str]:
-    """Look up the preview thumbnail for a file in the share.
+    """Look up the preview thumbnail for a file in the resources folder.
 
     Args:
-        path: Path of the file in the share.
+        path: Path of the file in the resources folder.
 
     Returns:
         The file type, the thumbnail key, and how far along the thumbnail is.
 
     Raises:
-        ValueError: If the path is not in the share or is a folder.
+        ValueError: If the path is not in the resources folder or is a folder.
     """
     target, mtime = await asyncio.to_thread(_thumb_target, path)
     kind = await classify(target)

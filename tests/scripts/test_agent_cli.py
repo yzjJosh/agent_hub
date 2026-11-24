@@ -968,7 +968,7 @@ class TestToolsGc:
 
 
 class TestResourcesUpload:
-    """Test that upload sends a local file to the given share path."""
+    """Test that upload sends a local file to the given resource path."""
 
     def test_puts_file_bytes_and_prints_destination(
         self,
@@ -1049,7 +1049,7 @@ class TestResourcesUpload:
 
 
 class TestResourcesDelete:
-    """Test that delete removes the file at the given share path."""
+    """Test that delete removes the file at the given resource path."""
 
     def test_deletes_and_prints_path(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

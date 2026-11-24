@@ -13,7 +13,7 @@ from app.lib.render.classify import RenderKind
 from app.lib.render import cache as _cache
 from app.lib.render import result_descriptor as rd
 from app.lib.render.detect import Detection, detect
-from tests.app.conftest import point_share_env, xlsx_body
+from tests.app.conftest import configure_resource_env, xlsx_body
 
 PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 40
 MARKDOWN_BODY = b"# Notes\n\nSome **bold** text and a [link](https://example.com).\n\n- one\n- two\n"
@@ -22,7 +22,7 @@ _WARM_DELAY = 0.01
 
 
 def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes, task_id: str | None = None) -> tuple[str, str]:
-    point_share_env(tmp_path, monkeypatch)
+    configure_resource_env(tmp_path, monkeypatch)
     task_id = task_id or str(uuid.uuid4())
     run_dir = Path(tmp_path, "data", "runs", task_id)
     run_dir.mkdir(parents=True, exist_ok=True)

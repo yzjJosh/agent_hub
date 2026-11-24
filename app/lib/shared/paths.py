@@ -44,7 +44,7 @@ def data_dir() -> str:
 
 
 def resources_dir() -> str:
-    """Root directory of the shared resources folder.
+    """Root directory of the resources folder.
 
     Returns:
         The RESOURCES_DIR environment value, or /app/data/resources when unset
@@ -97,7 +97,7 @@ def resolve_path_sync(root: str, path: str) -> str | None:
     resolve_path there.
 
     Args:
-        root: Share root the path is relative to
+        root: Resources root the path is relative to
         path: Path relative to root
 
     Returns:
@@ -114,7 +114,7 @@ async def resolve_path(root: str, path: str) -> str | None:
     """Resolve a relative path under root, rejecting traversal outside it.
 
     Args:
-        root: Share root the path is relative to
+        root: Resources root the path is relative to
         path: Path relative to root
 
     Returns:

@@ -15,8 +15,8 @@ __all__ = [
     "OFFICE_KINDS",
     "build_descriptor",
     "converting_descriptor",
+    "get_resource_path",
     "resolve_view",
-    "share_path_for",
 ]
 
 _TEXT_KINDS = frozenset(
@@ -28,10 +28,10 @@ _MEDIA_KINDS = frozenset({RenderKind.PDF, RenderKind.IMAGE, RenderKind.VIDEO, Re
 
 
 async def resolve_view(path: str) -> str | None:
-    """Turn a shared path into a full path on disk.
+    """Turn a resource path into a full path on disk.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
 
     Returns:
         The full path, or None when the path is not allowed.
@@ -41,15 +41,15 @@ async def resolve_view(path: str) -> str | None:
     return await resolve_path(resources_dir(), path)
 
 
-def share_path_for(full_path: str, fallback: str) -> str:
-    """The path inside the shared folder for a file on disk.
+def get_resource_path(full_path: str, fallback: str) -> str:
+    """Return the path inside the resources folder for a file on disk.
 
     Args:
         full_path: Where the file is on disk.
-        fallback: The path to use when the file is outside the shared folder.
+        fallback: The path to use when the file is outside the resources folder.
 
     Returns:
-        The path inside the shared folder, or the fallback.
+        The path inside the resources folder, or the fallback.
     """
     rel = os.path.relpath(full_path, os.path.realpath(resources_dir()))
     if rel == ".." or rel.startswith(".." + os.sep):
@@ -92,7 +92,7 @@ def converting_descriptor(path: str, name: str, size: int, mtime: int, kind: Ren
     """Describe a file that is still being converted.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         name: The file name.
         size: How big the file is in bytes.
         mtime: When the file last changed.
@@ -114,7 +114,7 @@ async def _build_text_body(kind: RenderKind, full_path: str, size: int, mtime: i
         full_path: Where the file is on disk.
         size: How big the file is in bytes.
         mtime: When the file last changed.
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         key: The name this file is saved under.
 
     Returns:
@@ -134,39 +134,39 @@ async def build_descriptor(path: str, full_path: str) -> dict:
     """Describe one file for the viewer.
 
     Args:
-        path: A path inside the shared folder.
+        path: A path inside the resources folder.
         full_path: Where the file is on disk.
 
     Returns:
         Everything the viewer needs to show the file.
     """
-    share_path = share_path_for(full_path, path)
+    resource_path = get_resource_path(full_path, path)
     stat = await asyncio.to_thread(os.stat, full_path)
     kind = await classify(full_path)
     size, mtime = stat.st_size, int(stat.st_mtime)
-    name = os.path.basename(share_path)
-    key = cache.key_for(share_path, mtime)
+    name = os.path.basename(resource_path)
+    key = cache.key_for(resource_path, mtime)
     if kind in _TEXT_KINDS:
-        fragment, per_type = await _build_text_body(kind, full_path, size, mtime, share_path, key)
-        return _descriptor(share_path, name, size, mtime, kind, fragment=fragment, **per_type)
+        fragment, per_type = await _build_text_body(kind, full_path, size, mtime, resource_path, key)
+        return _descriptor(resource_path, name, size, mtime, kind, fragment=fragment, **per_type)
     if kind in OFFICE_KINDS:
         cached = await cache.read_doc(key)
         if cached is not None:
             doc_html, meta = cached
             mode = meta.get("mode", "doc")
-            return _descriptor(share_path, name, size, mtime, kind, mode=mode,
+            return _descriptor(resource_path, name, size, mtime, kind, mode=mode,
                                fragment=doc_html, provenance=meta.get("provenance"),
                                row_count=meta.get("row_count"), column_count=meta.get("column_count"),
                                url=(f"/view/doc/{key}/{cache.OFFICE_PDF_ASSET}"
                                     if mode == "frame" else None))
         reason = await cache.convert_failed_reason(key)
         if reason is not None:
-            return _descriptor(share_path, name, size, mtime, kind, mode="convert_failed", error=reason)
-        await office.start_office_conversion(share_path, key, full_path)
-        return converting_descriptor(share_path, name, size, mtime, kind)
+            return _descriptor(resource_path, name, size, mtime, kind, mode="convert_failed", error=reason)
+        await office.start_office_conversion(resource_path, key, full_path)
+        return converting_descriptor(resource_path, name, size, mtime, kind)
     if kind in _MEDIA_KINDS:
         meta = await probe.probe_meta(kind, full_path)
         mode = "frame" if kind in (RenderKind.PDF, RenderKind.HTML) else "native"
-        return _descriptor(share_path, name, size, mtime, kind, mode=mode,
-                           url=ephemeral_dav_url(share_path), **meta)
-    return _descriptor(share_path, name, size, mtime, kind, mode="unsupported")
+        return _descriptor(resource_path, name, size, mtime, kind, mode=mode,
+                           url=ephemeral_dav_url(resource_path), **meta)
+    return _descriptor(resource_path, name, size, mtime, kind, mode="unsupported")
