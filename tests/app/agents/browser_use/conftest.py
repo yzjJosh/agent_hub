@@ -83,7 +83,7 @@ class FakeManager:
         self.urls[target_id] = url
         return target_id
 
-    def tab_ids(self) -> list[str]:
+    def list_tab_ids(self) -> list[str]:
         """Give back the ids of the open tabs."""
         return list(self.pages)
 
@@ -142,7 +142,7 @@ class FakeManager:
         self.last_solve_captcha = (target_id, max_steps)
         return True
 
-    async def screenshot(self, target_id: str, path: str, full_page: bool = True, timeout: float = 30.0, verbose: bool = False) -> str | None:
+    async def capture_screenshot(self, target_id: str, path: str, full_page: bool = True, timeout: float = 30.0, verbose: bool = False) -> str | None:
         self.screenshot_calls += 1
         self.last_screenshot = (target_id, path, full_page, timeout, verbose)
         if self.capture_barrier is not None:
@@ -192,10 +192,10 @@ class FakeManager:
             return self.download_queue.pop(0)
         return {"downloaded": False}
 
-    async def title(self, target_id: str) -> str | None:
+    async def get_title(self, target_id: str) -> str | None:
         return self.titles.get(target_id)
 
-    def url(self, target_id: str) -> str | None:
+    def get_url(self, target_id: str) -> str | None:
         return self.urls.get(target_id)
 
     async def cleanup(self) -> None:

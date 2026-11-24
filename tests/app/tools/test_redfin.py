@@ -125,19 +125,19 @@ def _mock_bm(
         url_sequence: Page addresses given out in order, the last one repeating.
     """
     mock_bm = MagicMock()
-    mock_bm.new_page = AsyncMock(return_value="page1")
+    mock_bm.open_page = AsyncMock(return_value="page1")
     mock_bm.navigate = AsyncMock(return_value=True)
     mock_bm.wait_for_load = AsyncMock(return_value=True)
     if repeat_snapshot is not None:
-        mock_bm.snapshot = AsyncMock(return_value=repeat_snapshot)
+        mock_bm.capture_snapshot = AsyncMock(return_value=repeat_snapshot)
     else:
-        mock_bm.snapshot = AsyncMock(side_effect=snapshot_sequence)
+        mock_bm.capture_snapshot = AsyncMock(side_effect=snapshot_sequence)
     download_result = (
         {"downloaded": True, "path": csv_path} if csv_path else {"downloaded": False}
     )
     mock_bm.wait_for_download = AsyncMock(return_value=download_result)
     mock_bm.cleanup = AsyncMock()
-    mock_bm.url = MagicMock(side_effect=_url_values(url_sequence))
+    mock_bm.get_url = MagicMock(side_effect=_url_values(url_sequence))
     return mock_bm
 
 

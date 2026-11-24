@@ -341,7 +341,7 @@ async def _run_snapshot_action(
     *,
     fixed_delay: float | None = None,
 ) -> bool:
-    snapshot = await manager.snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
+    snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
     if snapshot is None:
         raise RuntimeError("no snapshot available for tab")
     success = await action(snapshot)
@@ -445,7 +445,7 @@ class _OpenUrlTool(_ActionTool):
 
         async def action(manager: BrowserManager, tab: str | None) -> bool:
             if tab is None:
-                tab = await manager.new_page(verbose=True)
+                tab = await manager.open_page(verbose=True)
             return await manager.navigate(tab, url, verbose=True)
         return await self._transact(action, target_id, new_tab=True)
 
@@ -794,7 +794,7 @@ class _RefreshTool(_ActionTool):
         async def action(manager: BrowserManager, tab: str | None) -> bool:
             if tab is None:
                 raise RuntimeError("no tab is open, open one with open_url first")
-            url = manager.url(tab)
+            url = manager.get_url(tab)
             if not url:
                 raise RuntimeError("the tab has no url to refresh")
             return await manager.navigate(tab, url, verbose=True)
@@ -821,7 +821,7 @@ class _DumpPageTool(_ActionTool):
             if tab is None:
                 raise RuntimeError("no tab is open, open one with open_url first")
             started_at = datetime.now(UTC)
-            snapshot = await manager.snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
+            snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
             if snapshot is None:
                 raise RuntimeError("no snapshot available for tab")
             tree = await snapshot.filtered_tree(verbose=True)

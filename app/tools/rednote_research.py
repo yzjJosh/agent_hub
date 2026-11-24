@@ -187,7 +187,7 @@ async def _navigate_and_snapshot(
         print(f"[rednote_research] Navigation failed: {e}", file=sys.stderr)
         return None, 1
 
-    snap = await mgr.snapshot(target_id, verbose=_VERBOSE)
+    snap = await mgr.capture_snapshot(target_id, verbose=_VERBOSE)
     if snap is None:
         print("[rednote_research] Failed to capture snapshot", file=sys.stderr)
         return None, 1
@@ -435,7 +435,7 @@ async def _capture_overlay_tree(
     mgr: BrowserManager, target_id: str
 ) -> str | None:
     """Return the open note's contents as JSON text, or None when it cannot be read."""
-    note_snap = await mgr.snapshot(target_id, verbose=_VERBOSE)
+    note_snap = await mgr.capture_snapshot(target_id, verbose=_VERBOSE)
     if note_snap is None:
         return None
 
@@ -632,7 +632,7 @@ async def _analyze_notes(
         )
         nid = note_url.split("?")[0].split("/")[-1] or "unknown_id"
 
-        search_snap = await mgr.snapshot(target_id, verbose=_VERBOSE)
+        search_snap = await mgr.capture_snapshot(target_id, verbose=_VERBOSE)
         if search_snap is None:
             print(
                 f"[rednote_research] Failed to snapshot search page, skipping note {nid}",
@@ -859,7 +859,7 @@ async def _run_research(query: str, count: int, raw_notes: bool) -> str:
 
     # Leaving this block closes the browser and every page it opened.
     async with BrowserManager(verbose=_VERBOSE) as mgr:
-        target_id = await mgr.new_page(verbose=_VERBOSE)
+        target_id = await mgr.open_page(verbose=_VERBOSE)
         try:
             search_json, status = await _navigate_and_snapshot(mgr, target_id, search_url)
             if status != 0 or not search_json:

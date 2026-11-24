@@ -144,7 +144,7 @@ async def _resolve_url_download_document(mgr: BrowserManager, target_id: Optiona
         if verbose: print(f"None input in _resolve_url_download_document", file=sys.stderr)
         return None
     if verbose: print(f"Processing as PDF document: {url}")
-    pdf_res = await mgr.pdf(target_id, download_path, verbose=verbose)
+    pdf_res = await mgr.save_pdf(target_id, download_path, verbose=verbose)
     if pdf_res is None:
         if verbose: print(f"PDF capture failed for {url}", file=sys.stderr)
         return None
@@ -409,7 +409,7 @@ async def _resolve_url_browse_and_resolve(mgr: BrowserManager, target_id: str, u
         renamed_path = await _rename_to_suggested_name(dl_result, download_path)
         return _require_content(await _handle_download_result(renamed_path, context, verbose, binary_passthrough))
 
-    actual_url = mgr.url(target_id, verbose=verbose) or url
+    actual_url = mgr.get_url(target_id, verbose=verbose) or url
     if actual_url != url and verbose:
         print(f"URL redirected: {url} -> {actual_url}")
 
@@ -422,7 +422,7 @@ async def _resolve_url_browse_and_resolve(mgr: BrowserManager, target_id: str, u
         return _require_content(await _handle_download_result(path, context, verbose, binary_passthrough))
 
     if verbose: print("Taking web snapshot")
-    snapshot = await mgr.snapshot(target_id, verbose=verbose)
+    snapshot = await mgr.capture_snapshot(target_id, verbose=verbose)
     if snapshot is None:
         raise ResolveError(f"Failed to capture snapshot of {actual_url}")
     tree = await snapshot.filtered_tree(verbose=verbose)
@@ -546,7 +546,7 @@ async def _resolve_url(url: str, context: str = "", verbose: bool = False, mgr: 
     try:
         if _owns_mgr:
             mgr = await BrowserManager.create()
-        target_id = await mgr.new_page(verbose=verbose)
+        target_id = await mgr.open_page(verbose=verbose)
         if not target_id:
             raise ResolveError("Unable to open new browser tab")
 

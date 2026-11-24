@@ -100,9 +100,9 @@ def _setup_content_type_mgr(
     """Set up a fake browser that reports a content type and then a body."""
     mgr = AsyncMock()
     mock_browser_mgr.create = AsyncMock(return_value=mgr)
-    mgr.new_page.return_value = "tab1"
+    mgr.open_page.return_value = "tab1"
     mgr.wait_for_download.return_value = {"downloaded": False}
-    mgr.url = MagicMock(return_value=url)
+    mgr.get_url = MagicMock(return_value=url)
     mgr.evaluate.side_effect = [content_type, body]
     mgr.close_page.return_value = True
     mgr.cleanup.return_value = None
@@ -113,7 +113,7 @@ def _setup_download_mgr(mock_browser_mgr: AsyncMock, saved_path: str) -> AsyncMo
     """Set up a fake browser that downloads the page to the given file."""
     mgr = AsyncMock()
     mock_browser_mgr.create = AsyncMock(return_value=mgr)
-    mgr.new_page.return_value = "tab1"
+    mgr.open_page.return_value = "tab1"
     mgr.wait_for_download.return_value = {"downloaded": True, "saved_path": saved_path}
     mgr.close_page.return_value = True
     mgr.cleanup.return_value = None
@@ -124,13 +124,13 @@ def _setup_mock_browser_mgr(mock_browser_mgr: AsyncMock, body_content: str = "fa
     """Set up a fake browser that gives back the given page text."""
     mgr = AsyncMock()
     mock_browser_mgr.create = AsyncMock(return_value=mgr)
-    mgr.new_page.return_value = "tab1"
+    mgr.open_page.return_value = "tab1"
     mgr.wait_for_download.return_value = {"downloaded": False}
-    mgr.url = MagicMock(return_value="http://example.com")
+    mgr.get_url = MagicMock(return_value="http://example.com")
     mgr.evaluate.return_value = "text/html"
     snap = MagicMock()
     snap.filtered_tree = AsyncMock(return_value={"html": {"body": {"children": [body_content]}}})
-    mgr.snapshot.return_value = snap
+    mgr.capture_snapshot.return_value = snap
     mgr.close_page.return_value = True
     mgr.cleanup.return_value = None
     return mgr
@@ -496,7 +496,7 @@ class TestURLMocked:
 
         mgr = AsyncMock()
         mock_browser_mgr.create = AsyncMock(return_value=mgr)
-        mgr.new_page.return_value = "tab1"
+        mgr.open_page.return_value = "tab1"
         mgr.wait_for_download = AsyncMock(side_effect=Exception("Navigation failed for http://example.com"))
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
@@ -885,7 +885,7 @@ class TestURLMocked:
 
         mgr = AsyncMock()
         mock_browser_mgr.create = AsyncMock(return_value=mgr)
-        mgr.new_page.return_value = "tab1"
+        mgr.open_page.return_value = "tab1"
         mgr.wait_for_download.return_value = {"downloaded": True, "filename": "Hello-World-master.zip"}
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
@@ -984,9 +984,9 @@ class TestMissingCodePaths:
 
         mgr = AsyncMock()
         mock_browser_mgr.create = AsyncMock(return_value=mgr)
-        mgr.new_page.return_value = "tab1"
+        mgr.open_page.return_value = "tab1"
         mgr.wait_for_download.return_value = {"downloaded": False}
-        mgr.url = MagicMock(return_value="http://example.com/media/image.png")
+        mgr.get_url = MagicMock(return_value="http://example.com/media/image.png")
         # The fake page answers the type check, then the download, then the cleanup.
         mgr.evaluate.side_effect = ["image/png", True, None]
 
@@ -1073,11 +1073,11 @@ class TestMissingCodePaths:
 
         mgr = AsyncMock()
         mock_browser_mgr.create = AsyncMock(return_value=mgr)
-        mgr.new_page.return_value = "tab1"
+        mgr.open_page.return_value = "tab1"
         mgr.wait_for_download.return_value = {"downloaded": False}
-        mgr.url = MagicMock(return_value="http://example.com/doc.pdf")
+        mgr.get_url = MagicMock(return_value="http://example.com/doc.pdf")
         mgr.evaluate.return_value = "application/pdf"
-        mgr.pdf.return_value = pdf_path
+        mgr.save_pdf.return_value = pdf_path
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
 

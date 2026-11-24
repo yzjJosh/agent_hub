@@ -359,8 +359,8 @@ class _FakeManager(BrowserManager):
         self._new_page_error = new_page_error
 
     @override
-    async def new_page(self) -> str:
-        self._calls.append("new_page")
+    async def open_page(self) -> str:
+        self._calls.append("open_page")
         if self._new_page_error is not None:
             raise self._new_page_error
         return "tab1"
@@ -377,8 +377,8 @@ class _FakeManager(BrowserManager):
         return self._navigate_ok
 
     @override
-    async def screenshot(self, _target_id: str, path: str, **_kwargs: bool) -> str | None:
-        self._calls.append("screenshot")
+    async def capture_screenshot(self, _target_id: str, path: str, **_kwargs: bool) -> str | None:
+        self._calls.append("capture_screenshot")
         im = Image.new("RGB", (128, 80), "red")
         im.save(path, "JPEG")
         return path
@@ -478,7 +478,7 @@ def test_doc_render_browser_call_sequence(_thumb_env: Path, _resources: Path,
     calls, factory = _fake_manager_factory()
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "done"
-    assert calls == ["create", "new_page", "set_viewport_size", "navigate", "screenshot", "close_page", "cleanup"]
+    assert calls == ["create", "open_page", "set_viewport_size", "navigate", "capture_screenshot", "close_page", "cleanup"]
     with Image.open(os.path.join(cache_module.render_root(), key, "thumb.png")) as im:
         assert im.format == "PNG"
         assert im.size == (_THUMB_W, _THUMB_H)
@@ -511,7 +511,7 @@ def test_doc_render_failed_navigation_marks_failed(_thumb_env: Path, _resources:
     calls, factory = _fake_manager_factory(navigate_ok=False)
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
-    assert calls == ["create", "new_page", "set_viewport_size", "navigate", "close_page", "cleanup"]
+    assert calls == ["create", "open_page", "set_viewport_size", "navigate", "close_page", "cleanup"]
     assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
 
 
@@ -521,7 +521,7 @@ def test_doc_render_failed_viewport_marks_failed(_thumb_env: Path, _resources: P
     calls, factory = _fake_manager_factory(viewport_ok=False)
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
-    assert calls == ["create", "new_page", "set_viewport_size", "close_page", "cleanup"]
+    assert calls == ["create", "open_page", "set_viewport_size", "close_page", "cleanup"]
     assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
 
 
@@ -533,7 +533,7 @@ def test_doc_render_new_page_failure_keeps_original_error(_thumb_env: Path, _res
     assert status == "failed"
     mark = _thumb_env / "render" / ".state" / f"{key}.thumb-failed"
     assert "no browser windows" in mark.read_text()
-    assert calls == ["create", "new_page", "cleanup"]
+    assert calls == ["create", "open_page", "cleanup"]
 
 
 def test_browser_cycles_are_fresh_per_job(_thumb_env: Path, _resources: Path,

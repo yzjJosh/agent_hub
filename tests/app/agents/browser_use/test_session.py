@@ -605,7 +605,7 @@ class TestTabResolution:
         assert seen == [tab]
 
     async def test_blank_target_with_no_tabs_resolves_to_none(self, fake_manager: FakeManager, tmp_path: Path) -> None:
-        assert not fake_manager.tab_ids()
+        assert not fake_manager.list_tab_ids()
         session = await _open_session(str(tmp_path))
         seen, action = _seeing_action()
         result = await session.transact(action, None)
@@ -640,7 +640,7 @@ class TestTabResolution:
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         await _transact_admitted(session, None)
-        read_tabs = fake_manager.tab_ids
+        read_tabs = fake_manager.list_tab_ids
 
         def tab_ids_then_open_a_tab() -> list[str]:
             open_tabs = read_tabs()
@@ -648,7 +648,7 @@ class TestTabResolution:
                 fake_manager.open_tab()
             return open_tabs
 
-        monkeypatch.setattr(fake_manager, "tab_ids", tab_ids_then_open_a_tab)
+        monkeypatch.setattr(fake_manager, "list_tab_ids", tab_ids_then_open_a_tab)
         seen, action = _seeing_action()
         result = await session.transact(action, None)
         assert result.status is TransactionStatus.SUCCESS
@@ -1075,7 +1075,7 @@ class TestCheckpointAcquisition:
             await asyncio.Event().wait()
             return None
 
-        monkeypatch.setattr(fake_manager, "screenshot", hold_capture)
+        monkeypatch.setattr(fake_manager, "capture_screenshot", hold_capture)
         pending = asyncio.create_task(session.transact(_action_ok, None, new_tab=True))
         await asyncio.wait_for(started.wait(), _OVERLAP_TIMEOUT_S)
         pending.cancel()

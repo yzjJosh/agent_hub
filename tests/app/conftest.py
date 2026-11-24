@@ -762,7 +762,7 @@ async def e2e_page(viewport: dict) -> AsyncIterator[tuple[BrowserManager, str]]:
     mgr = await BrowserManager.create()
     tid = ""
     try:
-        tid = await mgr.new_page()
+        tid = await mgr.open_page()
         resized = await mgr.set_viewport_size(tid, viewport["width"], viewport["height"])
         assert resized, "e2e_page: viewport resize did not apply"
         yield mgr, tid

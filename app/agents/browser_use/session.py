@@ -56,7 +56,7 @@ def _resolve_tab(manager: BrowserManager, target_id: str | None, *, new_tab: boo
         return named
     if new_tab:
         return None
-    open_tabs = manager.tab_ids()
+    open_tabs = manager.list_tab_ids()
     if len(open_tabs) > 1:
         raise RuntimeError(f"{len(open_tabs)} tabs are open, give the target id of the one to act on")
     return open_tabs[0] if open_tabs else None
@@ -484,7 +484,7 @@ class BrowserSession:
             if _VERBOSE:
                 print("[BrowserSession._screen_changed] no tab to compare, guard skipped", flush=True)
             return False
-        if tab not in manager.tab_ids():
+        if tab not in manager.list_tab_ids():
             if _VERBOSE:
                 print(f"[BrowserSession._screen_changed] tab {tab} is no longer open, guard skipped", flush=True)
             return False
@@ -540,7 +540,7 @@ class BrowserSession:
             await asyncio.to_thread(os.makedirs, run_dir, exist_ok=True)
         except OSError:
             print(f"[BrowserSession._snapshot] Error: cannot create capture folder\n{traceback.format_exc()}", file=sys.stderr)
-        target_ids = manager.tab_ids()
+        target_ids = manager.list_tab_ids()
         if _VERBOSE:
             print(f"[BrowserSession._snapshot] shooting {len(target_ids)} tabs at once into {run_dir}", flush=True)
         captures = await asyncio.gather(
@@ -595,8 +595,8 @@ class BrowserSession:
             print(f"[BrowserSession._capture_tab] Error: tab {target_id} has no shot", file=sys.stderr)
             error = "Screenshot capture failed"
         try:
-            title = _sanitize_caption_text(await manager.title(target_id), _TITLE_CAP, strip_quotes=True)
-            url = _sanitize_caption_text(manager.url(target_id), _URL_CAP)
+            title = _sanitize_caption_text(await manager.get_title(target_id), _TITLE_CAP, strip_quotes=True)
+            url = _sanitize_caption_text(manager.get_url(target_id), _URL_CAP)
         except Exception as exc:
             print(f"[BrowserSession._capture_tab] Error: tab {target_id} metadata failed: {exc}", file=sys.stderr)
             title, url = "", ""
@@ -605,7 +605,7 @@ class BrowserSession:
     async def _capture(self, manager: BrowserManager, target_id: str, path: str) -> str | None:
         """Take one viewport shot, waiting up to the capture hold for the page to settle."""
         try:
-            return await manager.screenshot(target_id, path, full_page=False, timeout=_CAPTURE_TIMEOUT_S, verbose=True)
+            return await manager.capture_screenshot(target_id, path, full_page=False, timeout=_CAPTURE_TIMEOUT_S, verbose=True)
         except Exception:
             print(f"[BrowserSession._capture] Error: tab {target_id} capture failed\n{traceback.format_exc()}", file=sys.stderr)
             return None

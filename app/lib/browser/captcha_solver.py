@@ -241,7 +241,7 @@ async def _solve_checkbox(manager: BrowserManager, target_id: str, verbose: bool
 
     screenshot_path = await asyncio.to_thread(_scratch_jpg_path)
     try:
-        if await manager.screenshot(target_id, screenshot_path, full_page=False) is None:
+        if await manager.capture_screenshot(target_id, screenshot_path, full_page=False) is None:
             print(f"[captcha_solver] Screenshot failed", file=sys.stderr)
             return False
 
@@ -288,7 +288,7 @@ async def _is_recaptcha(manager: BrowserManager, target_id: str) -> bool:
     Returns:
         True if the page has one.
     """
-    if target_id not in manager.tab_ids():
+    if target_id not in manager.list_tab_ids():
         return False
     return bool(await manager.evaluate(target_id, """
             () => {
@@ -478,4 +478,4 @@ async def _take_screenshot(manager: BrowserManager, target_id: str, screenshot_p
     Returns:
         True if the picture was saved.
     """
-    return await manager.screenshot(target_id, screenshot_path, full_page=False) is not None
+    return await manager.capture_screenshot(target_id, screenshot_path, full_page=False) is not None

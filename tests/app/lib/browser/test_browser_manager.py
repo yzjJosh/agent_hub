@@ -167,7 +167,7 @@ async def _make_manager(fill: Optional[AsyncMock] = None, evaluate: Optional[Asy
         session = _layout_session()
     context = _test_context(mock_page, session, attach_session)
     mgr = await _created_manager(context, download_dir)
-    target_id = await mgr.new_page()
+    target_id = await mgr.open_page()
     return mgr, mock_page, target_id
 
 
@@ -222,7 +222,7 @@ async def _navigate_long_and_wait(browser_manager: BrowserManager, tid: str, tes
 async def _snapshot_visibility_tree(browser_manager: BrowserManager, tid: str, test_server_url: str) -> None:
     """Open the visibility page and give back its tree as text."""
     await browser_manager.navigate(tid, test_server_url + "/page/visibility")
-    result = await browser_manager.snapshot(tid)
+    result = await browser_manager.capture_snapshot(tid)
     tree = await result.filtered_tree()
     return json.dumps(tree, ensure_ascii=False)
 
@@ -303,7 +303,7 @@ async def _manager_with_sessions(tmp_path: Path, pages: dict[str, AsyncMock]) ->
     context.new_page = AsyncMock(side_effect=list(pages.values()))
     context.new_cdp_session = AsyncMock(side_effect=_attach)
     mgr = await _created_manager(context, str(tmp_path))
-    target_ids = [await mgr.new_page() for _ in pages]
+    target_ids = [await mgr.open_page() for _ in pages]
     sessions = {key: session_by_page[page] for key, page in pages.items()}
     return mgr, target_ids, sessions
 
@@ -311,7 +311,7 @@ async def _manager_with_sessions(tmp_path: Path, pages: dict[str, AsyncMock]) ->
 async def _assert_snapshot_partial_on_timeout(mgr: BrowserManager, mock_page: MagicMock, target_id: str) -> None:
     """Check a snapshot still comes back with page text after the wait runs out."""
     mock_page.wait_for_load_state.side_effect = PlaywrightTimeoutError("Timeout 5000ms exceeded")
-    result = await mgr.snapshot(target_id)
+    result = await mgr.capture_snapshot(target_id)
     assert result.html is not None and len(result.html) > 0, "snapshot() should return partial PageSnapshot with HTML on timeout"
 
 
@@ -346,9 +346,9 @@ class TestConnectCDP:
 
     async def test_connect_cdp(self, browser_manager: BrowserManager) -> None:
         """A fresh manager is connected and can open a tab on the running browser."""
-        target_id = await browser_manager.new_page()
+        target_id = await browser_manager.open_page()
         try:
-            assert target_id in browser_manager.tab_ids()
+            assert target_id in browser_manager.list_tab_ids()
         finally:
             await browser_manager.close_page(target_id)
 
@@ -356,8 +356,8 @@ class TestConnectCDP:
         """A second manager connects to the same running browser and opens a tab."""
         mgr2 = await BrowserManager.create()
         try:
-            target_id = await mgr2.new_page()
-            assert target_id in mgr2.tab_ids()
+            target_id = await mgr2.open_page()
+            assert target_id in mgr2.list_tab_ids()
         finally:
             await mgr2.close_page(target_id)
             await mgr2.cleanup()
@@ -411,26 +411,26 @@ class TestConnectArgs:
 @skip_if_no_chrome
 class TestNewPage:
     async def test_new_page(self, browser_manager: BrowserManager) -> None:
-        target_id = await browser_manager.new_page()
+        target_id = await browser_manager.open_page()
         try:
             assert isinstance(target_id, str)
-            assert target_id in browser_manager.tab_ids()
+            assert target_id in browser_manager.list_tab_ids()
         finally:
             await browser_manager.close_page(target_id)
 
     async def test_multiple_pages(self, browser_manager: BrowserManager) -> None:
-        tid1 = await browser_manager.new_page()
-        tid2 = await browser_manager.new_page()
+        tid1 = await browser_manager.open_page()
+        tid2 = await browser_manager.open_page()
         try:
             assert tid1 != tid2
-            assert tid1 in browser_manager.tab_ids()
-            assert tid2 in browser_manager.tab_ids()
+            assert tid1 in browser_manager.list_tab_ids()
+            assert tid2 in browser_manager.list_tab_ids()
         finally:
             await browser_manager.close_page(tid1)
             await browser_manager.close_page(tid2)
 
     async def test_new_page_navigable(self, browser_manager: BrowserManager) -> None:
-        target_id = await browser_manager.new_page()
+        target_id = await browser_manager.open_page()
         try:
             result = await browser_manager.navigate(target_id, "about:blank")
             assert result is True
@@ -442,16 +442,16 @@ class TestNewPage:
 @skip_if_no_chrome
 class TestClosePage:
     async def test_close_page(self, browser_manager: BrowserManager) -> None:
-        target_id = await browser_manager.new_page()
-        assert target_id in browser_manager.tab_ids()
+        target_id = await browser_manager.open_page()
+        assert target_id in browser_manager.list_tab_ids()
         assert await browser_manager.close_page(target_id) is True
-        assert target_id not in browser_manager.tab_ids()
+        assert target_id not in browser_manager.list_tab_ids()
 
     async def test_close_page_unknown(self, browser_manager: BrowserManager) -> None:
         assert await browser_manager.close_page("nonexistent") is False
 
     async def test_close_page_twice(self, browser_manager: BrowserManager) -> None:
-        target_id = await browser_manager.new_page()
+        target_id = await browser_manager.open_page()
         assert await browser_manager.close_page(target_id) is True
         assert await browser_manager.close_page(target_id) is False
 
@@ -507,7 +507,7 @@ class TestTabSession:
         mgr, page, session, context = await _tab_session_manager(tmp_path)
 
         try:
-            await mgr.new_page()
+            await mgr.open_page()
 
             context.new_cdp_session.assert_awaited_once_with(page)
             assert session.send.await_args_list == [
@@ -523,9 +523,9 @@ class TestTabSession:
         context.new_cdp_session = AsyncMock(side_effect=Exception("attach failed"))
 
         try:
-            target_id = await mgr.new_page()
+            target_id = await mgr.open_page()
 
-            assert target_id in mgr.tab_ids()
+            assert target_id in mgr.list_tab_ids()
         finally:
             await mgr.cleanup()
 
@@ -535,9 +535,9 @@ class TestTabSession:
         session.send = AsyncMock(side_effect=Exception("send failed"))
 
         try:
-            target_id = await mgr.new_page()
+            target_id = await mgr.open_page()
 
-            assert target_id in mgr.tab_ids()
+            assert target_id in mgr.list_tab_ids()
             session.detach.assert_awaited_once()
         finally:
             await mgr.cleanup()
@@ -548,7 +548,7 @@ class TestTabSession:
         context.new_cdp_session = AsyncMock(side_effect=Exception("attach failed"))
 
         try:
-            target_id = await mgr.new_page()
+            target_id = await mgr.open_page()
             assert await mgr.close_page(target_id) is True
 
             session.detach.assert_not_awaited()
@@ -574,12 +574,12 @@ class TestTabSession:
         mgr = await _clamped_manager(tmp_path, page, session)
 
         try:
-            target_id = await mgr.new_page()
+            target_id = await mgr.open_page()
             page.is_closed.return_value = tab_closed
             page.close = AsyncMock(side_effect=Exception("close failed"))
             assert await mgr.close_page(target_id) is False
 
-            assert target_id not in mgr.tab_ids()
+            assert target_id not in mgr.list_tab_ids()
             assert session.detach.await_count == int(detaches)
         finally:
             await mgr.cleanup()
@@ -591,8 +591,8 @@ class TestTabSession:
         other = await _created_manager(_test_context(page, None, attach_session=False), str(tmp_path))
 
         try:
-            tab = await mgr.new_page()
-            other_tab = await other.new_page()
+            tab = await mgr.open_page()
+            other_tab = await other.open_page()
             viewport = await mgr.get_page_viewport(tab)
             assert viewport.client_width == _VIEWPORT_WIDTH
             assert await other.click_at_relative(other_tab, _CENTER_RATIO, _CENTER_RATIO) is False
@@ -610,11 +610,11 @@ class TestTabSession:
         mgr = await _clamped_manager(tmp_path, page, session)
 
         try:
-            target_id = await mgr.new_page()
+            target_id = await mgr.open_page()
             await (mgr.close_page(target_id) if closed_by_manager else page.fire("close", page))
             await _settle_tasks()
 
-            assert target_id not in mgr.tab_ids()
+            assert target_id not in mgr.list_tab_ids()
             session.detach.assert_not_awaited()
             assert await mgr.close_page(target_id) is False
         finally:
@@ -648,7 +648,7 @@ async def _hanging_manager(tmp_path: Path) -> tuple[BrowserManager, str, MagicMo
     with patch.object(bm_module, "async_playwright") as ap:
         ap.return_value.start = AsyncMock(return_value=fake_pw)
         mgr = await BrowserManager.create(cdp_url="http://localhost:9222", download_dir=str(tmp_path))
-    target_id = await mgr.new_page()
+    target_id = await mgr.open_page()
     return mgr, target_id, session
 
 
@@ -662,7 +662,7 @@ class TestCleanupBounded:
         t0 = time.monotonic()
         assert await mgr.close_page(target_id) is False
         assert time.monotonic() - t0 < 10, "close_page hung past its bound"
-        assert target_id not in mgr.tab_ids()
+        assert target_id not in mgr.list_tab_ids()
         session.detach.assert_awaited_once()
 
     async def test_cleanup_hang_is_bounded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -673,7 +673,7 @@ class TestCleanupBounded:
         await mgr.cleanup(verbose=False)
         elapsed = time.monotonic() - t0
         assert elapsed < 5, f"cleanup hung: took {elapsed:.1f}s"
-        assert mgr.tab_ids() == []
+        assert mgr.list_tab_ids() == []
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +688,7 @@ class TestWaitForDownload:
 
     async def test_url_no_download(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Opening a page that downloads nothing comes back right away."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             start = __import__("time").time()
             result = await browser_manager.wait_for_download(
@@ -705,7 +705,7 @@ class TestWaitForDownload:
 
     async def test_url_triggers_download(self, browser_manager: BrowserManager, tmp_path: Path, test_server_url: str) -> None:
         """Opening a download link saves the file where asked."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             save_path = str(tmp_path / "test.bin")
             result = await browser_manager.wait_for_download(
@@ -722,7 +722,7 @@ class TestWaitForDownload:
 
     async def test_action_triggers_download(self, browser_manager: BrowserManager, tmp_path: Path, test_server_url: str) -> None:
         """A click that starts a download saves the file where asked."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
 
@@ -747,7 +747,7 @@ class TestWaitForDownload:
 
     async def test_action_no_download(self, browser_manager: BrowserManager) -> None:
         """An action that starts no download comes back right away."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             start = __import__("time").time()
 
@@ -767,7 +767,7 @@ class TestWaitForDownload:
 
     async def test_url_navigation_failure_raises(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """A page that fails to open raises an error."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             url = test_server_url + "/status/403"
             with pytest.raises(RuntimeError, match="Navigation failed"):
@@ -1028,11 +1028,11 @@ class TestLiveNavigation:
 
     async def test_screenshot_saves_jpg(self, browser_manager: BrowserManager, tmp_path: Path, test_server_url: str) -> None:
         """Taking a picture saves a real image file."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
             path = str(tmp_path / "screenshot.jpg")
-            result = await browser_manager.screenshot(tid, path, full_page=True)
+            result = await browser_manager.capture_screenshot(tid, path, full_page=True)
             assert result == path
             assert os.path.exists(path)
             with open(path, "rb") as f:
@@ -1043,11 +1043,11 @@ class TestLiveNavigation:
 
     async def test_pdf_saves_valid_pdf(self, browser_manager: BrowserManager, tmp_path: Path, test_server_url: str) -> None:
         """Saving as PDF writes a real PDF file."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
             path = str(tmp_path / "page.pdf")
-            result = await browser_manager.pdf(tid, path)
+            result = await browser_manager.save_pdf(tid, path)
             assert result == path
             assert os.path.exists(path)
             with open(path, "rb") as f:
@@ -1068,7 +1068,7 @@ class TestEvaluate:
     """Tests for running code on the page."""
 
     async def test_evaluate_returns_result(self, browser_manager: BrowserManager) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, "about:blank")
             result = await browser_manager.evaluate(tid, "1 + 1")
@@ -1077,7 +1077,7 @@ class TestEvaluate:
             await browser_manager.close_page(tid)
 
     async def test_evaluate_document_content_type(self, browser_manager: BrowserManager, test_server_url: str) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
             result = await browser_manager.evaluate(tid, "document.contentType")
@@ -1086,7 +1086,7 @@ class TestEvaluate:
             await browser_manager.close_page(tid)
 
     async def test_evaluate_returns_none_on_error(self, browser_manager: BrowserManager) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, "about:blank")
             result = await browser_manager.evaluate(tid, "(() => { throw new Error('test'); })()")
@@ -1103,7 +1103,7 @@ class TestNavigate:
     """Tests for opening a page."""
 
     async def test_navigate_success(self, browser_manager: BrowserManager, test_server_url: str) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             result = await browser_manager.navigate(tid, test_server_url)
             assert result is True
@@ -1111,7 +1111,7 @@ class TestNavigate:
             await browser_manager.close_page(tid)
 
     async def test_navigate_invalid_url(self, browser_manager: BrowserManager) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             result = await browser_manager.navigate(tid, "http://localhost:1")
             assert result is False
@@ -1119,7 +1119,7 @@ class TestNavigate:
             await browser_manager.close_page(tid)
 
     async def test_navigate_custom_wait_until(self, browser_manager: BrowserManager, test_server_url: str) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             result = await browser_manager.navigate(tid, test_server_url, wait_until="load")
             assert result is True
@@ -1155,7 +1155,7 @@ class TestWait:
     """Tests for waiting on a page and on an element."""
 
     async def test_wait_for_load_success(self, browser_manager: BrowserManager, test_server_url: str) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
             result = await browser_manager.wait_for_load(tid)
@@ -1164,7 +1164,7 @@ class TestWait:
             await browser_manager.close_page(tid)
 
     async def test_wait_for_selector_success(self, browser_manager: BrowserManager, test_server_url: str) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
             result = await browser_manager.wait_for_selector(tid, "h1")
@@ -1173,7 +1173,7 @@ class TestWait:
             await browser_manager.close_page(tid)
 
     async def test_wait_for_selector_timeout(self, browser_manager: BrowserManager) -> None:
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             result = await browser_manager.wait_for_selector(tid, "#nonexistent-xyz123", timeout=100)
             assert result is False
@@ -1188,10 +1188,10 @@ class TestSnapshot:
 
     async def test_snapshot_returns_valid_structure(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """A snapshot of a real page has page text and a tree."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
-            result = await browser_manager.snapshot(tid)
+            result = await browser_manager.capture_snapshot(tid)
             assert result.html is not None and len(result.html) > 0, "snapshot() should return non-empty HTML for valid page"
             tree = await result.filtered_tree()
             assert isinstance(tree, dict) and "role" in tree, f"filtered_tree() should return a valid tree dict (got {type(tree)})"
@@ -1200,7 +1200,7 @@ class TestSnapshot:
 
     async def test_snapshot_invalid_target(self, browser_manager: BrowserManager) -> None:
         """A snapshot of a tab that is not there gives back nothing."""
-        result = await browser_manager.snapshot("nonexistent")
+        result = await browser_manager.capture_snapshot("nonexistent")
         assert result is None
 
 
@@ -1218,27 +1218,27 @@ class TestUrl:
 
     async def test_url_returns_correct_url(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """The address matches the page that was opened."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
-            url = browser_manager.url(tid)
+            url = browser_manager.get_url(tid)
             assert url == test_server_url + "/"
         finally:
             await browser_manager.close_page(tid)
 
     async def test_url_about_blank(self, browser_manager: BrowserManager) -> None:
         """A fresh page reports itself as blank."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, "about:blank")
-            url = browser_manager.url(tid)
+            url = browser_manager.get_url(tid)
             assert url == "about:blank"
         finally:
             await browser_manager.close_page(tid)
 
     def test_url_unknown_target_returns_none(self, browser_manager: BrowserManager) -> None:
         """A tab that is not there has no address."""
-        result = browser_manager.url("nonexistent")
+        result = browser_manager.get_url("nonexistent")
         assert result is None
 
 @pytest.mark.live
@@ -1248,27 +1248,27 @@ class TestTitle:
 
     async def test_title_returns_correct_title(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """The title matches the page that was opened."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url)
-            title = await browser_manager.title(tid)
+            title = await browser_manager.get_title(tid)
             assert isinstance(title, str) and "Test Page" in title
         finally:
             await browser_manager.close_page(tid)
 
     async def test_title_about_blank(self, browser_manager: BrowserManager) -> None:
         """A blank page has an empty title."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, "about:blank")
-            title = await browser_manager.title(tid)
+            title = await browser_manager.get_title(tid)
             assert title == ""
         finally:
             await browser_manager.close_page(tid)
 
     async def test_title_unknown_target_returns_none(self, browser_manager: BrowserManager) -> None:
         """A tab that is not there has no title."""
-        result = await browser_manager.title("nonexistent")
+        result = await browser_manager.get_title("nonexistent")
         assert result is None
 
 # ---------------------------------------------------------------------------
@@ -1433,7 +1433,7 @@ class TestSnapshotNetworkIdleWait:
         """A snapshot waits for the page to go quiet before reading it."""
         mgr, mock_page, tab = await _make_manager()
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         mock_page.wait_for_load_state.assert_called_once_with("networkidle", timeout=_NETWORK_IDLE_TIMEOUT_MS)
         assert isinstance(result, PageSnapshot)
@@ -1446,7 +1446,7 @@ class TestSnapshotNetworkIdleWait:
         original_content = mock_page.content
         mock_page.content = MagicMock(side_effect=lambda: (call_order.append("content"), original_content())[1])
 
-        await mgr.snapshot(tab)
+        await mgr.capture_snapshot(tab)
 
         assert call_order == ["wait", "content"], f"Expected wait then content, got {call_order}"
 
@@ -1454,7 +1454,7 @@ class TestSnapshotNetworkIdleWait:
         """The wait gives up after 5 seconds."""
         mgr, mock_page, tab = await _make_manager()
 
-        await mgr.snapshot(tab)
+        await mgr.capture_snapshot(tab)
 
         call_args = mock_page.wait_for_load_state.call_args
         timeout = call_args[1].get("timeout") or (call_args[0][1] if len(call_args[0]) > 1 else None)
@@ -1464,7 +1464,7 @@ class TestSnapshotNetworkIdleWait:
         """A page that goes quiet gives back a full snapshot."""
         mgr, _, tab = await _make_manager()
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert isinstance(result, PageSnapshot)
         assert result.html == "<html><body>test</body></html>"
@@ -1479,7 +1479,7 @@ class TestSnapshotNetworkIdleWait:
         mgr, mock_page, tab = await _make_manager()
         mock_page.wait_for_load_state.side_effect = RuntimeError("Page navigated during wait")
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.html is not None and len(result.html) > 0, "snapshot() should return partial PageSnapshot with HTML on wait error"
 
@@ -1487,7 +1487,7 @@ class TestSnapshotNetworkIdleWait:
         """A snapshot of a tab that is not there gives back nothing."""
         mgr = await _empty_manager()
 
-        result = await mgr.snapshot("nonexistent")
+        result = await mgr.capture_snapshot("nonexistent")
 
         assert result is None
 
@@ -1495,7 +1495,7 @@ class TestSnapshotNetworkIdleWait:
         """A page that is already quiet gives back a full snapshot."""
         mgr, _, tab = await _make_manager()
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert isinstance(result, PageSnapshot), \
             "Already-idle page should get a full snapshot without delay"
@@ -1857,7 +1857,7 @@ class TestScrollTo:
 
     async def _setup_long_page(self, browser_manager: BrowserManager) -> None:
         """Open a new tab and give back its id."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         return tid
 
     async def test_scroll_to_scroll_down(self, browser_manager: BrowserManager, test_server_url: str) -> None:
@@ -1915,7 +1915,7 @@ class TestScroll:
 
     async def test_scroll_down_to_element(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An element below the window can be scrolled to."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -1928,7 +1928,7 @@ class TestScroll:
 
     async def test_scroll_up_to_element(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An element above the window can be scrolled back to."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _scroll_past_elements(browser_manager, tid, test_server_url)
 
@@ -1946,7 +1946,7 @@ class TestScroll:
 
     async def test_scroll_element_already_in_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Scrolling to an element that is already in view works."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -1959,7 +1959,7 @@ class TestScroll:
 
     async def test_scroll_element_not_found(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An element that is not on the page gives back false."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -1990,7 +1990,7 @@ class TestNestedScrollLive:
 
     async def test_scroll_to_nested_bottom(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Scrolling reaches the bottom of the panel and leaves the page still."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/nested")
             time.sleep(_RENDER_DELAY)
@@ -2015,7 +2015,7 @@ class TestNestedScrollLive:
 
     async def test_scroll_back_up_to_nested_top(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Scrolling reaches the top of the panel again."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/nested")
             time.sleep(_RENDER_DELAY)
@@ -2038,7 +2038,7 @@ class TestNestedScrollLive:
 
     async def test_scroll_to_doc_target(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """A plain element on the page can still be reached."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/nested")
             time.sleep(_RENDER_DELAY)
@@ -2057,7 +2057,7 @@ class TestNestedScrollLive:
 
     async def test_select_option_in_nested_drawer(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An option can be picked in a drop down inside the panel."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/nested")
             time.sleep(_RENDER_DELAY)
@@ -2083,7 +2083,7 @@ class TestClickWithScroll:
 
     async def test_click_element_below_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An element below the window gets clicked."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -2099,7 +2099,7 @@ class TestClickWithScroll:
 
     async def test_click_element_above_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An element above the window gets clicked."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _scroll_past_elements(browser_manager, tid, test_server_url)
 
@@ -2124,7 +2124,7 @@ class TestTypeTextWithScroll:
 
     async def test_type_text_element_below_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Text goes into a box below the window."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -2140,7 +2140,7 @@ class TestTypeTextWithScroll:
 
     async def test_type_text_element_above_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Text goes into a box above the window."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -2170,7 +2170,7 @@ class TestSelectOptionWithScroll:
 
     async def test_select_option_below_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An option is picked in a drop down below the window."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -2186,7 +2186,7 @@ class TestSelectOptionWithScroll:
 
     async def test_select_option_above_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """An option is picked in a drop down above the window."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -2216,7 +2216,7 @@ class TestSnapshotVisibilityNormalization:
 
     async def test_css_hidden_element_excluded_from_tree(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Parts hidden by style stay out of the tree."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             tree_str = await _snapshot_visibility_tree(browser_manager, tid, test_server_url)
             assert "CSS hidden content should not appear" not in tree_str, \
@@ -2228,7 +2228,7 @@ class TestSnapshotVisibilityNormalization:
 
     async def test_aria_hidden_visible_element_included_in_tree(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Parts marked hidden for screen readers but still showing stay in the tree."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             tree_str = await _snapshot_visibility_tree(browser_manager, tid, test_server_url)
             assert "Aria hidden but visible content" in tree_str, \
@@ -2252,7 +2252,7 @@ class TestScrollToStagnantViewport:
 
     async def test_scroll_to_fails_on_stagnant_viewport(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Scrolling a page that cannot move gives back false."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/nested-scroll")
             time.sleep(_RENDER_DELAY)
@@ -2837,7 +2837,7 @@ class TestBrowserManagerSnapshotViewport:
         session = _layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y)
         mgr, _, tab = await _make_manager(session=session)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert isinstance(result, PageSnapshot)
         assert result.viewport == _scrolled_viewport()
@@ -2855,7 +2855,7 @@ class TestBrowserManagerSnapshotViewport:
         session.send = AsyncMock(side_effect=_send)
         mgr, _, tab = await _make_manager(session=session)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert isinstance(result, PageSnapshot)
         assert result.viewport is None
@@ -2865,7 +2865,7 @@ class TestBrowserManagerSnapshotViewport:
         """A snapshot still comes back when the tab has no session."""
         mgr, _, tab = await _make_manager(attach_session=False)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert isinstance(result, PageSnapshot)
         assert result.viewport is None
@@ -2905,7 +2905,7 @@ class TestBrowserManagerReadViewport:
     async def test_tracked_session_is_reused_without_a_new_attach(self, tmp_path: Path) -> None:
         """A tab that already has a session is read through that session."""
         mgr, _, session, context = await _tab_session_manager(tmp_path)
-        target_id = await mgr.new_page()
+        target_id = await mgr.open_page()
 
         assert await mgr.click_at_relative(target_id, _CENTER_RATIO, _CENTER_RATIO) is True
 
@@ -2919,7 +2919,7 @@ class TestBrowserManagerReadViewport:
         mgr = await _created_manager(context, str(tmp_path))
 
         try:
-            tab = await mgr.new_page()
+            tab = await mgr.open_page()
             assert await mgr.click_at_relative(tab, _CENTER_RATIO, _CENTER_RATIO) is False
             context.new_cdp_session.assert_awaited_once_with(mock_page)
             mock_page.mouse.click.assert_not_called()
@@ -2936,7 +2936,7 @@ class TestBrowserManagerReadViewport:
         """The content size sets how far the page can scroll, floored at zero."""
         mgr, _, tab = await _make_manager(session=_layout_session(content_width=content_width, content_height=content_height))
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.viewport.content_width == content_width
         assert result.viewport.content_height == content_height
@@ -2948,7 +2948,7 @@ class TestBrowserManagerReadViewport:
         mgr, mock_page, tab = await _make_manager()
         mock_page.evaluate.side_effect = Exception("Page crashed")
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.viewport.window_width == 0.0
         assert result.viewport.window_height == 0.0
@@ -2996,7 +2996,7 @@ class TestMouseClamp:
         page.evaluate.return_value = [_VIEWPORT_WIDTH, _VIEWPORT_HEIGHT]
         mgr = await _clamped_manager(tmp_path, page, _layout_session())
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = await _send_mouse_event(page, "mouseMove")
 
             assert params["x"] == _VIEWPORT_WIDTH - 1
@@ -3011,7 +3011,7 @@ class TestMouseClamp:
         session = _layout_session()
         mgr = await _clamped_manager(tmp_path, page, session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = await _send_mouse_event(page, "mouseMove")
             assert params["x"] == _VIEWPORT_WIDTH - 1
             assert params["y"] == _VIEWPORT_HEIGHT - 1
@@ -3030,7 +3030,7 @@ class TestMouseClamp:
         session = _layout_session()
         mgr = await _clamped_manager(tmp_path, page, session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             await _send_mouse_event(page, "mouseMove")
             params = await _send_mouse_event(page, "mouseClick")
 
@@ -3059,7 +3059,7 @@ class TestMouseClamp:
         session.send = AsyncMock(side_effect=_flaky_send)
         mgr = await _clamped_manager(tmp_path, page, session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = await _send_mouse_event(page, "mouseMove")
 
             assert params["x"] == _BEYOND_VIEWPORT_X
@@ -3082,7 +3082,7 @@ class TestMouseClamp:
         mgr = await _clamped_manager(tmp_path, page, session)
         other_mgr = await _clamped_manager(tmp_path, AsyncMock(), other_session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             await _send_mouse_event(page, "mouseMove")
 
             assert _layout_read_count(session) == 1
@@ -3097,7 +3097,7 @@ class TestMouseClamp:
         page.evaluate.return_value = [_VIEWPORT_WIDTH, _VIEWPORT_HEIGHT]
         mgr = await _clamped_manager(tmp_path, page, _layout_session())
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = {"x": _BEYOND_VIEWPORT_X, "y": _BEYOND_VIEWPORT_Y}
             await bm_module.Channel.send(_fake_channel(AsyncMock()), "mouseMove", None, params)
 
@@ -3129,7 +3129,7 @@ class TestMouseClamp:
         session.detach = AsyncMock()
         mgr = await _clamped_manager(tmp_path, page, session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = await _send_mouse_event(page, "mouseMove")
 
             assert params["x"] == _CLIENT_WIDTH_WITHOUT_SCROLLBAR - 1
@@ -3144,7 +3144,7 @@ class TestMouseClamp:
         session = _layout_session()
         mgr = await _clamped_manager(tmp_path, page, session)
         try:
-            await mgr.new_page()
+            await mgr.open_page()
             params = await _send_mouse_event(page, "mouseMove")
             assert params["x"] == _VIEWPORT_WIDTH - 1
 
@@ -3206,7 +3206,7 @@ class TestSnapshotPageCallBounded:
         mgr, mock_page, tab = await _make_manager()
         mock_page.content = AsyncMock(side_effect=_never_answer)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result is None
 
@@ -3216,7 +3216,7 @@ class TestSnapshotPageCallBounded:
         mgr, mock_page, tab = await _make_manager()
         mock_page.title = AsyncMock(side_effect=_never_answer)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.title == ""
         assert result.html == "<html><body>test</body></html>"
@@ -3227,7 +3227,7 @@ class TestSnapshotPageCallBounded:
         mgr, mock_page, tab = await _make_manager()
         mock_page.evaluate = AsyncMock(side_effect=_never_answer)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.html == "<html><body>test</body></html>"
         assert result.viewport.window_width == 0.0
@@ -3242,7 +3242,7 @@ class TestSnapshotPageCallBounded:
         mgr, _, tab = await _make_manager(session=session)
         session.send = AsyncMock(side_effect=_never_answer)
 
-        result = await mgr.snapshot(tab)
+        result = await mgr.capture_snapshot(tab)
 
         assert result.viewport is None
         assert result.html == "<html><body>test</body></html>"
@@ -3256,7 +3256,7 @@ class TestBrowserManagerRawPageStrings:
         mgr, mock_page, tab = await _make_manager()
         mock_page.title.return_value = 'A "quoted" title; with punctuation'
 
-        result = await mgr.title(tab)
+        result = await mgr.get_title(tab)
 
         assert result == 'A "quoted" title; with punctuation'
 
@@ -3265,7 +3265,7 @@ class TestBrowserManagerRawPageStrings:
         mgr, mock_page, tab = await _make_manager()
         mock_page.url = "http://test/?q=a b&x=1"
 
-        result = mgr.url(tab)
+        result = mgr.get_url(tab)
 
         assert result == "http://test/?q=a b&x=1"
 
@@ -3282,7 +3282,7 @@ class TestMoveMouseToLive:
 
     async def test_move_mouse_to_moves_mouse(self, browser_manager: BrowserManager) -> None:
         """The mouse really lands on the given spot."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3295,7 +3295,7 @@ class TestMoveMouseToLive:
 
     async def test_move_mouse_to_caps_negative_to_zero(self, browser_manager: BrowserManager) -> None:
         """A negative spot really lands in the top left corner."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3308,7 +3308,7 @@ class TestMoveMouseToLive:
 
     async def test_move_mouse_to_caps_beyond_viewport(self, browser_manager: BrowserManager) -> None:
         """A spot past the window edge really lands on the edge."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3328,7 +3328,7 @@ class TestMoveMouseToLive:
 
     async def test_move_mouse_to_no_scroll(self, browser_manager: BrowserManager, test_server_url: str) -> None:
         """Moving the mouse leaves the page where it is."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/long")
             time.sleep(_RENDER_DELAY)
@@ -3359,7 +3359,7 @@ class TestMoveMouseToRelativeLive:
 
     async def test_move_mouse_to_relative_center(self, browser_manager: BrowserManager) -> None:
         """A fraction of one half really lands in the middle."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3374,7 +3374,7 @@ class TestMoveMouseToRelativeLive:
 
     async def test_move_mouse_to_relative_top_left(self, browser_manager: BrowserManager) -> None:
         """A fraction of zero really lands in the top left corner."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3387,7 +3387,7 @@ class TestMoveMouseToRelativeLive:
 
     async def test_move_mouse_to_relative_bottom_right(self, browser_manager: BrowserManager) -> None:
         """A fraction of one really lands in the bottom right corner."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await _navigate_blank_and_track(browser_manager, tid)
 
@@ -3431,13 +3431,13 @@ class TestViewportGeometryLive:
         page_file = tmp_path / "geometry.html"
         page_file.write_text(_GEOMETRY_PAGE_HTML)
         mgr = browser_manager
-        tid = await mgr.new_page()
+        tid = await mgr.open_page()
         try:
             assert await mgr.navigate(tid, page_file.as_uri()) is True
             await mgr.evaluate(tid, f"() => {{ window.scrollTo(0, {_GEOMETRY_SCROLL_Y}); return true; }}")
             time.sleep(_SCROLL_DELAY)
 
-            result = await mgr.snapshot(tid)
+            result = await mgr.capture_snapshot(tid)
             assert abs(result.viewport.page_y - _GEOMETRY_SCROLL_Y) < _GEOMETRY_PAGE_Y_TOLERANCE
 
             assert await mgr.click_at_relative(tid, _CENTER_RATIO, _CENTER_RATIO, viewport=result.viewport) is True
@@ -3543,7 +3543,7 @@ async def _owned_tab(tmp_path: Path) -> tuple[BrowserManager, str, AsyncMock, As
     created: list[AsyncMock] = []
     ctx = _lifecycle_context(created)
     mgr = await _created_manager(ctx, str(tmp_path))
-    target_id = await mgr.new_page()
+    target_id = await mgr.open_page()
     return mgr, target_id, created[0], ctx
 
 
@@ -3563,7 +3563,7 @@ class TestTabAdoption:
 
         await opener.fire("popup", popup)
 
-        assert len(mgr.tab_ids()) == 2
+        assert len(mgr.list_tab_ids()) == 2
 
     async def test_popup_of_adopted_tab_is_adopted_transitively(self, tmp_path: Path) -> None:
         """A tab opened by an adopted tab is adopted too."""
@@ -3574,7 +3574,7 @@ class TestTabAdoption:
         await opener.fire("popup", middle)
         await middle.fire("popup", leaf)
 
-        assert len(mgr.tab_ids()) == 3
+        assert len(mgr.list_tab_ids()) == 3
 
     async def test_tab_with_no_owned_opener_is_not_adopted(self, tmp_path: Path) -> None:
         """A tab seen only through a context-wide event stays out of the other manager's set."""
@@ -3585,12 +3585,12 @@ class TestTabAdoption:
         mgr_b = await _created_manager(ctx, str(tmp_path))
 
         try:
-            await mgr_a.new_page()
-            await mgr_b.new_page()
+            await mgr_a.open_page()
+            await mgr_b.open_page()
 
             assert len(seen) == 2
-            assert len(mgr_a.tab_ids()) == 1
-            assert len(mgr_b.tab_ids()) == 1
+            assert len(mgr_a.list_tab_ids()) == 1
+            assert len(mgr_b.list_tab_ids()) == 1
         finally:
             await mgr_a.cleanup()
             await mgr_b.cleanup()
@@ -3607,7 +3607,7 @@ class TestTabAdoption:
 
         await opener.fire("popup", popup)
 
-        assert len(mgr.tab_ids()) == 1
+        assert len(mgr.list_tab_ids()) == 1
 
 
 class TestTabLiveness:
@@ -3620,7 +3620,7 @@ class TestTabLiveness:
         await page.fire("close", page)
         await _settle_tasks()
 
-        assert target_id not in mgr.tab_ids()
+        assert target_id not in mgr.list_tab_ids()
 
     async def test_crash_event_closes_the_tab_without_detaching_its_session(self, tmp_path: Path) -> None:
         """A crash event closes the tab and does not detach its session."""
@@ -3629,7 +3629,7 @@ class TestTabLiveness:
         await page.fire("crash", page)
         await _settle_tasks()
 
-        assert target_id not in mgr.tab_ids()
+        assert target_id not in mgr.list_tab_ids()
         assert "close" in page.events_seen
         assert page.close.call_count == 1
         session = ctx.new_cdp_session.return_value
@@ -3652,7 +3652,7 @@ class TestTabLiveness:
 
         await mgr.cleanup()
 
-        assert mgr.tab_ids() == []
+        assert mgr.list_tab_ids() == []
         assert opener.close.call_count == 1
         assert popup.close.call_count == 1
 
@@ -3669,25 +3669,25 @@ async def _wait_for_page_count(mgr: BrowserManager, count: int, timeout_s: float
     """Wait until the owned set holds at least this many tabs."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if len(mgr.tab_ids()) >= count:
+        if len(mgr.list_tab_ids()) >= count:
             return
         await asyncio.sleep(_POPUP_SETTLE_S)
-    assert len(mgr.tab_ids()) >= count, f"expected {count} tabs, got {len(mgr.tab_ids())}"
+    assert len(mgr.list_tab_ids()) >= count, f"expected {count} tabs, got {len(mgr.list_tab_ids())}"
 
 
 async def _wait_until_gone(mgr: BrowserManager, target_id: str, timeout_s: float = _POPUP_WAIT_S) -> None:
     """Wait until a tab leaves the owned set."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if target_id not in mgr.tab_ids():
+        if target_id not in mgr.list_tab_ids():
             return
         await asyncio.sleep(_POPUP_SETTLE_S)
-    assert target_id not in mgr.tab_ids(), "tab did not leave the owned set"
+    assert target_id not in mgr.list_tab_ids(), "tab did not leave the owned set"
 
 
 def _popup_ids(mgr: BrowserManager, opener_id: str) -> list[str]:
     """Give back the ids of the tabs that are not the opener's."""
-    return [target_id for target_id in mgr.tab_ids() if target_id != opener_id]
+    return [target_id for target_id in mgr.list_tab_ids() if target_id != opener_id]
 
 
 async def _paired_managers() -> tuple[BrowserManager, BrowserManager]:
@@ -3710,7 +3710,7 @@ class TestLiveTabLifecycle:
         """A tab opened by an owned tab is adopted, and cleanup closes it."""
         mgr = browser_manager
         opener_uri = _write_popup_pages(tmp_path)
-        target_id = await mgr.new_page()
+        target_id = await mgr.open_page()
         try:
             assert await mgr.navigate(target_id, opener_uri) is True
             assert await mgr.click(target_id, "#popup") is True
@@ -3718,9 +3718,9 @@ class TestLiveTabLifecycle:
             ids = _popup_ids(mgr, target_id)
             assert len(ids) == 1
             shot = str(tmp_path / "popup.jpg")
-            assert await mgr.screenshot(ids[0], shot) == shot
+            assert await mgr.capture_screenshot(ids[0], shot) == shot
             await mgr.cleanup()
-            assert mgr.tab_ids() == []
+            assert mgr.list_tab_ids() == []
             assert await mgr.close_page(ids[0]) is False
         finally:
             await mgr.cleanup()
@@ -3730,17 +3730,17 @@ class TestLiveTabLifecycle:
         opener_uri = _write_popup_pages(tmp_path)
         mgr_a, mgr_b = await _paired_managers()
         try:
-            tab_a = await mgr_a.new_page()
+            tab_a = await mgr_a.open_page()
             assert await mgr_a.navigate(tab_a, opener_uri) is True
             assert await mgr_a.click(tab_a, "#popup") is True
             await _wait_for_page_count(mgr_a, 2)
             ids = _popup_ids(mgr_a, tab_a)
             assert len(ids) == 1
-            assert ids[0] not in mgr_b.tab_ids()
+            assert ids[0] not in mgr_b.list_tab_ids()
             await mgr_b.cleanup()
             shot = str(tmp_path / "after_b_cleanup.jpg")
-            assert await mgr_a.screenshot(ids[0], shot) == shot
-            assert ids[0] in mgr_a.tab_ids()
+            assert await mgr_a.capture_screenshot(ids[0], shot) == shot
+            assert ids[0] in mgr_a.list_tab_ids()
         finally:
             await _release_managers(mgr_a, mgr_b)
 
@@ -3749,18 +3749,18 @@ class TestLiveTabLifecycle:
         opener_uri = _write_popup_pages(tmp_path)
         mgr_a, mgr_b = await _paired_managers()
         try:
-            tab_b = await mgr_b.new_page()
+            tab_b = await mgr_b.open_page()
             assert await mgr_b.navigate(tab_b, opener_uri) is True
             assert await mgr_b.click(tab_b, "#popup") is True
             await _wait_for_page_count(mgr_b, 2)
             ids = _popup_ids(mgr_b, tab_b)
             assert len(ids) == 1
-            assert ids[0] not in mgr_a.tab_ids()
+            assert ids[0] not in mgr_a.list_tab_ids()
             await mgr_a.cleanup()
             shot = str(tmp_path / "after_a_cleanup.jpg")
-            assert await mgr_b.screenshot(ids[0], shot) == shot
+            assert await mgr_b.capture_screenshot(ids[0], shot) == shot
             await mgr_b.cleanup()
-            assert mgr_b.tab_ids() == []
+            assert mgr_b.list_tab_ids() == []
         finally:
             await _release_managers(mgr_a, mgr_b)
 
@@ -3769,8 +3769,8 @@ class TestLiveTabLifecycle:
         opener_uri = _write_popup_pages(tmp_path)
         mgr_a, mgr_b = await _paired_managers()
         try:
-            tab_a = await mgr_a.new_page()
-            tab_b = await mgr_b.new_page()
+            tab_a = await mgr_a.open_page()
+            tab_b = await mgr_b.open_page()
             assert await mgr_a.navigate(tab_a, opener_uri) is True
             assert await mgr_b.navigate(tab_b, opener_uri) is True
             await asyncio.gather(mgr_a.click(tab_a, "#popup"), mgr_b.click(tab_b, "#popup"))
@@ -3781,21 +3781,21 @@ class TestLiveTabLifecycle:
             assert len(ids_a) == 1
             assert len(ids_b) == 1
             assert ids_a[0] != ids_b[0]
-            assert ids_a[0] not in mgr_b.tab_ids()
-            assert ids_b[0] not in mgr_a.tab_ids()
+            assert ids_a[0] not in mgr_b.list_tab_ids()
+            assert ids_b[0] not in mgr_a.list_tab_ids()
             await mgr_a.cleanup()
-            assert mgr_a.tab_ids() == []
+            assert mgr_a.list_tab_ids() == []
             shot_b = str(tmp_path / "after_a_cleanup.jpg")
-            assert await mgr_b.screenshot(ids_b[0], shot_b) == shot_b
+            assert await mgr_b.capture_screenshot(ids_b[0], shot_b) == shot_b
             await mgr_b.cleanup()
-            assert mgr_b.tab_ids() == []
+            assert mgr_b.list_tab_ids() == []
         finally:
             await _release_managers(mgr_a, mgr_b)
 
     async def test_self_closed_tab_leaves_the_owned_set(self, browser_manager: BrowserManager) -> None:
         """A tab that closes itself leaves the owned set on its own."""
         mgr = browser_manager
-        target_id = await mgr.new_page()
+        target_id = await mgr.open_page()
         assert await mgr.navigate(target_id, "about:blank") is True
         assert await mgr.evaluate(target_id, "() => { window.close(); return true; }") is True
 
@@ -3803,7 +3803,7 @@ class TestLiveTabLifecycle:
         assert await mgr.close_page(target_id) is False
         await mgr.cleanup()
 
-        assert mgr.tab_ids() == []
+        assert mgr.list_tab_ids() == []
 
 
 @pytest.mark.parametrize(
@@ -3818,9 +3818,9 @@ async def test_screenshot_forwards_timeout_in_milliseconds(timeout_arg: Optional
     mgr, mock_page, tab = await _make_manager()
     mock_page.screenshot = AsyncMock()
     if timeout_arg is None:
-        await mgr.screenshot(tab, "/tmp/shot.jpg")
+        await mgr.capture_screenshot(tab, "/tmp/shot.jpg")
     else:
-        await mgr.screenshot(tab, "/tmp/shot.jpg", timeout=timeout_arg)
+        await mgr.capture_screenshot(tab, "/tmp/shot.jpg", timeout=timeout_arg)
     assert mock_page.screenshot.call_args[1]["timeout"] == expected_ms
 
 
@@ -4168,7 +4168,7 @@ class TestReplaceInputTextAtLive:
         selector: str, old_text: str, new_text: str, read_js: str, expected: str,
     ) -> None:
         """The one copy of the old text is swapped for the new text, with an input event."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/fields")
             await asyncio.sleep(_RENDER_DELAY)
@@ -4186,7 +4186,7 @@ class TestReplaceInputTextAtLive:
         self, browser_manager: BrowserManager, test_server_url: str,
     ) -> None:
         """A field inside an inner frame inside another inner frame gets the new text."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/fields")
             await asyncio.sleep(_RENDER_DELAY)
@@ -4205,7 +4205,7 @@ class TestReplaceInputTextAtLive:
         self, browser_manager: BrowserManager, test_server_url: str,
     ) -> None:
         """Old text that shows up twice is turned down and the field stays the same."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/fields")
             await asyncio.sleep(_RENDER_DELAY)
@@ -4222,7 +4222,7 @@ class TestReplaceInputTextAtLive:
         self, browser_manager: BrowserManager, test_server_url: str,
     ) -> None:
         """Old text that shows up twice in an email field is turned down and the field stays the same."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, test_server_url + "/page/fields")
             await asyncio.sleep(_RENDER_DELAY)

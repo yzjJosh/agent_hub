@@ -58,7 +58,7 @@ async def _screenshot_impl(url: str, full_page: bool) -> tuple[str, str]:
         raise ValueError(error)
     output_file = _output_path()
     async with BrowserManager(verbose=_VERBOSE) as mgr:
-        target_id = await mgr.new_page(verbose=_VERBOSE)
+        target_id = await mgr.open_page(verbose=_VERBOSE)
         if not await mgr.navigate(
             target_id,
             url,
@@ -74,7 +74,7 @@ async def _screenshot_impl(url: str, full_page: bool) -> tuple[str, str]:
             target_id, state="networkidle", timeout=_RENDER_WAIT_TIMEOUT_MS, verbose=_VERBOSE
         )
         await asyncio.to_thread(os.makedirs, os.path.dirname(output_file), exist_ok=True)
-        saved = await mgr.screenshot(
+        saved = await mgr.capture_screenshot(
             target_id, output_file, full_page=full_page, verbose=_VERBOSE
         )
     if saved is None:

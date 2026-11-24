@@ -415,7 +415,7 @@ async def _render_doc_page(key: str) -> None:
         manager = await BrowserManager.create()
         target_id: str | None = None
         try:
-            target_id = await manager.new_page()
+            target_id = await manager.open_page()
             ok = await manager.set_viewport_size(target_id, _THUMB_W, _THUMB_H)
             if not ok:
                 raise RuntimeError("thumbnail viewport failed")
@@ -426,7 +426,7 @@ async def _render_doc_page(key: str) -> None:
             key_dir = os.path.join(cache.render_root(), key)
             staging = os.path.join(key_dir, f".cdp-{os.getpid()}.jpg")
             await asyncio.to_thread(os.makedirs, key_dir, exist_ok=True)
-            saved = await manager.screenshot(target_id, staging, full_page=False)
+            saved = await manager.capture_screenshot(target_id, staging, full_page=False)
             if saved is None:
                 raise RuntimeError("thumbnail screenshot failed")
 

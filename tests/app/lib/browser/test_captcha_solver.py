@@ -32,8 +32,8 @@ def _make_manager() -> AsyncMock:
         return path
 
     mgr = AsyncMock()
-    mgr.screenshot = AsyncMock(side_effect=_save)
-    mgr.tab_ids = MagicMock(return_value=["tab1"])
+    mgr.capture_screenshot = AsyncMock(side_effect=_save)
+    mgr.list_tab_ids = MagicMock(return_value=["tab1"])
     mgr.click_at = AsyncMock(return_value=True)
     mgr.get_page_viewport = AsyncMock(return_value=_viewport(800, 600))
     mgr.wait_for_load = AsyncMock(return_value=True)
@@ -58,8 +58,8 @@ class TestCaptchaSolverSolveCaptcha:
             result = await solve_captcha(mgr, "tab1")
 
         assert result is True
-        mgr.screenshot.assert_called_once()
-        assert mgr.screenshot.call_args[1].get("full_page") is False
+        mgr.capture_screenshot.assert_called_once()
+        assert mgr.capture_screenshot.call_args[1].get("full_page") is False
         assert mgr.click_at.call_count == 0
 
     @pytest.mark.fast_sleeps
@@ -84,7 +84,7 @@ class TestCaptchaSolverSolveCaptcha:
 
         assert result is True
         # One picture for each look and one for the click.
-        assert mgr.screenshot.call_count == 3
+        assert mgr.capture_screenshot.call_count == 3
         assert mgr.click_at.call_count == 1
 
     async def test_solve_captcha_unknown_type(self) -> None:
@@ -101,7 +101,7 @@ class TestCaptchaSolverSolveCaptcha:
             result = await solve_captcha(mgr, "tab1")
 
         assert result is False
-        assert mgr.screenshot.call_count == 1
+        assert mgr.capture_screenshot.call_count == 1
         assert mgr.click_at.call_count == 0
 
     @pytest.mark.fast_sleeps
@@ -136,7 +136,7 @@ class TestCaptchaSolverSolveCaptcha:
 
         assert result is False
         # Two pictures for each step.
-        assert mgr.screenshot.call_count == 6
+        assert mgr.capture_screenshot.call_count == 6
 
     @pytest.mark.fast_sleeps
     async def test_solve_captcha_coordinate_conversion(self) -> None:
@@ -194,14 +194,14 @@ class TestCaptchaSolverSolveCaptcha:
             result = await solve_captcha(mgr, "tab1")
 
         assert result is False
-        assert mgr.screenshot.call_count == 1
+        assert mgr.capture_screenshot.call_count == 1
         assert mgr.click_at.call_count == 0
 
     async def test_solve_captcha_screenshot_failure(self) -> None:
         """A failed screenshot leaves the captcha unsolved."""
         mgr = _make_manager()
-        mgr.screenshot.side_effect = None
-        mgr.screenshot.return_value = None
+        mgr.capture_screenshot.side_effect = None
+        mgr.capture_screenshot.return_value = None
 
         result = await solve_captcha(mgr, "tab1")
 
@@ -304,7 +304,7 @@ class TestCaptchaSolverSolveCaptcha:
     async def test_solve_captcha_image_grid_absent_tab_does_not_raise(self) -> None:
         """A picture grid captcha on a tab that is gone does not blow up the solve."""
         mgr = _make_manager()
-        mgr.tab_ids = MagicMock(return_value=["other"])
+        mgr.list_tab_ids = MagicMock(return_value=["other"])
         mgr.evaluate = AsyncMock(side_effect=KeyError("No page found for target_id: tab1"))
 
         with patch("app.lib.browser.captcha_solver.reason") as mock_reason:
@@ -344,7 +344,7 @@ class TestSolveCaptchaLive:
 
     async def test_solve_captcha_recaptcha_demo(self, browser_manager: BrowserManager) -> None:
         """A real checkbox captcha gets solved."""
-        tid = await browser_manager.new_page()
+        tid = await browser_manager.open_page()
         try:
             await browser_manager.navigate(tid, "https://www.google.com/recaptcha/api2/demo", wait_until="networkidle", timeout=30000)
             result = await captcha_solver.solve_captcha(browser_manager, tid, max_steps=5, verbose=True)

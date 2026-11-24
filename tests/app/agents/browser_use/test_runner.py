@@ -158,7 +158,7 @@ class FakeSession:
             if new_tab:
                 tab = None
             else:
-                open_tabs = manager.tab_ids()
+                open_tabs = manager.list_tab_ids()
                 if len(open_tabs) > 1:
                     return TransactionResult(
                         TransactionStatus.FAILED,
@@ -278,7 +278,7 @@ class FakeManager:
         self._move_fails = move_fails
         self.no_tree = no_tree
 
-    def tab_ids(self) -> list[str]:
+    def list_tab_ids(self) -> list[str]:
         return list(self._tab_ids)
 
     def add_tab(self, target_id: str) -> None:
@@ -288,8 +288,8 @@ class FakeManager:
         self.recorded.setdefault(method, []).append(args)
         self.order.append(method)
 
-    async def new_page(self, verbose: bool = False) -> str:
-        self._record("new_page", (verbose,))
+    async def open_page(self, verbose: bool = False) -> str:
+        self._record("open_page", (verbose,))
         self._page_seq += 1
         return f"new{self._page_seq}"
 
@@ -304,12 +304,12 @@ class FakeManager:
         self._record("navigate", (target_id, url, wait_until, timeout, verbose))
         return True
 
-    def url(self, target_id: str, verbose: bool = False) -> str:
-        self._record("url", (target_id, verbose))
+    def get_url(self, target_id: str, verbose: bool = False) -> str:
+        self._record("get_url", (target_id, verbose))
         return "https://example.com"
 
-    async def snapshot(self, target_id: str, timeout: int | None = None, verbose: bool = False) -> FakeSnapshot | None:
-        self._record("snapshot", (target_id, timeout, verbose))
+    async def capture_snapshot(self, target_id: str, timeout: int | None = None, verbose: bool = False) -> FakeSnapshot | None:
+        self._record("capture_snapshot", (target_id, timeout, verbose))
         if self._no_snapshot:
             return None
         return FakeSnapshot(self, target_id, move_fails=self._move_fails)
@@ -352,7 +352,7 @@ class FakeManager:
 def _snapshot_of(manager: FakeManager) -> Snapshot:
     """One canned tab line per open tab of the manager, in tab order."""
     tabs: dict[str, TabSnapshot] = {}
-    for index, target_id in enumerate(manager.tab_ids(), start=1):
+    for index, target_id in enumerate(manager.list_tab_ids(), start=1):
         tabs[target_id] = TabSnapshot(target_id, None, f"{index}. {target_id} — 'T' — https://x — image {index}")
     return Snapshot(tabs=tabs)
 
@@ -379,7 +379,7 @@ _PARAMS: dict[str, dict] = {
 def _snapshot_flow(tab: str, method: str, call: tuple, *, waits_for_load: bool = True) -> dict[str, list[tuple]]:
     """The expected record for a snapshot-based action on a tab."""
     record = {
-        "snapshot": [(tab, _NETWORK_IDLE_TIMEOUT_MS, True)],
+        "capture_snapshot": [(tab, _NETWORK_IDLE_TIMEOUT_MS, True)],
         method: [call],
     }
     if waits_for_load:
@@ -406,11 +406,11 @@ _EXPECTED_RECORD: dict[str, dict[str, list[tuple]]] = {
     "wait": {},
     "download_click": _snapshot_flow("tab1", "click_at_relative", ("tab1", 0.7, 0.9, True), waits_for_load=False),
     "refresh": {
-        "url": [("tab1", False)],
+        "get_url": [("tab1", False)],
         "navigate": [("tab1", "https://example.com", None, None, True)],
     },
     "dump_page": {
-        "snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
+        "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
         "filtered_tree": [("tab1", True)],
     },
 }
@@ -426,26 +426,26 @@ _SOLE_RECORD = {
 }
 
 _NEW_PAGE_RECORD: dict[str, list[tuple]] = {
-    "new_page": [(True,)],
+    "open_page": [(True,)],
     "navigate": [("new1", "https://a.example", None, None, True)],
 }
 
 _EXPECTED_ORDER: dict[str, list[str]] = {
     "open_url": ["navigate"],
-    "click": ["snapshot", "click_at_relative"],
-    "move_mouse": ["snapshot", "move_mouse_to_relative", "wait_for_load"],
-    "type_text": ["snapshot", "type_text_at_relative", "wait_for_load"],
-    "replace_input_text": ["snapshot", "replace_input_text_at_relative", "wait_for_load"],
-    "scroll": ["snapshot", "scroll_by_relative", "wait_for_load"],
-    "press_key": ["snapshot", "press_key", "wait_for_load"],
+    "click": ["capture_snapshot", "click_at_relative"],
+    "move_mouse": ["capture_snapshot", "move_mouse_to_relative", "wait_for_load"],
+    "type_text": ["capture_snapshot", "type_text_at_relative", "wait_for_load"],
+    "replace_input_text": ["capture_snapshot", "replace_input_text_at_relative", "wait_for_load"],
+    "scroll": ["capture_snapshot", "scroll_by_relative", "wait_for_load"],
+    "press_key": ["capture_snapshot", "press_key", "wait_for_load"],
     "go_back": ["go_back"],
     "go_forward": ["go_forward"],
     "close_page": ["close_page"],
-    "solve_captcha": ["snapshot", "solve_captcha", "wait_for_load"],
+    "solve_captcha": ["capture_snapshot", "solve_captcha", "wait_for_load"],
     "wait": [],
-    "download_click": ["snapshot", "click_at_relative"],
-    "refresh": ["url", "navigate"],
-    "dump_page": ["snapshot", "filtered_tree"],
+    "download_click": ["capture_snapshot", "click_at_relative"],
+    "refresh": ["get_url", "navigate"],
+    "dump_page": ["capture_snapshot", "filtered_tree"],
 }
 
 
@@ -679,7 +679,7 @@ class TestActionTools:
         assert manager.recorded == _snapshot_flow(
             "tab1", "upload_with_chooser_relative", ("tab1", _TENTH, _THIRD, [str(resource), str(second)], True),
         )
-        assert manager.order == ["snapshot", "upload_with_chooser_relative", "wait_for_load"]
+        assert manager.order == ["capture_snapshot", "upload_with_chooser_relative", "wait_for_load"]
 
     @pytest.mark.parametrize("paths", [[], ["/tmp/outside"], ["../outside"], ["missing.txt"]])
     async def test_upload_resources_rejects_invalid_paths_before_click(
@@ -787,12 +787,12 @@ class TestActionTools:
         manager = FakeManager()
         assert await action(manager, "tab1") is True
         assert manager.recorded == {
-            "snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
+            "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
             "move_mouse_to_relative": [("tab1", _THIRD, _HALF, True)],
             "scroll_by_relative": [("tab1", -_HALF, 1.0, True)],
             "wait_for_load": [("tab1", "networkidle", _NETWORK_IDLE_TIMEOUT_MS, True)],
         }
-        assert manager.order == ["snapshot", "move_mouse_to_relative", "scroll_by_relative", "wait_for_load"]
+        assert manager.order == ["capture_snapshot", "move_mouse_to_relative", "scroll_by_relative", "wait_for_load"]
 
     @pytest.mark.parametrize(
         "given",
@@ -819,7 +819,7 @@ class TestActionTools:
         result = await _run_tool(_tool("scroll", await _wired_tools(monkeypatch, session)), params)
         assert "status: failed, action failed: could not move the mouse to the scroll anchor" in result.text
         assert manager.recorded == {
-            "snapshot": [("only", _NETWORK_IDLE_TIMEOUT_MS, True)],
+            "capture_snapshot": [("only", _NETWORK_IDLE_TIMEOUT_MS, True)],
             "move_mouse_to_relative": [("only", _THIRD, _HALF, True)],
         }
 

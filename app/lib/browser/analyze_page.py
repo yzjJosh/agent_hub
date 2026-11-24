@@ -54,7 +54,7 @@ async def _capture_tree(
         BrowserError: If the page cannot be opened or read.
     """
     async with BrowserManager(verbose=verbose) as mgr:
-        target_id = await mgr.new_page(verbose=verbose)
+        target_id = await mgr.open_page(verbose=verbose)
         if verbose:
             _log("Navigating to", url)
         await mgr.navigate(
@@ -64,7 +64,7 @@ async def _capture_tree(
         )
         if verbose:
             _log("Capturing page snapshot")
-        snapshot = await mgr.snapshot(target_id, verbose=verbose)
+        snapshot = await mgr.capture_snapshot(target_id, verbose=verbose)
         if snapshot is None:
             raise BrowserError("failed to capture the page snapshot")
 

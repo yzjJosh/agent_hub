@@ -54,7 +54,7 @@ def _manager_with_snapshots(
     the note snapshot comes back.
     """
     mgr = AsyncMock()
-    mgr.new_page.return_value = "tab1"
+    mgr.open_page.return_value = "tab1"
     mgr.wait_for_selector.return_value = True
     mgr.wait_for_selector_disappear.return_value = True
     mgr.press_key.return_value = True
@@ -66,7 +66,7 @@ def _manager_with_snapshots(
             return search_snap
         return note_snap
 
-    mgr.snapshot.side_effect = snapshot_side_effect
+    mgr.capture_snapshot.side_effect = snapshot_side_effect
     wire_context_manager(mock_mgr_class, mgr)
     return mgr
 

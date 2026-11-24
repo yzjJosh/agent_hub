@@ -44,13 +44,13 @@ def _wire_manager(
 ) -> AsyncMock:
     """Set up a fake browser manager and give it back."""
     mgr = AsyncMock()
-    mgr.new_page.return_value = "tab1"
+    mgr.open_page.return_value = "tab1"
     mgr.navigate.return_value = navigate_ok
     mgr.wait_for_load.return_value = True
     if screenshot_ok:
-        mgr.screenshot.side_effect = _save_screenshot
+        mgr.capture_screenshot.side_effect = _save_screenshot
     else:
-        mgr.screenshot.return_value = None
+        mgr.capture_screenshot.return_value = None
     wire_context_manager(mock_mgr_class, mgr)
     return mgr
 
@@ -89,7 +89,7 @@ class TestWebScreenshot:
         result = await _run_tool(mock_mgr_class, _TEST_URL)
 
         _assert_saved_result(result, tmp_path)
-        assert mgr.screenshot.await_args.kwargs["full_page"] is True
+        assert mgr.capture_screenshot.await_args.kwargs["full_page"] is True
         assert_browser_closed(mock_mgr_class)
 
     async def test_render_wait_sequence(
@@ -123,7 +123,7 @@ class TestWebScreenshot:
         result = await _run_tool(mock_mgr_class, _TEST_URL, full_page=False)
 
         _assert_saved_result(result, tmp_path)
-        assert mgr.screenshot.await_args.kwargs["full_page"] is False
+        assert mgr.capture_screenshot.await_args.kwargs["full_page"] is False
         assert_browser_closed(mock_mgr_class)
 
     async def test_navigation_failure_reports_error_without_saving(

@@ -476,15 +476,15 @@ async def _wait_new_page(mgr: BrowserManager, before: list[str], base_url: str, 
         base_url: The origin a new tab must load before it is ours.
         timeout_ms: How long to wait, in milliseconds.
     """
-    own = [tid for tid in before if (mgr.url(tid) or "").startswith(base_url)]
+    own = [tid for tid in before if (mgr.get_url(tid) or "").startswith(base_url)]
     deadline = time.monotonic() + timeout_ms / _MS_PER_S
     while True:
-        fresh = [tid for tid in mgr.tab_ids() if tid not in own and (mgr.url(tid) or "").startswith(base_url)]
+        fresh = [tid for tid in mgr.list_tab_ids() if tid not in own and (mgr.get_url(tid) or "").startswith(base_url)]
         if fresh:
             tid = fresh[0]
             try:
                 await mgr.wait_for_load(tid, "domcontentloaded", timeout=timeout_ms)
-                return mgr.url(tid)
+                return mgr.get_url(tid)
             finally:
                 await mgr.close_page(tid)
         if time.monotonic() >= deadline:
@@ -857,12 +857,12 @@ async def test_result_files_share_the_resource_viewer_mechanism(console_stub: Si
         assert gced["acts"] == ["/view/" + _RF_GCED, "/resources?select=" + _RF_GCED, "/dav/dl?path=" + _RF_GCED]
         assert gced["stateTitle"] == "No longer in the resource."
         assert gced["stateSub"] == "Garbage-collected (30-day retention)."
-        before = mgr.tab_ids()
+        before = mgr.list_tab_ids()
         await mgr.click(tab, '.vp-file-block[data-path="media_gen/gen_001.png"] .vp-file-act')
         url = await _wait_new_page(mgr, before, base, _WAIT_TIMEOUT_MS)
         assert url == base + "/view/" + _RF_LIVE
         await asyncio.to_thread(_remove_stale_downloads, _RF_LIVE)
-        before_dl = mgr.tab_ids()
+        before_dl = mgr.list_tab_ids()
         dl = await mgr.wait_for_download(
             tab,
             action=lambda: mgr.click(tab, '.vp-file-block[data-path="media_gen/gen_001.png"] .vp-file-act[href^="/dav/dl"]'),
@@ -870,8 +870,8 @@ async def test_result_files_share_the_resource_viewer_mechanism(console_stub: Si
         )
         assert dl["downloaded"] is True
         assert await asyncio.to_thread(Path(dl["path"]).read_bytes) == E2E_PNG
-        before_urls = [mgr.url(t) for t in before_dl if (mgr.url(t) or "").startswith(base)]
-        now_urls = [mgr.url(t) for t in mgr.tab_ids() if (mgr.url(t) or "").startswith(base)]
+        before_urls = [mgr.get_url(t) for t in before_dl if (mgr.get_url(t) or "").startswith(base)]
+        now_urls = [mgr.get_url(t) for t in mgr.list_tab_ids() if (mgr.get_url(t) or "").startswith(base)]
         assert now_urls == before_urls
         await asyncio.to_thread(Path(dl["path"]).unlink, missing_ok=True)
 

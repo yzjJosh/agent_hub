@@ -1295,7 +1295,7 @@ async def _open_filters_panel(
         A snapshot of the page with the panel open, or None when it did not
         open.
     """
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return None
     filters_btn = _find_actionable(snap, role="button", name_contains="Filters")
@@ -1306,7 +1306,7 @@ async def _open_filters_panel(
         filters_btn[0]["ref_id"], timeout=_TIME_FILTER_SELECT_TIMEOUT, verbose=_VERBOSE
     ):
         return None
-    return await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    return await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
 
 
 def _find_time_filter(snap: PageSnapshot, sold: bool) -> dict | None:
@@ -1383,7 +1383,7 @@ async def _apply_time_filter(
             )
             return False
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return False
     time_filter = _find_time_filter(snap, sold)
@@ -1419,7 +1419,7 @@ async def _apply_price_filter(
     Returns:
         True when at least one price box was filled in.
     """
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return False
     applied = False
@@ -1432,7 +1432,7 @@ async def _apply_price_filter(
             applied = True
 
     if max_price:
-        snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+        snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
         if snap is not None:
             max_input = _find_actionable(snap, role="textbox", name_contains="Enter max")
             if max_input:
@@ -1485,7 +1485,7 @@ async def _click_filter_option(
         )
         return False
 
-    click_snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    click_snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if click_snap is None:
         return False
     name_to_ref = {
@@ -1517,7 +1517,7 @@ async def _apply_beds_baths_filter(
     Returns:
         True when at least one of them was set.
     """
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return False
     tree = await snap.filtered_tree()
@@ -1564,7 +1564,7 @@ async def _snapshot_results_tree(
     await bm.wait_for_load(
         target_id, timeout=_DEFAULT_LOAD_TIMEOUT, verbose=_VERBOSE
     )
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         raise _RedfinSearchError("could not capture the search results page")
     return snap, await snap.filtered_tree()
@@ -1589,7 +1589,7 @@ async def _do_initial_search(
         target_id, timeout=_DEFAULT_LOAD_TIMEOUT, verbose=_VERBOSE
     )
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         raise _RedfinSearchError("could not capture the Redfin homepage")
     searchbox = _find_actionable(
@@ -1602,7 +1602,7 @@ async def _do_initial_search(
 
     await asyncio.sleep(_POST_SEARCH_DELAY_S)
     search_page = await _snapshot_results_tree(bm, target_id)
-    landing_url = bm.url(target_id, verbose=_VERBOSE)
+    landing_url = bm.get_url(target_id, verbose=_VERBOSE)
     if landing_url and not _is_results_page(landing_url):
         raise _RedfinSearchError(
             f"Redfin did not open a results page for '{location}'"
@@ -1643,13 +1643,13 @@ async def _handle_address_query(
         await bm.wait_for_load(
             target_id, timeout=_DEFAULT_LOAD_TIMEOUT, verbose=_VERBOSE
         )
-        snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+        snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
         if snap is not None:
             tree = await snap.filtered_tree()
 
     tree = await _open_public_page(bm, target_id, tree)
 
-    page_url = bm.url(target_id, verbose=_VERBOSE)
+    page_url = bm.get_url(target_id, verbose=_VERBOSE)
     if not _is_property_page(page_url) and not _is_owner_dashboard(page_url):
         raise _RedfinSearchError(f"no property page found for '{location}'")
 
@@ -1686,7 +1686,7 @@ async def _wait_for_public_page(bm: BrowserManager, target_id: str) -> None:
     Waiting stops after a set number of tries.
     """
     for _ in range(_PUBLIC_PAGE_MAX_POLLS):
-        if not _is_owner_dashboard(bm.url(target_id, verbose=_VERBOSE)):
+        if not _is_owner_dashboard(bm.get_url(target_id, verbose=_VERBOSE)):
             return
         await asyncio.sleep(_URL_POLL_INTERVAL_S)
 
@@ -1705,10 +1705,10 @@ async def _open_public_page(
         The tree of the public page. The given tree comes back unchanged
         when the page is not the owner dashboard.
     """
-    if not _is_owner_dashboard(bm.url(target_id, verbose=_VERBOSE)):
+    if not _is_owner_dashboard(bm.get_url(target_id, verbose=_VERBOSE)):
         return tree
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return tree
     button = _find_actionable(
@@ -1720,7 +1720,7 @@ async def _open_public_page(
     await snap.click(button[0]["ref_id"], verbose=_VERBOSE)
     await _wait_for_public_page(bm, target_id)
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return tree
     return await snap.filtered_tree()
@@ -1735,7 +1735,7 @@ async def _extract_off_market_from_page(
 
     The sale history tab is opened when the page has one.
     """
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return None
     sale_history_tab = _find_actionable(snap, role="tab", name_contains="Sale")
@@ -1745,7 +1745,7 @@ async def _extract_off_market_from_page(
             target_id, timeout=_DEFAULT_LOAD_TIMEOUT, verbose=_VERBOSE
         )
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return None
     return _extract_off_market_property(await snap.filtered_tree(), location)
@@ -1826,7 +1826,7 @@ async def _apply_sold_filter(bm: BrowserManager, target_id: str) -> bool:
     Returns:
         True when the filter was turned on.
     """
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         return False
     sold_radio = _find_actionable(snap, role="radio", name_contains="Sold")
@@ -1893,7 +1893,7 @@ async def _download_csv(
         Path to the saved CSV, or None when nothing was downloaded.
     """
     for _ in range(_BROWSER_OP_RETRY_COUNT):
-        snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+        snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
         if snap is None:
             continue
         download_links = _find_actionable(snap, role="link", name_contains="download")
@@ -1971,7 +1971,7 @@ async def _apply_server_side_filters(
         ):
             raise _RedfinSearchError("could not apply beds/baths filter")
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is not None:
         await snap.press_key("Escape", verbose=_VERBOSE)
 
@@ -2036,7 +2036,7 @@ async def _extract_properties(
     finally:
         await asyncio.to_thread(shutil.rmtree, csv_dir, ignore_errors=True)
 
-    snap = await bm.snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
+    snap = await bm.capture_snapshot(target_id, timeout=_SNAPSHOT_TIMEOUT, verbose=_VERBOSE)
     if snap is None:
         raise _RedfinSearchError("could not capture the results page")
     tree = await snap.filtered_tree()
@@ -2127,7 +2127,7 @@ async def _search_impl(location: str, options: _SearchOptions) -> str:
     """
     bm = await BrowserManager.create(verbose=_VERBOSE)
     try:
-        target_id = await bm.new_page(verbose=_VERBOSE)
+        target_id = await bm.open_page(verbose=_VERBOSE)
 
         _snap, tree = await _do_initial_search(bm, target_id, location)
 
