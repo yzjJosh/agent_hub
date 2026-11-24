@@ -9,14 +9,14 @@ import os
 import re
 import shutil
 import xml.dom.minidom as _minidom
-from typing import TypeAlias
+from typing import Unpack
 
 import yaml as _yaml
 
 import app.lib.text_type.detector as detector
 from app.lib.render import cache, fragments
 from app.lib.render.classify import RenderKind
-from app.lib.render.descriptor import OFFICE_KINDS
+from app.lib.render.descriptor import DescriptorFields, OFFICE_KINDS
 from app.lib.render.detect import BINARY_KINDS, TEXT_FAMILY_KINDS, Detection, detect, language_extension
 
 __all__ = ["build_result_descriptor"]
@@ -261,7 +261,19 @@ def _text_descriptor(task_id: str, size: int, eff: RenderKind, det: Detection, f
                         created_at=created_at, line_offset=line_offset, truncated=truncated, **per_type)
 
 
-def _descriptor(name: str, size: int, kind: RenderKind, **fields: _Field) -> dict:
+class _ResultDescriptorFields(DescriptorFields, total=False):
+    """Optional fields merged into a task result descriptor."""
+
+    task_id: str | None
+    detected_kind: str | None
+    declared_kind: str | None
+    kind_label: str | None
+    created_at: str | None
+    line_offset: int | None
+    truncated: bool | None
+
+
+def _descriptor(name: str, size: int, kind: RenderKind, **fields: Unpack[_ResultDescriptorFields]) -> dict:
     d = {
         "task_id": None, "kind": kind.value, "detected_kind": None, "declared_kind": None,
         "kind_label": None,
@@ -408,6 +420,3 @@ async def _text_family(task_id: str, run_key: str, body_path: str, body: bytes, 
         _window_if, eff, full_frag, mode, meta.get("line_count"), line_offset, full)
     return _text_descriptor(task_id, size, eff, det, frag, mode, note, meta, created_at,
                              line_offset=line_offset, truncated=truncated, declared=declared)
-
-
-_Field: TypeAlias = str | int | float | bool | list[int] | None

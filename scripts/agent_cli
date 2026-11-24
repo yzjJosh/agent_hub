@@ -55,7 +55,6 @@ import textwrap
 import uuid
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from typing import TypeAlias
 from urllib.parse import urlparse
 
 import httpx
@@ -98,10 +97,7 @@ async def _connect(url: str) -> AsyncIterator[ClientSession]:
             yield session
 
 
-_Value: TypeAlias = dict | list | str | int | float | bool | None
-
-
-def _matches_type(value: _Value, expected: str) -> bool:
+def _matches_type(value: str | int | float, expected: str) -> bool:
     if expected == "boolean":
         return isinstance(value, bool)
     if expected == "integer":
@@ -146,19 +142,24 @@ def _coerce_array(key: str, raw: str) -> list[str] | None:
     return [item.strip() for item in stripped.split(",") if item.strip()]
 
 
-def _coerce_value(key: str, raw: str, prop: dict) -> _Value:
+def _assign_param(params: dict, key: str, raw: str, prop: dict) -> None:
     types = _effective_types(prop)
     if "array" in types:
-        return _coerce_array(key, raw)
+        params[key] = _coerce_array(key, raw)
+        return
     try:
-        value = json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
-        value = raw
+        parsed = raw
+    if "object" in types and isinstance(parsed, dict):
+        params[key] = parsed
+        return
+    value: str | int | float = parsed if isinstance(parsed, (str, int, float)) else raw
     if not any(_matches_type(value, t) for t in types):
         value = raw
     if not any(_matches_type(value, t) for t in types):
         raise _CliError(f"parameter --{key} expects {'/'.join(types)}, got {raw!r}")
-    return value
+    params[key] = value
 
 
 def _is_resource_param(key: str, prop: dict) -> bool:
@@ -205,7 +206,7 @@ def _parse_params(tokens: list[str], schema: dict) -> dict:
             raise _CliError(f"unknown parameter --{key}; valid parameters: {valid}")
         if key in params:
             raise _CliError(f"duplicate parameter --{key}")
-        params[key] = _coerce_value(key, tokens[i + 1], props[key])
+        _assign_param(params, key, tokens[i + 1], props[key])
     missing = required - params.keys()
     if missing:
         missing_str = ", ".join(f"--{name}" for name in sorted(missing))

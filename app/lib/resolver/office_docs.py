@@ -5,6 +5,7 @@ slide decks need LibreOffice and pdftoppm on the machine.
 """
 
 __all__ = [
+    "SheetCell",
     "docx_to_text",
     "xlsx_to_text",
     "xls_to_text",
@@ -21,8 +22,7 @@ import os
 import shutil
 import sys
 import uuid
-from datetime import date, datetime, time, timedelta
-from typing import TypeAlias
+from typing import Protocol
 
 import aiofiles
 import xlrd
@@ -93,10 +93,13 @@ def _docx_text(path: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-_CellValue: TypeAlias = str | int | float | bool | date | datetime | time | timedelta | None
+class SheetCell(Protocol):
+    """A workbook cell value that can be turned into text."""
+
+    def __str__(self) -> str: ...
 
 
-def _read_xlsx(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
+def _read_xlsx(path: str) -> list[tuple[str, list[tuple[SheetCell | None, ...]]]]:
     """Read the name and the rows of every sheet in a workbook."""
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
@@ -108,7 +111,7 @@ def _read_xlsx(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
         wb.close()
 
 
-async def xlsx_sheets(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
+async def xlsx_sheets(path: str) -> list[tuple[str, list[tuple[SheetCell | None, ...]]]]:
     """Read the sheets out of a workbook.
 
     Args:
@@ -120,7 +123,7 @@ async def xlsx_sheets(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]
     return await asyncio.to_thread(_read_xlsx, path)
 
 
-def _read_xls(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
+def _read_xls(path: str) -> list[tuple[str, list[tuple[SheetCell | None, ...]]]]:
     """Read the name and the rows of every sheet in an old workbook."""
     book = xlrd.open_workbook(path)
     return [
@@ -129,7 +132,7 @@ def _read_xls(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
     ]
 
 
-async def xls_sheets(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:
+async def xls_sheets(path: str) -> list[tuple[str, list[tuple[SheetCell | None, ...]]]]:
     """Read the sheets out of an old workbook.
 
     Args:
@@ -141,7 +144,7 @@ async def xls_sheets(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]
     return await asyncio.to_thread(_read_xls, path)
 
 
-def _sheets_to_text(sheets: list[tuple[str, list[tuple[_CellValue, ...]]]]) -> str:
+def _sheets_to_text(sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]) -> str:
     """Lay the sheets out as text, one block per sheet."""
     blocks: list[str] = []
     for title, rows in sheets:

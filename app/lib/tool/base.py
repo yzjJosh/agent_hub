@@ -9,8 +9,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from types import GenericAlias, UnionType
-from typing import ClassVar, Literal, TypeAlias, final, get_args
+from typing import ClassVar, Literal, Protocol, TypeAlias, final, get_args
 
 import aiofiles
 import pydantic
@@ -256,6 +255,12 @@ def _error_task(error: str) -> Task[ToolResult]:
 ParamValue: TypeAlias = str | int | float | bool | list | tuple | dict | None
 
 
+class _ParameterizedType(Protocol):
+    """A generic, union, or literal type form that carries type arguments."""
+
+    __args__: tuple
+
+
 class _Required:
     """Marks a Param that has no default value."""
 
@@ -273,7 +278,7 @@ class Param:
     """One tool parameter."""
 
     name: str
-    type: type
+    type: type | _ParameterizedType
     default: _Required | ParamValue = _REQUIRED
     description: str = ""
     # description is the plain purpose of the param. The wire form adds a note
@@ -301,7 +306,7 @@ class Param:
         return _compose_param_description(self)
 
     @property
-    def annotation(self) -> type | UnionType | GenericAlias:
+    def annotation(self) -> type | _ParameterizedType:
         """The Python type for this param.
 
         A param with an enum is limited to its enum values.
@@ -382,7 +387,7 @@ def _numeric_adapter(numeric: type) -> pydantic.TypeAdapter[int | float]:
     return adapter
 
 
-def _numeric_type(annotation: type) -> type | None:
+def _numeric_type(annotation: type | _ParameterizedType) -> type | None:
     """The number type a param uses, or None when the param is not a number."""
     if annotation in (int, float):
         return annotation

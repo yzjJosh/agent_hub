@@ -772,22 +772,20 @@ async def e2e_page(viewport: dict) -> AsyncIterator[tuple[BrowserManager, str]]:
         await mgr.cleanup()
 
 
-class RecordStoreBase(Protocol):
-    """Shared lifecycle and location interface of a record store."""
+class TaskRecordStore(Protocol):
+    """Public interface of the task record store exposed by test fixtures."""
 
     @property
     def data_dir(self) -> str:
         ...
 
+    @abstractmethod
     async def open(self) -> None:
         ...
 
+    @abstractmethod
     async def close(self) -> None:
         ...
-
-
-class TaskRecordStore(RecordStoreBase, Protocol):
-    """Public interface of the task record store exposed by test fixtures."""
 
     @abstractmethod
     async def insert_running(
@@ -817,6 +815,7 @@ class TaskRecordStore(RecordStoreBase, Protocol):
     async def mark_orphans_failed(self, error: str) -> int:
         ...
 
+    @abstractmethod
     async def list(self) -> list[TaskRecord]:
         ...
 
@@ -830,7 +829,7 @@ class ToolRecord(Protocol):
     params: dict
 
 
-class ToolRecordStore(RecordStoreBase, Protocol):
+class ToolRecordStore(Protocol):
     """Public interface of the tool record store exposed by test fixtures."""
 
     @abstractmethod

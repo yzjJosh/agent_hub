@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import tempfile
-from typing import Optional, TypeAlias, TypedDict, TYPE_CHECKING
+from typing import Optional, TypedDict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.lib.browser.browser_manager import BrowserManager
@@ -100,9 +100,6 @@ _CHECKBOX_CAPTCHA_SCHEMA = {
 }
 
 
-_JsonPayload: TypeAlias = dict | list | str | int | float | bool | None
-
-
 class _DetectResult(TypedDict):
     """What the captcha detector LLM reported."""
 
@@ -111,7 +108,7 @@ class _DetectResult(TypedDict):
     reason: str
 
 
-def _validate(data: _JsonPayload, fields: tuple, label: str) -> bool:
+def _validate(data: dict, fields: tuple, label: str) -> bool:
     """Check that an LLM answer has the fields we need.
 
     Field types are not checked.
@@ -124,9 +121,6 @@ def _validate(data: _JsonPayload, fields: tuple, label: str) -> bool:
     Returns:
         True if every field is there.
     """
-    if not isinstance(data, dict):
-        print(f"[captcha_solver] LLM response is not a dict ({label})", file=sys.stderr)
-        return False
     for field in fields:
         if field not in data:
             print(
@@ -163,6 +157,9 @@ async def _call_llm(prompt: str, image_files: list, schema: dict, fields: tuple,
         data = json.loads(result_text)
     except (json.JSONDecodeError, TypeError) as e:
         print(f"[captcha_solver] JSON parse error ({label}): {e}", file=sys.stderr)
+        return None
+    if not isinstance(data, dict):
+        print(f"[captcha_solver] LLM response is not a dict ({label})", file=sys.stderr)
         return None
     if not _validate(data, fields, label):
         return None

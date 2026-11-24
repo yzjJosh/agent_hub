@@ -12,14 +12,13 @@ import importlib
 import os
 import re
 import shutil
-from typing import TypeAlias
 
 from bs4 import BeautifulSoup
 
 from app.lib.render import cache
 from app.lib.render.classify import RenderKind, classify
 from app.lib.render.fragments import build_fragment, table_html, text_meta
-from app.lib.resolver.office_docs import soffice_cmd, xls_sheets, xlsx_sheets
+from app.lib.resolver.office_docs import SheetCell, soffice_cmd, xls_sheets, xlsx_sheets
 from app.lib.shared import paths
 
 __all__ = [
@@ -521,11 +520,11 @@ async def _sheet_tables(path: str, full_path: str, kind: RenderKind) -> tuple[st
     return fragment, None, meta
 
 
-def _cell(value: _Cell) -> str:
+def _cell(value: SheetCell | None) -> str:
     return "" if value is None else str(value)
 
 
-def _sheets_fragment_sync(sheets: list[tuple[str, list[tuple]]]) -> tuple[str, dict]:
+def _sheets_fragment_sync(sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]) -> tuple[str, dict]:
     sections: list[str] = []
     total_rows = 0
     first_cols: int | None = None
@@ -544,7 +543,7 @@ def _sheets_fragment_sync(sheets: list[tuple[str, list[tuple]]]) -> tuple[str, d
     return "".join(sections), {"row_count": total_rows, "column_count": first_cols}
 
 
-async def _sheets_fragment(sheets: list[tuple[str, list[tuple]]]) -> tuple[str, dict]:
+async def _sheets_fragment(sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]) -> tuple[str, dict]:
     """Build the HTML for every sheet of a spreadsheet.
 
     The first row of a sheet is its header. Empty sheets are left out.
@@ -630,8 +629,3 @@ async def _reduce_office_html(html_text: str, key: str, assets: dict[str, bytes]
         The cleaned up HTML.
     """
     return await asyncio.to_thread(_reduce_office_html_sync, html_text, key, assets)
-
-
-_Cell: TypeAlias = (
-    str | int | float | bool | datetime.date | datetime.datetime | datetime.time | datetime.timedelta | None
-)

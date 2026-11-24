@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import TypeAlias
+from typing import TypedDict, Unpack
 
 from app.lib.shared.paths import ephemeral_dav_url, resolve_path, resources_dir
 from app.lib.render import cache, fragments, office, probe
 from app.lib.render.classify import RenderKind, classify, kind_label
 
 __all__ = [
+    "DescriptorFields",
     "OFFICE_KINDS",
     "build_descriptor",
     "converting_descriptor",
@@ -56,7 +57,25 @@ def share_path_for(full_path: str, fallback: str) -> str:
     return rel
 
 
-def _descriptor(path: str, name: str, size: int, mtime: int, kind: RenderKind, **fields: _Field) -> dict:
+class DescriptorFields(TypedDict, total=False):
+    """Optional fields merged into a viewer descriptor."""
+
+    mode: str | None
+    fragment: str | None
+    url: str | None
+    error: str | None
+    provenance: str | None
+    note: str | None
+    language: str | None
+    line_count: int | None
+    row_count: int | None
+    column_count: int | None
+    pages: int | None
+    dimensions: list[int] | None
+    duration: float | None
+
+
+def _descriptor(path: str, name: str, size: int, mtime: int, kind: RenderKind, **fields: Unpack[DescriptorFields]) -> dict:
     d = {
         "path": path, "name": name, "size": size, "mtime": mtime,
         "kind": kind.value, "kind_label": kind_label(kind, name, fields.get("language")),
@@ -151,6 +170,3 @@ async def build_descriptor(path: str, full_path: str) -> dict:
         return _descriptor(share_path, name, size, mtime, kind, mode=mode,
                            url=ephemeral_dav_url(share_path), **meta)
     return _descriptor(share_path, name, size, mtime, kind, mode="unsupported")
-
-
-_Field: TypeAlias = str | int | float | list[int] | None
