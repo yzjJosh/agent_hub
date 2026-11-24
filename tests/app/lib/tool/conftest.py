@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,6 +13,9 @@ from app.lib.tool.base import ParamValue, Tool, ToolMessageError
 from app.lib.tool.truncation import DEFAULT_TOOL_OUTPUT_LEN_LIMIT, MIN_TOOL_OUTPUT_LEN_LIMIT
 from app.mcp.registry import mcp
 from app.tools.task_tool import task_tool
+
+if TYPE_CHECKING:
+    from tests.app.conftest import TaskRecordStore
 
 _WAIT_TERMINAL_INTERVAL = 0.02
 _WAIT_TIMEOUT_S = 10.0
@@ -69,11 +74,7 @@ async def await_task_result(task_id: str, timeout_s: float = _WAIT_TIMEOUT_S) ->
     raise TimeoutError(f"task {task_id} did not finish within {timeout_s}s")
 
 
-class _TaskStore(Protocol):
-    """The task record store the fixture gives to a test."""
-
-
-async def wait_terminal(store: _TaskStore, task_id: str, timeout_s: float = _WAIT_TIMEOUT_S) -> None:
+async def wait_terminal(store: TaskRecordStore, task_id: str, timeout_s: float = _WAIT_TIMEOUT_S) -> None:
     """Wait for the run to finish and check that it completed."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -85,7 +86,7 @@ async def wait_terminal(store: _TaskStore, task_id: str, timeout_s: float = _WAI
     raise TimeoutError(f"task {task_id} did not finish within {timeout_s}s")
 
 
-async def wait_subtask_id(store: _TaskStore, parent_id: str, timeout_s: float = _WAIT_TIMEOUT_S) -> str:
+async def wait_subtask_id(store: TaskRecordStore, parent_id: str, timeout_s: float = _WAIT_TIMEOUT_S) -> str:
     """Wait for the parent's first subtask record to appear, then give back its id."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -97,6 +98,6 @@ async def wait_subtask_id(store: _TaskStore, parent_id: str, timeout_s: float = 
 
 
 @pytest.fixture(autouse=True)
-async def tool_infra(task_store: _TaskStore) -> AsyncIterator[_TaskStore]:
+async def tool_infra(task_store: TaskRecordStore) -> AsyncIterator[TaskRecordStore]:
     """Give every tool test a throwaway record store."""
     yield task_store

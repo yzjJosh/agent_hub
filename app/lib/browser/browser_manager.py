@@ -28,7 +28,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, NotRequired, Optional, Protocol, TYPE_CHECKING, TypedDict, Tuple
+from typing import Awaitable, Callable, Dict, NotRequired, Optional, TYPE_CHECKING, TypeAlias, TypedDict, Tuple
 
 import aiofiles
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, CDPSession, Frame, Playwright
@@ -2309,8 +2309,7 @@ class _DownloadResult(TypedDict):
     size: NotRequired[int]
 
 
-class _JsValue(Protocol):
-    """A value that page code gives back."""
+_JsValue: TypeAlias = dict | list | str | int | float | bool | None
 
 
 _install_mouse_viewport_clamp()

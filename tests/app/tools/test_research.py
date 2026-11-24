@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 from datetime import timedelta
-from typing import Protocol
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,12 +15,8 @@ from app.lib.task.task_manager import task_manager
 from app.lib.tool.base import ToolResult
 from app.tools.research import research_tool
 from app.tools.task_tool import task_tool
-from tests.app.conftest import is_llm_available
+from tests.app.conftest import TaskRecordStore, is_llm_available
 from tests.app.lib.tool.conftest import run_text, wait_terminal
-
-
-class _TaskStore(Protocol):
-    """The task record store the tool_infra fixture gives to a test."""
 
 
 def _result(report: str) -> ResearchResult:
@@ -92,7 +87,7 @@ class TestCall:
     """The run folder is a fresh subfolder of the tool task's own run folder."""
 
     async def test_call_passes_goal_and_fresh_subfolder(
-        self, monkeypatch: pytest.MonkeyPatch, tool_infra: _TaskStore
+        self, monkeypatch: pytest.MonkeyPatch, tool_infra: TaskRecordStore
     ) -> None:
         run_research_mock = AsyncMock(return_value=_result("report text"))
         monkeypatch.setattr("app.tools.research.run_research", run_research_mock)
@@ -113,7 +108,7 @@ class TestInvoke:
     """The ack path starts the run and lands the report."""
 
     async def test_run_returns_handle_and_lands_the_report(
-        self, monkeypatch: pytest.MonkeyPatch, tool_infra: _TaskStore
+        self, monkeypatch: pytest.MonkeyPatch, tool_infra: TaskRecordStore
     ) -> None:
         monkeypatch.setattr(
             "app.tools.research.run_research", AsyncMock(return_value=_result("report text"))

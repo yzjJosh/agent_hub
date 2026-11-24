@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import tempfile
-from typing import Optional, Protocol, TypedDict, TYPE_CHECKING
+from typing import Optional, TypeAlias, TypedDict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.lib.browser.browser_manager import BrowserManager
@@ -100,8 +100,7 @@ _CHECKBOX_CAPTCHA_SCHEMA = {
 }
 
 
-class _JsonPayload(Protocol):
-    """A value parsed from LLM answer text."""
+_JsonPayload: TypeAlias = dict | list | str | int | float | bool | None
 
 
 class _DetectResult(TypedDict):

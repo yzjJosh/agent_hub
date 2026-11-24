@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 import xml.dom.minidom as _minidom
-from typing import Protocol
+from typing import TypeAlias
 
 import yaml as _yaml
 
@@ -410,5 +410,4 @@ async def _text_family(task_id: str, run_key: str, body_path: str, body: bytes, 
                              line_offset=line_offset, truncated=truncated, declared=declared)
 
 
-class _Field(Protocol):
-    """A value a result description holds."""
+_Field: TypeAlias = str | int | float | bool | list[int] | None

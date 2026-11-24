@@ -2,20 +2,11 @@ import sqlite3
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Protocol
 
 import pytest
 
 import app.lib.db.store as store_module
-from tests.app.conftest import store_infra
-
-
-class _TaskStore(Protocol):
-    """The task record store the fixture opens."""
-
-
-class _ToolStore(Protocol):
-    """The tool record store the fixture opens."""
+from tests.app.conftest import TaskRecordStore, ToolRecordStore, store_infra
 
 
 def _now() -> datetime:
@@ -27,7 +18,7 @@ def _iso(dt: datetime) -> str:
 
 
 async def _seed_completed(
-    task: _TaskStore, tool: _ToolStore, now: datetime
+    task: TaskRecordStore, tool: ToolRecordStore, now: datetime
 ) -> None:
     for tid, age in (("c0", 6), ("c1", 2), ("c2", 1)):
         await task.insert_running(tid, None, _iso(now - timedelta(hours=age)), f"runs/{tid}")
@@ -36,7 +27,7 @@ async def _seed_completed(
 
 
 @pytest.fixture
-async def stores(tmp_path: Path) -> AsyncIterator[tuple[_TaskStore, _ToolStore]]:
+async def stores(tmp_path: Path) -> AsyncIterator[tuple[TaskRecordStore, ToolRecordStore]]:
     """Open both stores on a throwaway database."""
     async for _ in store_infra(tmp_path):
         yield store_module.task_store, store_module.tool_store
@@ -44,7 +35,7 @@ async def stores(tmp_path: Path) -> AsyncIterator[tuple[_TaskStore, _ToolStore]]
 
 class TestTaskRecordStore:
     async def test_insert_running_then_finish_completed(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         started = _iso(_now())
         await task.insert_running("t1", None, started, "runs/t1")
@@ -60,7 +51,7 @@ class TestTaskRecordStore:
         assert record.ended_at == ended
 
     async def test_finish_failed_stores_error(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.insert_running("t2", None, _iso(_now()), "runs/t2")
         await task.finish("t2", "failed", error="boom")
@@ -68,12 +59,12 @@ class TestTaskRecordStore:
         assert record.error == "boom"
 
     async def test_get_missing_returns_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         assert await task.get("nope") is None
 
     async def test_list_orders_by_started_at(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _now()
         await task.insert_running("b", None, _iso(now), "runs/b")
@@ -82,7 +73,7 @@ class TestTaskRecordStore:
         assert [r.task_id for r in rows] == ["a", "b"]
 
     async def test_list_subtasks_chronological_with_rowid_tiebreak(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         ts = _iso(_now())
         await task.insert_running("c1", "p", ts, "runs/c1")
@@ -92,7 +83,7 @@ class TestTaskRecordStore:
         assert await store_module.task_store.list_subtasks("nobody") == []
 
     async def test_mark_orphans_failed(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _iso(_now())
         await task.insert_running("r1", None, now, "runs/r1")
@@ -106,12 +97,12 @@ class TestTaskRecordStore:
         assert (await task.get("c1")).status == "completed"
 
     async def test_no_orphans_returns_zero(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         assert await task.mark_orphans_failed("x") == 0
 
     async def test_delete_removes_row(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         started = _iso(_now())
         await task.insert_running("d1", None, started, "runs/d1")
@@ -121,18 +112,18 @@ class TestTaskRecordStore:
         assert await task.get("d1") is None
 
     async def test_delete_missing_is_noop(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.delete("nope")
         assert await task.get("nope") is None
 
     async def test_data_dir(
-            self, stores: tuple[_TaskStore, _ToolStore], tmp_path: Path) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore], tmp_path: Path) -> None:
         task, _ = stores
         assert task.data_dir == str(tmp_path)
 
     async def test_get_before_open_raises(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.close()
         with pytest.raises(RuntimeError, match="record store is not open"):
@@ -141,7 +132,7 @@ class TestTaskRecordStore:
 
 class TestToolRecordStore:
     async def test_insert_and_get_params_roundtrip(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _, tool = stores
         params = {"q": "中文", "n": 3, "flags": [1, 2]}
         await tool.insert("t3", "web_fetch", None, params)
@@ -151,7 +142,7 @@ class TestToolRecordStore:
         assert record.params == params
 
     async def test_get_missing_returns_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _, tool = stores
         assert await tool.get("nope") is None
 
@@ -160,7 +151,7 @@ class TestPresentationStore:
     """Tests for the presentation record store."""
 
     async def test_insert_and_get(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         recent = _iso(_now() - timedelta(days=1))
         await store_module.presentation_store.insert(
@@ -175,12 +166,12 @@ class TestPresentationStore:
         assert p.task_id is None
 
     async def test_get_missing_returns_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         assert await store_module.presentation_store.get("b" * 16) is None
 
     async def test_insert_or_ignore_keeps_first(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         now = _now()
         await store_module.presentation_store.insert(
@@ -193,7 +184,7 @@ class TestPresentationStore:
         assert p.url_path == "/view/x"
 
     async def test_list_newest_orders_desc(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         now = _now()
         await store_module.presentation_store.insert(
@@ -209,7 +200,7 @@ class TestPresentationStore:
         assert [p.id for p in results] == ["c" * 16, "b" * 16, "a" * 16]
 
     async def test_newest_at(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         assert await store_module.presentation_store.newest_at() is None
         recent = _iso(_now() - timedelta(days=1))
@@ -219,7 +210,7 @@ class TestPresentationStore:
         assert await store_module.presentation_store.newest_at() == recent
 
     async def test_delete_older(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         now = _now()
         old = _iso(now - timedelta(days=31))
@@ -232,7 +223,7 @@ class TestPresentationStore:
         assert (await store_module.presentation_store.get("b" * 16)).presented_at == recent
 
     async def test_insert_with_task_id(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         await store_module.presentation_store.insert(
             "d" * 16, _iso(_now() - timedelta(days=1)), "/view/x", ["a"], task_id="task-1",
@@ -241,7 +232,7 @@ class TestPresentationStore:
         assert p.task_id == "task-1"
 
     async def test_insert_with_title_roundtrips(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         await store_module.presentation_store.insert(
             "e" * 16, _iso(_now() - timedelta(days=1)), "/view/x", ["a"], title="Weekly report",
@@ -250,7 +241,7 @@ class TestPresentationStore:
         assert p is not None and p.title == "Weekly report"
 
     async def test_insert_without_title_is_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _tool = stores
         await store_module.presentation_store.insert(
             "f" * 16, _iso(_now() - timedelta(days=1)), "/view/x", ["a"],
@@ -260,7 +251,7 @@ class TestPresentationStore:
 
     async def test_sweep_sync_defaults_to_active_store_dir(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -283,7 +274,7 @@ class TestPresentationStore:
 
     async def test_sweep_sync_with_explicit_data_dir_and_missing_cases(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
         tmp_path: Path,
     ) -> None:
         _task, _tool = stores
@@ -326,7 +317,7 @@ class TestPresentationStore:
 
 class TestToolStats:
     async def test_running_since_is_earliest_running_start(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
         await task.insert_running("r1", None, _iso(now - timedelta(hours=2)), "runs/r1")
@@ -344,7 +335,7 @@ class TestToolStats:
         assert s["last_activity"] == _iso(now - timedelta(hours=1))
 
     async def test_running_since_none_when_nothing_running(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         await _seed_completed(task, tool, _now())
         s = (await store_module.tool_stats())[0]
@@ -354,7 +345,7 @@ class TestToolStats:
 
 class TestFindCache:
     async def test_latest_completed_within_window(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
         await _seed_completed(task, tool, now)
@@ -363,7 +354,7 @@ class TestFindCache:
         assert hit.run_dir == "runs/c2"
 
     async def test_ignores_rows_before_window(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
         await task.insert_running("old", None, _iso(now - timedelta(hours=48)), "runs/old")
@@ -372,7 +363,7 @@ class TestFindCache:
         assert await tool.find_cache("tool", "key", _iso(now - timedelta(hours=24))) is None
 
     async def test_ignores_non_completed(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
         await task.insert_running("f", None, _iso(now), "runs/f")
@@ -381,7 +372,7 @@ class TestFindCache:
         assert await tool.find_cache("tool", "key", _iso(now - timedelta(hours=24))) is None
 
     async def test_different_key_not_matched(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
         await task.insert_running("o", None, _iso(now), "runs/o")
@@ -392,7 +383,7 @@ class TestFindCache:
 
 class TestAgentViewAxis:
     async def test_view_agent_axis_and_tri_way(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         await task.insert_running("parent", None, _iso(_now()), "runs/parent")
         await task.insert_running("agentchild", "parent", _iso(_now()), "runs/agentchild")
@@ -418,7 +409,7 @@ class TestAgentViewAxis:
         assert subs["plainchild"].tool_name is None and subs["plainchild"].agent_name is None
 
 
-async def _seed_chain(task: _TaskStore, count: int, now: str) -> None:
+async def _seed_chain(task: TaskRecordStore, count: int, now: str) -> None:
     """A top-level task plus a parent-linked chain of `count - 1` children."""
     await task.insert_running("t0", None, now, "runs/t0")
     for i in range(1, count):
@@ -429,7 +420,7 @@ class TestTaskLookup:
     """Prefix resolution and the ancestor walk over the shared view."""
 
     async def test_task_view_by_prefix_unique_match(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         full = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
         await task.insert_running(full, None, _iso(_now()), "runs/" + full)
@@ -439,7 +430,7 @@ class TestTaskLookup:
         assert view.agent_name == "planner"
 
     async def test_task_view_by_prefix_full_id(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         full = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
         await task.insert_running(full, None, _iso(_now()), "runs/" + full)
@@ -447,7 +438,7 @@ class TestTaskLookup:
         assert view is not None and view.task_id == full
 
     async def test_task_view_by_prefix_ambiguous_returns_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _iso(_now())
         await task.insert_running("3f2504e0-1111-1111-1111-111111111111", None, now, "runs/a")
@@ -455,13 +446,13 @@ class TestTaskLookup:
         assert await store_module.task_view_by_prefix("3f2504e0") is None
 
     async def test_task_view_by_prefix_no_match_returns_none(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.insert_running("3f2504e0-1111-1111-1111-111111111111", None, _iso(_now()), "runs/a")
         assert await store_module.task_view_by_prefix("00000000") is None
 
     async def test_ancestor_views_root_first_parent_last(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _iso(_now())
         await task.insert_running("root", None, now, "runs/root")
@@ -474,18 +465,18 @@ class TestTaskLookup:
         assert chain[0].status == "running"
 
     async def test_ancestor_views_top_level_is_empty(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.insert_running("root", None, _iso(_now()), "runs/root")
         assert await store_module.ancestor_views("root") == []
 
     async def test_ancestor_views_unknown_task_is_empty(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         _task, _ = stores
         assert await store_module.ancestor_views("nobody") == []
 
     async def test_ancestor_views_cycle_does_not_loop(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _iso(_now())
         await task.insert_running("a", "b", now, "runs/a")
@@ -494,7 +485,7 @@ class TestTaskLookup:
         assert [v.task_id for v in chain] == ["b"]
 
     async def test_ancestor_views_depth_capped(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         now = _iso(_now())
         await _seed_chain(task, 70, now)
@@ -508,7 +499,7 @@ class TestToolRecordRenderType:
     """Tests for storing and reading back the declared render kind."""
 
     async def test_set_render_type_then_task_view(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         await task.insert_running("rt1", None, _iso(_now()), "runs/rt1")
         await tool.insert("rt1", "tool", None, {})
@@ -519,7 +510,7 @@ class TestToolRecordRenderType:
         assert record is not None and record.task_id == "rt1"
 
     async def test_set_render_type_touches_only_its_row(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         started = _iso(_now())
         await task.insert_running("rt1", None, started, "runs/rt1")
@@ -531,7 +522,7 @@ class TestToolRecordRenderType:
         assert (await store_module.task_view("rt2")).render_type is None
 
     async def test_task_view_render_type_none_without_tool_row(
-            self, stores: tuple[_TaskStore, _ToolStore]) -> None:
+            self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, _ = stores
         await task.insert_running("plain1", None, _iso(_now()), "runs/plain1")
         view = await store_module.task_view("plain1")
@@ -547,7 +538,7 @@ class TestContextErrorStore:
     @pytest.mark.parametrize("verdict", [True, False])
     async def test_put_and_get_roundtrip(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
         verdict: bool,
     ) -> None:
         _task, _tool = stores
@@ -557,14 +548,14 @@ class TestContextErrorStore:
 
     async def test_get_missing_returns_none(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
     ) -> None:
         _task, _tool = stores
         assert await store_module.context_error_store.get("unknown template") is None
 
     async def test_get_respects_ttl_window(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
     ) -> None:
         _task, _tool = stores
         old = _iso(_now() - timedelta(days=31))
@@ -574,7 +565,7 @@ class TestContextErrorStore:
 
     async def test_put_upserts_existing_key(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
     ) -> None:
         _task, _tool = stores
         now = _now()
@@ -599,7 +590,7 @@ class TestContextErrorStore:
 
     async def test_get_and_put_before_open_raise(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
     ) -> None:
         task, _ = stores
         await task.close()
@@ -610,7 +601,7 @@ class TestContextErrorStore:
 
     async def test_sweep_sync_defaults_to_active_store_dir(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -636,7 +627,7 @@ class TestContextErrorStore:
 
     async def test_sweep_sync_with_explicit_data_dir(
         self,
-        stores: tuple[_TaskStore, _ToolStore],
+        stores: tuple[TaskRecordStore, ToolRecordStore],
         tmp_path: Path,
     ) -> None:
         _task, _tool = stores

@@ -8,11 +8,6 @@ import asyncio
 import contextlib
 import math
 import time
-from typing import Protocol
-
-
-class _CallTurn(Protocol):
-    """The caller's turn in the limiter queue."""
 
 
 class RateLimiter:
@@ -25,17 +20,19 @@ class RateLimiter:
             min_delay: Seconds that must pass between two calls.
         """
         self._min_delay = min_delay
-        self._queue: list[_CallTurn] = []
+        self._queue: list[int] = []
+        self._next_turn = 0
         self._condition = asyncio.Condition()
         self._last_call = -math.inf
 
     async def acquire(self) -> None:
         """Wait until it is this caller's turn to make a request."""
-        my_id: _CallTurn = object()
         async with self._condition:
-            self._queue.append(my_id)
+            my_turn = self._next_turn
+            self._next_turn += 1
+            self._queue.append(my_turn)
             try:
-                await self._condition.wait_for(lambda: self._queue[0] is my_id)
+                await self._condition.wait_for(lambda: self._queue[0] == my_turn)
 
                 now = time.monotonic()
                 remaining = self._min_delay - (now - self._last_call)
@@ -45,5 +42,5 @@ class RateLimiter:
                 self._last_call = time.monotonic()
             finally:
                 with contextlib.suppress(ValueError):
-                    self._queue.remove(my_id)
+                    self._queue.remove(my_turn)
                 self._condition.notify_all()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Protocol
+from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +12,7 @@ from app.lib.tool.base import ToolResult
 from app.tools.rednote_research import rednote_research_tool
 from app.tools.task_tool import task_tool
 from tests.app.conftest import (
+    TaskRecordStore,
     assert_browser_closed,
     is_llm_available,
     skip_if_no_chrome,
@@ -30,10 +31,6 @@ _SECOND_IMAGE_URL = "https://sns-img.rednote.com/second.png"
 
 _FIXED_NOW = datetime(2024, 5, 21, 14, 30, tzinfo=timezone(timedelta(hours=-7)))
 _FIXED_TIMESTAMP = "2024-05-21T14:30:00-07:00"
-
-
-class _TaskStore(Protocol):
-    """The task record store the tool_infra fixture gives to a test."""
 
 
 def _make_snap(tree: dict | None = None, actionable: list | None = None) -> MagicMock:
@@ -523,7 +520,7 @@ class TestResearch:
     @patch("app.tools.rednote_research.reason")
     @patch("app.tools.rednote_research.BrowserManager")
     async def test_run_json_fallback_declares_json(
-        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: _TaskStore
+        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: TaskRecordStore
     ) -> None:
         """The fallback body is a JSON array, so it is declared json."""
         _wire_successful_flow(mock_mgr_class, mock_reason)
@@ -547,7 +544,7 @@ class TestResearchInvoke:
     @patch("app.tools.rednote_research.reason")
     @patch("app.tools.rednote_research.BrowserManager")
     async def test_invoke_starts_a_run_that_researches(
-        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: _TaskStore
+        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: TaskRecordStore
     ) -> None:
         """A call starts a run, and the run does the research in the background."""
         _wire_successful_flow(mock_mgr_class, mock_reason)
@@ -560,7 +557,7 @@ class TestResearchInvoke:
     @patch("app.tools.rednote_research.reason")
     @patch("app.tools.rednote_research.BrowserManager")
     async def test_invoke_caches_within_staleness(
-        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: _TaskStore
+        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: TaskRecordStore
     ) -> None:
         """A repeat call with the same input returns the saved result without running again."""
         _wire_successful_flow(mock_mgr_class, mock_reason)
@@ -577,7 +574,7 @@ class TestResearchInvoke:
     @patch("app.tools.rednote_research.reason")
     @patch("app.tools.rednote_research.BrowserManager")
     async def test_invoke_cache_key_ignores_nothing_else(
-        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: _TaskStore
+        self, mock_mgr_class: MagicMock, mock_reason: MagicMock, tool_infra: TaskRecordStore
     ) -> None:
         """A call with a different count runs the research again."""
         _wire_successful_flow(mock_mgr_class, mock_reason)

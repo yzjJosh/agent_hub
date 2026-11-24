@@ -55,7 +55,7 @@ import textwrap
 import uuid
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import TypeAlias
 from urllib.parse import urlparse
 
 import httpx
@@ -98,8 +98,7 @@ async def _connect(url: str) -> AsyncIterator[ClientSession]:
             yield session
 
 
-class _Value(Protocol):
-    """A value the tool takes for one param."""
+_Value: TypeAlias = dict | list | str | int | float | bool | None
 
 
 def _matches_type(value: _Value, expected: str) -> bool:

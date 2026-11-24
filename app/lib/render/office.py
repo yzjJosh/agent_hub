@@ -12,7 +12,7 @@ import importlib
 import os
 import re
 import shutil
-from typing import Protocol
+from typing import TypeAlias
 
 from bs4 import BeautifulSoup
 
@@ -632,5 +632,6 @@ async def _reduce_office_html(html_text: str, key: str, assets: dict[str, bytes]
     return await asyncio.to_thread(_reduce_office_html_sync, html_text, key, assets)
 
 
-class _Cell(Protocol):
-    """A value read from a sheet cell."""
+_Cell: TypeAlias = (
+    str | int | float | bool | datetime.date | datetime.datetime | datetime.time | datetime.timedelta | None
+)

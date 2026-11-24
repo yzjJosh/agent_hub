@@ -9,7 +9,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import ClassVar, Literal, Protocol, final, get_args
+from types import GenericAlias, UnionType
+from typing import ClassVar, Literal, TypeAlias, final, get_args
 
 import aiofiles
 import pydantic
@@ -252,12 +253,7 @@ def _error_task(error: str) -> Task[ToolResult]:
     return task_manager.create_completed_task(error=ToolMessageError(error))
 
 
-class ParamValue(Protocol):
-    """A value one param takes. A JSON scalar or a container."""
-
-
-class _Annotation(Protocol):
-    """A value that names a Python type."""
+ParamValue: TypeAlias = str | int | float | bool | list | tuple | dict | None
 
 
 class _Required:
@@ -305,7 +301,7 @@ class Param:
         return _compose_param_description(self)
 
     @property
-    def annotation(self) -> _Annotation:
+    def annotation(self) -> type | UnionType | GenericAlias:
         """The Python type for this param.
 
         A param with an enum is limited to its enum values.

@@ -7,7 +7,7 @@ import time
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import ClassVar, Protocol, override
+from typing import ClassVar, override
 
 import pytest
 
@@ -20,16 +20,13 @@ from app.lib.task import task_manager
 from app.lib.task.task_manager import AsyncTask, TaskStatus
 from app.lib.tool.base import Param, Tool, ToolMessageError, ToolResult
 from app.tools.task_tool import task_tool
+from tests.app.conftest import TaskRecordStore
 from tests.app.lib.tool.conftest import assert_rejected_task, run_text, wait_terminal
 
 SLOW = 0.2
 TINY_SLEEP = 0.01
 SETTLE = 0.05
 LONG_LEN = 10_000
-
-
-class _TaskStore(Protocol):
-    """The task record store the fixture gives to a test."""
 
 # The exact note text a cached tool adds to its description.
 _EXPECTED_CACHE_NOTE_24H = "Duplicate calls within 24 hours reuse the stored result silently."
@@ -103,7 +100,7 @@ class _ResourceInputTool(_CachedTool):
 
 
 async def test_resource_interest_is_recorded_on_cache_hits(
-    tool_infra: _TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tool_infra: TaskRecordStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Explicit resource inputs count even when their tool result is cached."""
     monkeypatch.setenv("RESOURCES_DIR", str(tmp_path))
@@ -272,7 +269,7 @@ class TestRunBlocking:
     async def test_returns_result(self) -> None:
         assert await run_text(_EchoTool(), message="hi") == "hi"
 
-    async def test_record_completed_with_raw_result(self, tool_infra: _TaskStore) -> None:
+    async def test_record_completed_with_raw_result(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_EchoTool(), message="persist me")
         assert out == "persist me"
         rows = await tool_infra.list()
@@ -280,7 +277,7 @@ class TestRunBlocking:
         raw = open(os.path.join(tool_infra.data_dir, rows[0].run_dir, "result")).read()
         assert raw == "persist me"
 
-    async def test_failure_returns_error_string(self, tool_infra: _TaskStore) -> None:
+    async def test_failure_returns_error_string(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_FailingTool())
         assert out == "Tool 'failing' failed: boom"
         rows = await tool_infra.list()
@@ -292,7 +289,7 @@ class TestRunBlocking:
         assert (await run_text(t)).startswith("Tool 'cf' failed:")
         assert (await run_text(t)).startswith("Tool 'cf' failed:")  # second call re-ran, still fails
 
-    async def test_long_result_comes_back_raw_with_no_note(self, tool_infra: _TaskStore) -> None:
+    async def test_long_result_comes_back_raw_with_no_note(self, tool_infra: TaskRecordStore) -> None:
         """run hands back the full result and stores it raw."""
         out = await run_text(_LongTool())
         assert out == "x" * LONG_LEN
@@ -302,7 +299,7 @@ class TestRunBlocking:
         assert raw == "x" * LONG_LEN  # stored result stays raw
 
     async def test_cancelled_run_converges_its_tree(
-        self, tool_infra: _TaskStore, monkeypatch: pytest.MonkeyPatch
+        self, tool_infra: TaskRecordStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A cancel landing again while the handler walks the tree still lets every subtask converge."""
         original_finish = store_module.task_store.finish
@@ -349,7 +346,7 @@ class TestRunBlocking:
 class TestRunAsync:
     """A slow tool's run hands back its handle while the run is still going."""
 
-    async def test_handle_and_later_result(self, tool_infra: _TaskStore) -> None:
+    async def test_handle_and_later_result(self, tool_infra: TaskRecordStore) -> None:
         assert _AsyncEchoTool.is_slow is True
         task = await _AsyncEchoTool().run({"message": "later"})
         assert isinstance(task, AsyncTask)
@@ -365,7 +362,7 @@ class TestRunAsync:
         live = await task_manager.get(task.id)
         assert (await live.result()).text == "pong"
 
-    async def test_cancel_marks_cancelled(self, tool_infra: _TaskStore) -> None:
+    async def test_cancel_marks_cancelled(self, tool_infra: TaskRecordStore) -> None:
         task = await _AsyncEchoTool().run({})
         await task.cancel()
         await asyncio.sleep(SLOW * 3)
@@ -426,7 +423,7 @@ class TestResultText:
 
 
 class TestCache:
-    async def test_second_call_hits_cache(self, tool_infra: _TaskStore) -> None:
+    async def test_second_call_hits_cache(self, tool_infra: TaskRecordStore) -> None:
         t = _CachedTool()
         first = await run_text(t, query="q")
         second = await run_text(t, query="q")
@@ -434,7 +431,7 @@ class TestCache:
         assert t.calls == 1
         assert len(await tool_infra.list()) == 1  # no second record
 
-    async def test_cache_hit_returns_the_raw_stored_result(self, tool_infra: _TaskStore) -> None:
+    async def test_cache_hit_returns_the_raw_stored_result(self, tool_infra: TaskRecordStore) -> None:
         """A reused long result comes back raw, with no note, and does not run again."""
         t = _LongCachedTool()
         first = await run_text(t)
@@ -451,7 +448,7 @@ class TestCache:
         await t.run({"query": "b"})
         assert t.calls == 2
 
-    async def test_swept_result_file_degrades_to_miss(self, tool_infra: _TaskStore) -> None:
+    async def test_swept_result_file_degrades_to_miss(self, tool_infra: TaskRecordStore) -> None:
         t = _CachedTool()
         await t.run({"query": "q"})
         rows = await tool_infra.list()
@@ -464,7 +461,7 @@ class TestCache:
 class TestLogCapture:
     """The run log holds the tool's prints once the run's result is ready."""
 
-    async def test_prints_landed_in_run_log(self, tool_infra: _TaskStore) -> None:
+    async def test_prints_landed_in_run_log(self, tool_infra: TaskRecordStore) -> None:
         logcapture.install_log_tee()
         try:
             await run_text(_EchoTool())
@@ -474,7 +471,7 @@ class TestLogCapture:
         log = open(os.path.join(tool_infra.data_dir, rows[0].run_dir, "log")).read()
         assert "[echo] running" in log
 
-    async def test_prints_landed_in_run_log_for_a_long_run(self, tool_infra: _TaskStore) -> None:
+    async def test_prints_landed_in_run_log_for_a_long_run(self, tool_infra: TaskRecordStore) -> None:
         assert _AsyncPrintTool.is_slow is True
         logcapture.install_log_tee()
         try:
@@ -488,7 +485,7 @@ class TestLogCapture:
         assert "[async_print] running" in log
 
 
-async def _rows_by_name(tool_infra: _TaskStore) -> dict[str, TaskRecord]:
+async def _rows_by_name(tool_infra: TaskRecordStore) -> dict[str, TaskRecord]:
     rows = await tool_infra.list()
     return {
         (await store_module.tool_store.get(r.task_id)).tool_name: r for r in rows
@@ -496,39 +493,39 @@ async def _rows_by_name(tool_infra: _TaskStore) -> dict[str, TaskRecord]:
 
 
 class TestNesting:
-    async def test_child_row_points_at_parent(self, tool_infra: _TaskStore) -> None:
+    async def test_child_row_points_at_parent(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_ParentTool())
         assert out == "parent:child-result"
         rows = await _rows_by_name(tool_infra)
         assert rows["child"].parent_task_id == rows["parent"].task_id
         assert rows["parent"].parent_task_id is None
 
-    async def test_grandchild_points_at_child(self, tool_infra: _TaskStore) -> None:
+    async def test_grandchild_points_at_child(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_Parent2Tool())
         assert out == "parent2:child2:grand-result"
         rows = await _rows_by_name(tool_infra)
         assert rows["child2"].parent_task_id == rows["parent2"].task_id
         assert rows["grand"].parent_task_id == rows["child2"].task_id
 
-    async def test_run_returns_only_after_row_exists(self, tool_infra: _TaskStore) -> None:
+    async def test_run_returns_only_after_row_exists(self, tool_infra: TaskRecordStore) -> None:
         task = await _AsyncEchoTool().run({})
         row = await tool_infra.get(str(task.id))
         assert row is not None and row.status == "running"
 
-    async def test_tool_row_written_by_run(self, tool_infra: _TaskStore) -> None:
+    async def test_tool_row_written_by_run(self, tool_infra: TaskRecordStore) -> None:
         await _EchoTool().run({"message": "x"})
         rows = await tool_infra.list()
         tool = await store_module.tool_store.get(rows[0].task_id)
         assert tool is not None and tool.tool_name == "echo"
         assert tool.params == {"message": "x", "sleep": TINY_SLEEP}
 
-    async def test_nested_cache_hit_creates_no_row(self, tool_infra: _TaskStore) -> None:
+    async def test_nested_cache_hit_creates_no_row(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_ParentWithCachedChildTool())
         assert out == "value-q|value-q"
         rows = await _rows_by_name(tool_infra)
         assert set(rows) == {"parentcached", "cached"}
 
-    async def test_child_log_kept_out_of_parent_log(self, tool_infra: _TaskStore) -> None:
+    async def test_child_log_kept_out_of_parent_log(self, tool_infra: TaskRecordStore) -> None:
         logcapture.install_log_tee()
         try:
             await run_text(_ParentTool())
@@ -651,7 +648,7 @@ class _StrTool(Tool):
 
 
 class TestBinaryResult:
-    async def test_text_return_no_sidecars(self, tool_infra: _TaskStore) -> None:
+    async def test_text_return_no_sidecars(self, tool_infra: TaskRecordStore) -> None:
         await run_text(_EchoTool(), message="plain")
         row = (await tool_infra.list())[0]
         run_dir = os.path.join(tool_infra.data_dir, row.run_dir)
@@ -660,7 +657,7 @@ class TestBinaryResult:
         assert not os.path.exists(os.path.join(run_dir, "files"))
 
     async def test_files_write_json_manifest(
-        self, tool_infra: _TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tool_infra: TaskRecordStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The share file must exist so the manifest records its size/mtime.
         share = tmp_path / "share"
@@ -678,7 +675,7 @@ class TestBinaryResult:
         assert line["size"] == len(_BANNER) and isinstance(line["mtime"], int)
 
     async def test_task_result_reads_body_text(
-        self, tool_infra: _TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tool_infra: TaskRecordStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         share = tmp_path / "share2"
         (share / "downloads").mkdir(parents=True)
@@ -690,14 +687,14 @@ class TestBinaryResult:
         assert text == "Binary file with size 13 bytes."
         assert b"\x89" not in text.encode()
 
-    async def test_non_toolresult_fails_run(self, tool_infra: _TaskStore) -> None:
+    async def test_non_toolresult_fails_run(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_StrTool())
         assert out.startswith("Tool 'str' failed:")
         row = (await tool_infra.list())[0]
         run_dir = os.path.join(tool_infra.data_dir, row.run_dir)
         assert not os.path.exists(os.path.join(run_dir, "result"))   # nothing written
 
-    async def test_nul_text_fails_run(self, tool_infra: _TaskStore) -> None:
+    async def test_nul_text_fails_run(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_NulTool())
         assert out.startswith("Tool 'nul' failed:")
         row = (await tool_infra.list())[0]
@@ -708,7 +705,7 @@ class TestBinaryResult:
 class TestRunPersistenceContract:
     """A tool run leaves runs/<task_id>/log and runs/<task_id>/result, byte for byte."""
 
-    async def test_run_folder_paths_and_content(self, tool_infra: _TaskStore) -> None:
+    async def test_run_folder_paths_and_content(self, tool_infra: TaskRecordStore) -> None:
         logcapture.install_log_tee()
         try:
             out = await run_text(_EchoTool(), message="persist me")
@@ -900,7 +897,7 @@ class TestValidateParams:
 class TestValidateNoSideEffects:
     """A bad set of params is reported without making a row, a folder, a cache entry, or an acknowledgement."""
 
-    async def test_run_failure_creates_no_row_or_dir(self, tool_infra: _TaskStore) -> None:
+    async def test_run_failure_creates_no_row_or_dir(self, tool_infra: TaskRecordStore) -> None:
         rows_before = len(await tool_infra.list())
         runs = os.path.join(store_module.tool_store.data_dir, "runs")
         dirs_before = len(os.listdir(runs)) if os.path.isdir(runs) else 0
@@ -920,7 +917,7 @@ class TestValidateNoSideEffects:
         assert first == second
         assert t.calls == 1
 
-    async def test_async_invalid_param_produces_no_ack_or_row(self, tool_infra: _TaskStore) -> None:
+    async def test_async_invalid_param_produces_no_ack_or_row(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_AsyncEchoTool(), message="later", junk=1)
         assert out == "Error: junk: Unexpected keyword argument."
         assert len(await tool_infra.list()) == 0
@@ -967,7 +964,7 @@ class TestRawDictEntry:
         ids=["missing_required", "undeclared_key", "type_int", "max_bound"],
     )
     async def test_bad_params_carry_the_tools_own_words(
-        self, tool: type[Tool], params: dict, expected: str, tool_infra: _TaskStore
+        self, tool: type[Tool], params: dict, expected: str, tool_infra: TaskRecordStore
     ) -> None:
         task = await tool().run(params)
         await assert_rejected_task(task, expected)
@@ -1145,19 +1142,19 @@ class TestRenderTypeDeclaration:
     def test_toolresult_defaults_render_type_none(self) -> None:
         assert ToolResult(text="x").render_type is None
 
-    async def test_run_declaration_wins_over_class(self, tool_infra: _TaskStore) -> None:
+    async def test_run_declaration_wins_over_class(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderRunTool())
         assert out == "run-body"
         view = await store_module.task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type == "json"
 
-    async def test_class_declaration_persists_when_run_silent(self, tool_infra: _TaskStore) -> None:
+    async def test_class_declaration_persists_when_run_silent(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderClassTool())
         assert out == "class-body"
         view = await store_module.task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type == "text"
 
-    async def test_out_of_family_class_declaration_persists_nothing(self, tool_infra: _TaskStore) -> None:
+    async def test_out_of_family_class_declaration_persists_nothing(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderBadClassTool())
         assert out == "bad-class-body"
         rows = await tool_infra.list()
@@ -1165,19 +1162,19 @@ class TestRenderTypeDeclaration:
         view = await store_module.task_view(rows[0].task_id)
         assert view is not None and view.render_type is None
 
-    async def test_no_declaration_writes_nothing(self, tool_infra: _TaskStore) -> None:
+    async def test_no_declaration_writes_nothing(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderNoneTool())
         assert out == "plain-body"
         view = await store_module.task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type is None
 
-    async def test_fast_call_keeps_insert_before_update(self, tool_infra: _TaskStore) -> None:
+    async def test_fast_call_keeps_insert_before_update(self, tool_infra: TaskRecordStore) -> None:
         task = await _RenderFastTool().run({})
         await wait_terminal(tool_infra, str(task.id))
         view = await store_module.task_view(str(task.id))
         assert view is not None and view.render_type == "markdown"
 
-    async def test_cache_hit_reuses_row_and_declaration(self, tool_infra: _TaskStore) -> None:
+    async def test_cache_hit_reuses_row_and_declaration(self, tool_infra: TaskRecordStore) -> None:
         tool = _CachedRenderTool()
         first = await tool.run({"query": "q"})
         await wait_terminal(tool_infra, str(first.id))
@@ -1188,7 +1185,7 @@ class TestRenderTypeDeclaration:
         assert view is not None and view.render_type == "markdown"
 
     @pytest.mark.parametrize("token", sorted(k.value for k in TEXT_FAMILY_KINDS))
-    async def test_every_text_family_token_is_accepted(self, token: str, tool_infra: _TaskStore) -> None:
+    async def test_every_text_family_token_is_accepted(self, token: str, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderTokenProbe(token))
         assert out == "probe-body"
         view = await store_module.task_view((await tool_infra.list())[0].task_id)
@@ -1196,7 +1193,7 @@ class TestRenderTypeDeclaration:
 
     @pytest.mark.parametrize("token", ["pdf", "image", "unknown", "", "nonsense"])
     async def test_out_of_family_tokens_fail_the_run_and_persist_nothing(
-            self, token: str, tool_infra: _TaskStore) -> None:
+            self, token: str, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderTokenProbe(token))
         assert out.startswith("Tool 'render_token_probe' failed:")
         assert "result render_type must be one of:" in out

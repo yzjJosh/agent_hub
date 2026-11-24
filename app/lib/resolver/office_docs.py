@@ -21,7 +21,8 @@ import os
 import shutil
 import sys
 import uuid
-from typing import Protocol
+from datetime import date, datetime, time, timedelta
+from typing import TypeAlias
 
 import aiofiles
 import xlrd
@@ -92,8 +93,7 @@ def _docx_text(path: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-class _CellValue(Protocol):
-    """A value held in one sheet cell."""
+_CellValue: TypeAlias = str | int | float | bool | date | datetime | time | timedelta | None
 
 
 def _read_xlsx(path: str) -> list[tuple[str, list[tuple[_CellValue, ...]]]]:

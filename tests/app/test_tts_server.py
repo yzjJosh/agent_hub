@@ -2,7 +2,6 @@
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Protocol
 
 import httpx
 import pytest
@@ -10,16 +9,13 @@ from starlette.applications import Starlette
 from starlette.routing import Mount
 
 from app.tts_server import create_openai_tts_app
+from tests.app.conftest import TaskRecordStore
 
 _FAKE_AUDIO = b"FAKE-AUDIO"
 
 
-class _TaskStore(Protocol):
-    """The task record store the fixture gives to a test."""
-
-
 @pytest.fixture(autouse=True)
-async def tool_infra(task_store: _TaskStore) -> AsyncIterator[_TaskStore]:
+async def tool_infra(task_store: TaskRecordStore) -> AsyncIterator[TaskRecordStore]:
     """A throwaway record store for every test."""
     yield task_store
 
@@ -79,7 +75,7 @@ async def tts_client(
 
 
 async def test_returns_audio_bytes(
-    tts_client: httpx.AsyncClient, tmp_path: Path, tool_infra: _TaskStore
+    tts_client: httpx.AsyncClient, tmp_path: Path, tool_infra: TaskRecordStore
 ) -> None:
     """A good request gives back mp3 audio, saves the file, and records a completed run."""
     response = await tts_client.post("/v1/audio/speech", json={"input": "hello"})
@@ -174,7 +170,7 @@ async def test_rejects_unknown_response_format(tts_client: httpx.AsyncClient) ->
 
 
 async def test_tool_failure_returns_500_with_failure_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_infra: _TaskStore
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_infra: TaskRecordStore
 ) -> None:
     """A failed speech call gives a 500 with the failure message and records a failed run."""
     _point_resources_at(tmp_path, monkeypatch)

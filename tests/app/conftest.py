@@ -11,6 +11,7 @@ import time
 import uuid
 import zlib
 import zipfile
+from abc import abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ import app.server as server_module
 from app.console.errors import error_response
 from app.lib.browser.browser_manager import BrowserManager
 from app.lib.comfyui.client import GenerationResult
+from app.lib.db.store import TaskRecord
 from app.lib.render import result_feed as rf
 from app.lib.render.classify import RenderKind
 from app.lib.shared.paths import resources_dir
@@ -770,12 +772,86 @@ async def e2e_page(viewport: dict) -> AsyncIterator[tuple[BrowserManager, str]]:
         await mgr.cleanup()
 
 
-class _TaskStore(Protocol):
-    """The task record store a test gets."""
+class RecordStoreBase(Protocol):
+    """Shared lifecycle and location interface of a record store."""
+
+    @property
+    def data_dir(self) -> str:
+        ...
+
+    async def open(self) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+
+class TaskRecordStore(RecordStoreBase, Protocol):
+    """Public interface of the task record store exposed by test fixtures."""
+
+    @abstractmethod
+    async def insert_running(
+        self, task_id: str, parent_task_id: str | None, started_at: str, run_dir: str
+    ) -> None:
+        ...
+
+    @abstractmethod
+    async def finish(
+        self, task_id: str, status: str, *, error: str | None = None, ended_at: str | None = None
+    ) -> None:
+        ...
+
+    @abstractmethod
+    async def delete(self, task_id: str) -> None:
+        ...
+
+    @abstractmethod
+    async def get(self, task_id: str) -> TaskRecord | None:
+        ...
+
+    @abstractmethod
+    async def list_subtasks(self, parent_task_id: str) -> list[TaskRecord]:
+        ...
+
+    @abstractmethod
+    async def mark_orphans_failed(self, error: str) -> int:
+        ...
+
+    async def list(self) -> list[TaskRecord]:
+        ...
+
+
+class ToolRecord(Protocol):
+    """Fields on a stored tool record."""
+
+    task_id: str
+    tool_name: str
+    cache_key: str | None
+    params: dict
+
+
+class ToolRecordStore(RecordStoreBase, Protocol):
+    """Public interface of the tool record store exposed by test fixtures."""
+
+    @abstractmethod
+    async def insert(self, task_id: str, tool_name: str, cache_key: str | None, params: dict) -> None:
+        ...
+
+    @abstractmethod
+    async def get(self, task_id: str) -> ToolRecord | None:
+        ...
+
+    @abstractmethod
+    async def find_cache(self, tool_name: str, cache_key: str, min_started_at: str) -> TaskRecord | None:
+        ...
+
+    @abstractmethod
+    async def set_render_type(self, task_id: str, token: str) -> None:
+        ...
 
 
 @pytest.fixture
-async def task_store(tmp_path: Path) -> AsyncIterator[_TaskStore]:
+async def task_store(tmp_path: Path) -> AsyncIterator[TaskRecordStore]:
     """Point the app stores at a throwaway database and give back the task store."""
     async for _ in store_infra(tmp_path):
         yield store_module.task_store

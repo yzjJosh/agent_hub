@@ -4,21 +4,18 @@ import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import ClassVar, Protocol, override
+from typing import ClassVar, override
 
 import pytest
 
 import app.lib.db.store as store_module
 from app.lib.tool.base import Param, Tool, ToolResult
 from app.tools.task_tool import task_tool
+from tests.app.conftest import TaskRecordStore
 from tests.app.lib.tool.conftest import run_text, wait_subtask_id, wait_terminal
 
 
-class _TaskStore(Protocol):
-    """The task record store the tool_infra fixture gives to a test."""
-
-
-def _write_run_file(tool_infra: _TaskStore, tid: str, filename: str, content: str) -> None:
+def _write_run_file(tool_infra: TaskRecordStore, tid: str, filename: str, content: str) -> None:
     run_path = os.path.join(tool_infra.data_dir, f"runs/{tid}")
     os.makedirs(run_path, exist_ok=True)
     with open(os.path.join(run_path, filename), "w") as fh:
@@ -26,7 +23,7 @@ def _write_run_file(tool_infra: _TaskStore, tid: str, filename: str, content: st
 
 
 async def _seed_record(
-    store: _TaskStore,
+    store: TaskRecordStore,
     tid: str,
     tool_name: str = "t",
     params: dict | None = None,
@@ -123,7 +120,7 @@ class _OrchestratorTool(Tool):
 
 
 class TestTaskTool:
-    async def test_status_report(self, tool_infra: _TaskStore) -> None:
+    async def test_status_report(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(
             tool_infra, tid, tool_name="web_fetch", params={"url": "u"}, status="completed"
@@ -138,7 +135,7 @@ class TestTaskTool:
         out = await run_text(task_tool, action="status", task_id="does-not-exist")
         assert out == "No task found with id 'does-not-exist'."
 
-    async def test_result_with_offset_and_max_char(self, tool_infra: _TaskStore) -> None:
+    async def test_result_with_offset_and_max_char(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
         content = "abcdefghij" * 100
@@ -146,20 +143,20 @@ class TestTaskTool:
         out = await run_text(task_tool, action="result", task_id=tid, offset=4, max_char=500)
         assert out == content[4:504]
 
-    async def test_sub_min_max_char_fails_validation(self, tool_infra: _TaskStore) -> None:
+    async def test_sub_min_max_char_fails_validation(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
         _write_run_file(tool_infra, tid, "result", "a" * 600)
         out = await run_text(task_tool, action="result", task_id=tid, max_char=6)
         assert out.startswith("Error: max_char")
 
-    async def test_result_running(self, tool_infra: _TaskStore) -> None:
+    async def test_result_running(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid)
         out = await run_text(task_tool, action="result", task_id=tid)
         assert out == f"Task {tid} is still running."
 
-    async def test_result_failed_returns_error(self, tool_infra: _TaskStore) -> None:
+    async def test_result_failed_returns_error(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="failed", error="boom")
         out = await run_text(task_tool, action="result", task_id=tid)
@@ -185,7 +182,7 @@ class TestTaskTool:
 
     @pytest.mark.parametrize("bad", [9.99, 5, 0, -1, True])
     async def test_result_wait_timeout_rejects_invalid(
-        self, tool_infra: _TaskStore, bad: int | float | bool
+        self, tool_infra: TaskRecordStore, bad: int | float | bool
     ) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid)
@@ -193,7 +190,7 @@ class TestTaskTool:
         assert out == "Error: wait_timeout: Input should be greater than or equal to 10."
 
     async def test_result_wait_timeout_coerced_string_at_min_is_accepted(
-        self, tool_infra: _TaskStore
+        self, tool_infra: TaskRecordStore
     ) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid)
@@ -201,7 +198,7 @@ class TestTaskTool:
         assert out == f"Task {tid} is still running."
 
     async def test_result_wait_timeout_below_min_rejected_when_not_waiting(
-        self, tool_infra: _TaskStore
+        self, tool_infra: TaskRecordStore
     ) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
@@ -211,7 +208,7 @@ class TestTaskTool:
 
     @pytest.mark.timeout(30)
     async def test_result_wait_timeout_reports_still_running(
-        self, tool_infra: _TaskStore
+        self, tool_infra: TaskRecordStore
     ) -> None:
         wait_timeout_param = next(p for p in _FastWaitTaskTool.params if p.name == "wait_timeout")
         assert wait_timeout_param.min == 1.0
@@ -230,14 +227,14 @@ class TestTaskTool:
         out = await run_text(task_tool, action="cancel", task_id=tid)
         assert out == f"Task {tid} is now cancelled."
 
-    async def test_logs_tail(self, tool_infra: _TaskStore) -> None:
+    async def test_logs_tail(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
         _write_run_file(tool_infra, tid, "log", "line1\nline2\nline3\n")
         out = await run_text(task_tool, action="logs", task_id=tid, tail=2)
         assert out == "line2\nline3"
 
-    async def test_logs_window(self, tool_infra: _TaskStore) -> None:
+    async def test_logs_window(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid)
         content = "abcdefghij" * 100
@@ -251,13 +248,13 @@ class TestTaskTool:
         out = await run_text(task_tool, action="cancel", task_id=tid)
         assert out == f"Task {tid} is now cancelled."
 
-    async def test_cancel_terminal_is_noop(self, tool_infra: _TaskStore) -> None:
+    async def test_cancel_terminal_is_noop(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
         out = await run_text(task_tool, action="cancel", task_id=tid)
         assert out == f"Task {tid} is already completed."
 
-    async def test_status_lists_subtask_ids_in_spawn_order(self, tool_infra: _TaskStore) -> None:
+    async def test_status_lists_subtask_ids_in_spawn_order(self, tool_infra: TaskRecordStore) -> None:
         early = str(uuid.uuid4())
         late = str(uuid.uuid4())
         parent = str(uuid.uuid4())
@@ -270,13 +267,13 @@ class TestTaskTool:
         out = await run_text(task_tool, action="status", task_id=parent)
         assert f"subtasks: {early}, {late}" in out
 
-    async def test_status_subtasks_dash_when_none(self, tool_infra: _TaskStore) -> None:
+    async def test_status_subtasks_dash_when_none(self, tool_infra: TaskRecordStore) -> None:
         tid = str(uuid.uuid4())
         await _seed_record(tool_infra, tid, status="completed")
         out = await run_text(task_tool, action="status", task_id=tid)
         assert "subtasks: -" in out
 
-    async def test_cancel_cascades_through_terminal_intermediate(self, tool_infra: _TaskStore) -> None:
+    async def test_cancel_cascades_through_terminal_intermediate(self, tool_infra: TaskRecordStore) -> None:
         task = await _OrchestratorTool().run({})
         parent_id = str(task.id)
         await wait_terminal(tool_infra, await wait_subtask_id(tool_infra, parent_id))

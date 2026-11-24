@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,11 +12,8 @@ import pytest
 from app.lib.task.task_manager import AsyncTask
 from app.lib.tool.base import ToolMessageError
 from app.tools.github import github_tool
+from tests.app.conftest import TaskRecordStore
 from tests.app.lib.tool.conftest import assert_max_char_wire_contract, run_text
-
-
-class _TaskStore(Protocol):
-    """The task record store the tool_infra fixture gives to a test."""
 
 
 def _ok(stdout: str = "ok") -> SimpleNamespace:
@@ -314,7 +310,7 @@ class TestGithub:
         assert result == expected
 
     async def test_view_file_long_file_comes_back_whole(
-        self, tool_infra: _TaskStore
+        self, tool_infra: TaskRecordStore
     ) -> None:
         """A file longer than the default limit comes back whole, and the full text is stored raw."""
         content = "a" * _LARGE_FILE_CHARS

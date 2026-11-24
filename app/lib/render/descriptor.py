@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Protocol
+from typing import TypeAlias
 
 from app.lib.shared.paths import ephemeral_dav_url, resolve_path, resources_dir
 from app.lib.render import cache, fragments, office, probe
@@ -153,5 +153,4 @@ async def build_descriptor(path: str, full_path: str) -> dict:
     return _descriptor(share_path, name, size, mtime, kind, mode="unsupported")
 
 
-class _Field(Protocol):
-    """A value a file description holds."""
+_Field: TypeAlias = str | int | float | list[int] | None
