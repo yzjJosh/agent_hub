@@ -24,6 +24,8 @@ __all__ = ["run_reviewer"]
 
 _VALID_ACTIONS = {"rewrite", "collect", "approve"}
 _FIELDS = ("pass", "reason", "action", "feedback")
+_MAX_TURNS = 70
+_WRAP_UP_TURNS_REMAINING = 5
 _OUTPUT_JSON_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -144,6 +146,8 @@ async def run_reviewer(
         name="research_reviewer",
         system_prompt=system_prompt,
         validator=_reviewer_validator(draft),
+        max_turns=_MAX_TURNS,
+        wrap_up_turns_remaining=_WRAP_UP_TURNS_REMAINING,
         output_json_schema=_OUTPUT_JSON_SCHEMA,
     )
     for tool in tools:

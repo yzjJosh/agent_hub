@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from agents import Agent as SdkAgent, Runner
+from agents import Agent as SdkAgent, MaxTurnsExceeded, Runner
 from agents.run_config import CallModelData, ModelInputData, RunConfig
 from openai import BadRequestError
 
@@ -61,8 +61,13 @@ _THIRD = 0.3
 _NETWORK_IDLE_TIMEOUT_MS = 2000
 _LIVE_TIMEOUT_S = 600
 _OVERSIZED_BODY_REPEAT = 20000
+_EXPECTED_MAX_TURNS = 180
+_EXPECTED_WRAP_UP_TURNS_REMAINING = 10
+_STAGE_ONE_MAX_TURNS = _EXPECTED_MAX_TURNS - _EXPECTED_WRAP_UP_TURNS_REMAINING
 _COMPLETED_RAW = json.dumps({"status": "completed", "summary": "done"})
 _IMPOSSIBLE_RAW = json.dumps({"status": "impossible", "summary": "cannot"})
+_INCOMPLETE_SUMMARY = "Reached turn limit after downloading the report."
+_INCOMPLETE_RAW = json.dumps({"status": "incomplete", "summary": _INCOMPLETE_SUMMARY})
 _LLM_BACKEND_VARS = (
     "REASON_THINKING_BACKEND_URL", "REASON_THINKING_MODEL", "REASON_THINKING_API_KEY",
     "REASON_BACKEND_URL", "REASON_MODEL", "REASON_API_KEY",
@@ -101,10 +106,6 @@ def _failed(message: str = "action failed: boom") -> TransactionResult:
 
 def _stale(message: str = "screen changed since you last saw it, action not run") -> TransactionResult:
     return TransactionResult(TransactionStatus.STALE, message, _tabs(), ())
-
-
-def _cap_reached() -> TransactionResult:
-    return TransactionResult(TransactionStatus.CAP_REACHED, "step budget is used up", Snapshot(tabs={}), ())
 
 
 class FakeSession:
@@ -452,16 +453,13 @@ _EXPECTED_ORDER: dict[str, list[str]] = {
 class FakeTask:
     """The fake agent task handle the runner awaits."""
 
-    def __init__(self, value: str | None, error: Exception | None, hang: bool, on_result: Callable | None) -> None:
+    def __init__(self, value: str | None, error: Exception | None, hang: bool) -> None:
         self._value = value
         self._error = error
         self._hang = hang
-        self._on_result = on_result
         self.cancelled: int = 0
 
     async def result(self) -> str:
-        if self._on_result is not None:
-            await self._on_result()
         if self._hang:
             await asyncio.Event().wait()
         if self._error is not None:
@@ -473,14 +471,10 @@ class FakeTask:
 
 
 class FakeAgentRun:
-    """The fake per-run handle the runner races against."""
+    """The fake per-run handle the runner awaits."""
 
     def __init__(self, task: FakeTask) -> None:
         self.task = task
-        self.cancel_loop: int = 0
-
-    def cancel_run_loop(self) -> None:
-        self.cancel_loop += 1
 
 
 class FakeAgent:
@@ -547,7 +541,7 @@ async def _finish_agent(
 ) -> tuple[FakeAgent, MagicMock, BrowserUseResult, dict[str, str]]:
     """Wire the fakes, run the runner to a finished agent, and give back the agent, the mock, the result, and the downloads dir."""
     agent = FakeAgent()
-    agent.agent_run = FakeAgentRun(FakeTask(raw, None, False, None))
+    agent.agent_run = FakeAgentRun(FakeTask(raw, None, False))
     agent_mock = _wire_agent(monkeypatch, agent)
     seen = _wire_session(monkeypatch, session)
     result = await runner_module.run_browser_use("goal", "/tmp/dl", resources_dir)
@@ -1008,21 +1002,12 @@ class TestActionTools:
         assert "a new tab is opened" in target.description
         assert "the first token on the tab's line in the step result" in target.description
 
-    async def test_cap_reached_result_still_hands_back_the_tool_result(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        session = FakeSession([_cap_reached()])
-        result = await _run_tool(_tool("click", await _wired_tools(monkeypatch, session)), _PARAMS["click"])
-        assert "status: cap_reached, step budget is used up" in result.text
-        assert result.files is None
-
     @pytest.mark.parametrize(
         "transaction",
         [
             pytest.param(_success(), id="success"),
             pytest.param(_failed(), id="failed"),
             pytest.param(_stale(), id="stale"),
-            pytest.param(_cap_reached(), id="cap_reached"),
         ],
     )
     async def test_result_starts_with_the_time_line(
@@ -1139,6 +1124,8 @@ class TestRunBrowserUse:
         assert kwargs["name"] == "browser_use"
         assert kwargs["validator"] is runner_module.validate_role_output
         assert kwargs["backend"] == config.Backend(url="http://think.test/v1", model=None, api_key=None)
+        assert kwargs["max_turns"] == _EXPECTED_MAX_TURNS
+        assert kwargs["wrap_up_turns_remaining"] == _EXPECTED_WRAP_UP_TURNS_REMAINING
         assert kwargs["tool_results_by_id"] is False
         assert callable(kwargs["model_input_filter"])
         assert kwargs["output_json_schema"] == ROLE_OUTPUT_JSON_SCHEMA
@@ -1211,24 +1198,49 @@ class TestRunBrowserUse:
         _, _, result, _ = await _finish_agent(monkeypatch, session, _COMPLETED_RAW)
         assert result.files == ("/tmp/other/x.pdf",)
 
-    async def test_cap_first_stops_the_loop_and_returns_incomplete(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_turn_limit_wrap_up_returns_incomplete_summary_with_downloads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         _set_thinking_backend(monkeypatch)
-        session = FakeSession([_cap_reached()], downloads=["/tmp/res/downloads/txn_2/download"])
+        downloads_dir = str(tmp_path / "dl")
+        resources_dir = str(tmp_path / "res")
+        downloaded_path = str(tmp_path / "res" / "downloads" / "txn_2" / "download")
+        session = FakeSession([], downloads=[downloaded_path])
         _wire_session(monkeypatch, session)
-        agent = FakeAgent()
+        seen_max_turns: list[int | None] = []
+        seen_inputs: list[str | list] = []
 
-        async def on_result() -> None:
-            tool = next(t for t in agent.tools if t.name == "click")
-            await tool.run({"target_id": "tab1", "x": _HALF, "y": _HALF})
+        def run_streamed(
+            _agent: SdkAgent,
+            items: str | list,
+            *,
+            run_config: RunConfig,
+            max_turns: int | None,
+        ) -> MagicMock:
+            _ = run_config
+            seen_max_turns.append(max_turns)
+            seen_inputs.append(items)
+            if max_turns == _STAGE_ONE_MAX_TURNS:
+                return _build_mock_stream(
+                    [{"role": "user", "content": "goal"}],
+                    MaxTurnsExceeded("limit"),
+                    turns=_STAGE_ONE_MAX_TURNS,
+                    new_items=[],
+                )
+            if max_turns == _EXPECTED_WRAP_UP_TURNS_REMAINING:
+                return _build_mock_stream(
+                    list(items),
+                    MaxTurnsExceeded("limit"),
+                    turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+                    new_items=[],
+                )
+            return _build_mock_stream(list(items), None, final_output=_INCOMPLETE_RAW, turns=1, new_items=[])
 
-        agent.agent_run = FakeAgentRun(FakeTask(None, None, True, on_result))
-        _wire_agent(monkeypatch, agent)
-        result = await runner_module.run_browser_use("goal", "/tmp/dl", "/tmp/res")
-        assert result == BrowserUseResult("incomplete", "", ("downloads/txn_2/download",))
-        assert agent.agent_run.cancel_loop == 1
-        assert len(session.transactions) == 1
+        monkeypatch.setattr(Runner, "run_streamed", run_streamed)
+        result = await runner_module.run_browser_use("goal", downloads_dir, resources_dir)
+        assert seen_max_turns == [_STAGE_ONE_MAX_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING, 1]
+        assert "tools are now disabled" in seen_inputs[-1][-1]["content"]
+        assert result == BrowserUseResult("incomplete", _INCOMPLETE_SUMMARY, ("downloads/txn_2/download",))
         assert session.closed == 1
         with pytest.raises(CheckpointError, match="store is closed"):
             await session.checkpoint_store.list()
@@ -1238,7 +1250,7 @@ class TestRunBrowserUse:
     ) -> None:
         _set_thinking_backend(monkeypatch)
         agent = FakeAgent()
-        agent.agent_run = FakeAgentRun(FakeTask(None, RuntimeError("agent validation failed"), False, None))
+        agent.agent_run = FakeAgentRun(FakeTask(None, RuntimeError("agent validation failed"), False))
         _wire_agent(monkeypatch, agent)
         session = FakeSession([])
         _wire_session(monkeypatch, session)
@@ -1253,7 +1265,7 @@ class TestRunBrowserUse:
     ) -> None:
         _set_thinking_backend(monkeypatch)
         agent = FakeAgent()
-        agent.agent_run = FakeAgentRun(FakeTask(None, None, True, None))
+        agent.agent_run = FakeAgentRun(FakeTask(None, None, True))
         _wire_agent(monkeypatch, agent)
         session = FakeSession([])
         _wire_session(monkeypatch, session)
@@ -1581,10 +1593,12 @@ def _overflow_error() -> BadRequestError:
     return BadRequestError("overflow", response=httpx.Response(400, request=request), body={"code": "context_length_exceeded"})
 
 
-def _overflow_stream(
+def _build_mock_stream(
     history: list[dict],
     error: Exception | None,
     *,
+    final_output: str | None = None,
+    turns: int = 0,
     new_items: list[dict] | None = None,
 ) -> MagicMock:
     async def events() -> AsyncIterator:
@@ -1595,9 +1609,24 @@ def _overflow_stream(
 
     return MagicMock(
         stream_events=events,
+        raw_responses=[MagicMock() for _ in range(turns)],
         new_items=history if new_items is None else new_items,
-        to_input_list=lambda: history,
+        to_input_list=lambda: list(history),
+        final_output=final_output,
+    )
+
+
+def _overflow_stream(
+    history: list[dict],
+    error: Exception | None,
+    *,
+    new_items: list[dict] | None = None,
+) -> MagicMock:
+    return _build_mock_stream(
+        history,
+        error,
         final_output=_COMPLETED_RAW if error is None else None,
+        new_items=new_items,
     )
 
 

@@ -16,13 +16,17 @@ from typing import TYPE_CHECKING, Protocol
 
 from agents import Agent as _SdkAgent
 from agents import (
+    AgentsException,
+    MaxTurnsExceeded,
     ModelBehaviorError,
     ModelSettings,
     OpenAIChatCompletionsModel,
+    RunContextWrapper,
     Runner,
     ToolOutputFileContent,
     ToolOutputImage,
     ToolOutputText,
+    default_tool_error_function,
     function_tool,
     set_tracing_disabled,
 )
@@ -70,6 +74,8 @@ if TYPE_CHECKING:
 __all__ = ["Agent", "AgentRun", "ValidationResult"]
 
 _DEFAULT_MAX_ATTEMPTS = 10
+_MIN_MAX_TURNS = 1
+_HARD_WRAP_UP_MAX_TURNS = 1
 _MAX_SERVER_RETRIES = 10
 _RETRY_INITIAL_DELAY = 1.0
 _RETRY_BACKOFF_FACTOR = 2
@@ -82,6 +88,15 @@ _RETRY_NOTICE = (
     "IMPORTANT NOTE: Your last response is dropped. Please correct the error and re-generate your "
     "entire response in your next message. Please don't put any filler content. Your message must "
     "contain ONLY the final output."
+)
+_HARD_WRAP_UP_NOTICE = (
+    "IMPORTANT NOTICE: Your tool-turn limit has been reached and tools are now disabled. "
+    "Do not call any tools. Output ONLY your final response now in this turn."
+)
+_TOOLS_DISABLED_ERROR_MESSAGE = "Tools are disabled because the turn limit was reached."
+_TOOLS_DISABLED_FEEDBACK = (
+    "Error: Tools are disabled because the turn limit was reached. "
+    "Do not call any tools. Output ONLY your final response."
 )
 
 _AGENT_MAX_CHAR_PARAM = Param(
@@ -118,9 +133,40 @@ class _RecoveryStep:
 
 
 @dataclass(frozen=True)
+class _StreamStep:
+    next_input: str | list
+    max_turns: int | None
+
+
+@dataclass(frozen=True)
 class _AttemptResult:
     final_output: str | None
     history_items: list
+    blocked_error: str | None
+
+
+@dataclass
+class _TurnBudget:
+    max_turns: int | None
+    soft_threshold: int = 0
+    turns_used: int = 0
+    is_soft_nudge_sent: bool = False
+    is_hard_wrap_up_sent: bool = False
+
+    @property
+    def is_tools_disabled(self) -> bool:
+        return self.max_turns is not None and self.turns_used >= self.max_turns
+
+    @property
+    def remaining(self) -> int | None:
+        if self.max_turns is None:
+            return None
+        return self.max_turns - self.turns_used
+
+    def record_turns(self, count: int) -> None:
+        if self.max_turns is None:
+            return
+        self.turns_used += count
 
 
 @dataclass
@@ -139,6 +185,44 @@ def _get_run_control(task_id: str) -> _RunControl | None:
 
 class _AgentRunStopped(RuntimeError):
     """Raised when a run ends because a stop was requested."""
+
+
+class _ToolsDisabledError(AgentsException):
+    """Raised when a tool call runs after the turn limit is reached."""
+
+
+def _validate_turn_limit(
+    max_turns: int | None,
+    wrap_up_turns_remaining: int | None,
+) -> None:
+    if max_turns is not None:
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < _MIN_MAX_TURNS:
+            raise ValueError("max_turns must be a positive integer or None")
+    if wrap_up_turns_remaining is None:
+        return
+    if max_turns is None:
+        raise ValueError("wrap_up_turns_remaining requires max_turns to be set")
+    if (
+        isinstance(wrap_up_turns_remaining, bool)
+        or not isinstance(wrap_up_turns_remaining, int)
+        or wrap_up_turns_remaining < 0
+        or wrap_up_turns_remaining >= max_turns
+    ):
+        raise ValueError("wrap_up_turns_remaining must be an integer between 0 and max_turns - 1")
+
+
+def _format_soft_wrap_up_notice(remaining: int) -> str:
+    turn_word = "turn" if remaining == 1 else "turns"
+    return (
+        f"IMPORTANT NOTICE: You have {remaining} tool-enabled {turn_word} remaining "
+        "before tools are disabled. Start wrapping up your work now and prepare your final response."
+    )
+
+
+def _convert_input_to_message_list(current_input: str | list) -> list:
+    if isinstance(current_input, list):
+        return list(current_input)
+    return [{"role": "user", "content": current_input}]
 
 
 def _format_log_timestamp() -> str:
@@ -356,11 +440,33 @@ class Agent[T]:
         backend: config.Backend | None = None,
         timeout: float | None = None,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+        max_turns: int | None = None,
+        wrap_up_turns_remaining: int | None = None,
         tool_results_by_id: bool = False,
         model_input_filter: CallModelInputFilter | None = None,
         compact_hook: context.CompactHook | None = None,
         output_json_schema: dict | None = None,
     ) -> None:
+        """Create a reusable agent configuration.
+
+        Args:
+            name: Name recorded for runs of this agent.
+            system_prompt: System prompt sent to the model.
+            validator: Check function that accepts or rejects model output.
+            backend: Backend settings for model calls, or None for the default.
+            timeout: Run timeout in seconds, or None for no timeout.
+            max_attempts: Maximum output validation attempts per run.
+            max_turns: Maximum tool turns per run before tools stop, or None for no limit.
+            wrap_up_turns_remaining: Remaining tool turns when a wrap up notice is sent, or None to skip it.
+            tool_results_by_id: Whether tracked tools return only a task id by default.
+            model_input_filter: Optional filter run on model input before each call.
+            compact_hook: Optional hook that shrinks context when input is too large.
+            output_json_schema: Optional JSON schema enforced on model output.
+
+        Raises:
+            ValueError: If max_turns is not a positive integer, or if wrap_up_turns_remaining is out of range or set without max_turns.
+        """
+        _validate_turn_limit(max_turns, wrap_up_turns_remaining)
         self._name = name
         self._system_prompt = system_prompt
         self._tools: list[Agent._AgentToolAdapter] = []
@@ -368,6 +474,8 @@ class Agent[T]:
         self._backend = backend
         self._timeout = timeout
         self._max_attempts = max_attempts
+        self._max_turns = max_turns
+        self._wrap_up_turns_remaining = wrap_up_turns_remaining
         self._tool_results_by_id = tool_results_by_id
         self._model_input_filter = model_input_filter
         self._compact_hook = compact_hook
@@ -408,6 +516,7 @@ class Agent[T]:
         self,
         adapter: _AgentToolAdapter,
         tool_calls: dict[str, _ToolCallOutcome],
+        budget: _TurnBudget,
     ) -> FunctionTool:
         wire_params = adapter.params
         names = [param.name for param in wire_params]
@@ -420,6 +529,8 @@ class Agent[T]:
         async def _execute_tool_call(
             ctx: ToolContext, *args: ParamValue
         ) -> str | list[ToolOutputText | ToolOutputImage | ToolOutputFileContent]:
+            if budget.is_tools_disabled:
+                raise _ToolsDisabledError(_TOOLS_DISABLED_ERROR_MESSAGE)
             params = dict(zip(names, args))
             task = await adapter.run(params)
             result_text = await adapter.inner_tool.read_result_text(task)
@@ -429,6 +540,13 @@ class Agent[T]:
                 params, task, result_text, outcome.task_id, outcome.status
             )
 
+        def _reject_or_format_tool_error(ctx: RunContextWrapper, error: Exception) -> str:
+            if isinstance(error, _ToolsDisabledError):
+                raise error
+            if budget.is_tools_disabled:
+                raise _ToolsDisabledError(_TOOLS_DISABLED_ERROR_MESSAGE) from error
+            return default_tool_error_function(ctx, error)
+
         _execute_tool_call.__signature__ = signature  # type: ignore[attr-defined]
         _execute_tool_call.__doc__ = adapter.description
         return function_tool(
@@ -436,6 +554,7 @@ class Agent[T]:
             name_override=adapter.name,
             description_override=adapter.description,
             use_docstring_info=False,
+            failure_error_function=_reject_or_format_tool_error,
         )
 
     async def run(self, user_prompt: str) -> AgentRun:
@@ -476,10 +595,11 @@ class Agent[T]:
         self,
         model: OpenAIChatCompletionsModel,
         tool_calls: dict[str, _ToolCallOutcome],
+        budget: _TurnBudget,
     ) -> _SdkAgent:
         kwargs: dict = {"name": self._name, "instructions": self._system_prompt, "model": model}
         if self._tools:
-            kwargs["tools"] = [self._build_sdk_tool(tool, tool_calls) for tool in self._tools]
+            kwargs["tools"] = [self._build_sdk_tool(tool, tool_calls, budget) for tool in self._tools]
         if self._output_json_schema is not None:
             kwargs["model_settings"] = ModelSettings(
                 extra_args={"response_format": _build_response_format(self._output_json_schema)}
@@ -521,6 +641,8 @@ class Agent[T]:
     ) -> ValidationResult[T]:
         if final_output is None:
             return ValidationResult(is_valid=False, error="Error: result is None")
+        if not final_output.strip():
+            return ValidationResult(is_valid=False, error="Error: result is empty")
         raw_result = self._validator(final_output, agent_run)
         if inspect.isawaitable(raw_result):
             return await raw_result
@@ -536,7 +658,11 @@ class Agent[T]:
         control: _RunControl,
     ) -> str:
         tool_calls: dict[str, _ToolCallOutcome] = {}
-        sdk_agent = self._build_sdk_agent(model, tool_calls)
+        budget = _TurnBudget(
+            max_turns=self._max_turns,
+            soft_threshold=self._wrap_up_turns_remaining or 0,
+        )
+        sdk_agent = self._build_sdk_agent(model, tool_calls, budget)
         input_text: str | list = user_prompt
         await writer.write(build_conversation_event("user", 1, text=user_prompt))
         last_error = ""
@@ -545,9 +671,14 @@ class Agent[T]:
             for attempt in range(1, self._max_attempts + 1):
                 print(f"[{_format_log_timestamp()}] attempt {attempt}/{self._max_attempts}")
                 attempt_result = await self._run_attempt(
-                    sdk_agent, backend, input_text, attempt, tool_calls, writer, control
+                    sdk_agent, backend, input_text, attempt, tool_calls, writer, control, budget
                 )
-                validation_result = await self._evaluate_output(attempt_result.final_output, agent_run)
+                if attempt_result.blocked_error is not None:
+                    validation_result: ValidationResult[T] = ValidationResult(
+                        is_valid=False, error=attempt_result.blocked_error
+                    )
+                else:
+                    validation_result = await self._evaluate_output(attempt_result.final_output, agent_run)
                 if validation_result.is_valid:
                     serialized_output = (
                         validation_result.value
@@ -568,13 +699,76 @@ class Agent[T]:
         print(f"[{_format_log_timestamp()}] agent failed: {last_error}")
         raise RuntimeError(f"agent validation failed after {self._max_attempts} attempts: {last_error}")
 
-    def _open_stream(self, sdk_agent: _SdkAgent, input_text: str | list) -> RunResultStreaming:
+    def _open_stream(
+        self,
+        sdk_agent: _SdkAgent,
+        input_text: str | list,
+        max_turns: int | None,
+    ) -> RunResultStreaming:
         if self._model_input_filter is None:
-            return Runner.run_streamed(sdk_agent, input_text, max_turns=None)  # type: ignore[arg-type]
+            return Runner.run_streamed(sdk_agent, input_text, max_turns=max_turns)  # type: ignore[arg-type]
         run_config = RunConfig(call_model_input_filter=self._model_input_filter)
         return Runner.run_streamed(
-            sdk_agent, input_text, max_turns=None, run_config=run_config  # type: ignore[arg-type]
+            sdk_agent, input_text, max_turns=max_turns, run_config=run_config  # type: ignore[arg-type]
         )
+
+    async def _prepare_stream_step(
+        self,
+        current_input: str | list,
+        attempt: int,
+        budget: _TurnBudget,
+        writer: ConversationLogWriter,
+    ) -> _StreamStep:
+        remaining = budget.remaining
+        if remaining is None:
+            return _StreamStep(next_input=current_input, max_turns=None)
+        if remaining > budget.soft_threshold:
+            return _StreamStep(next_input=current_input, max_turns=remaining - budget.soft_threshold)
+        if remaining > 0:
+            if not budget.is_soft_nudge_sent:
+                notice = _format_soft_wrap_up_notice(remaining)
+                current_input = _convert_input_to_message_list(current_input) + [{"role": "user", "content": notice}]
+                await writer.write(build_conversation_event("system", attempt, text=notice))
+                budget.is_soft_nudge_sent = True
+            return _StreamStep(next_input=current_input, max_turns=remaining)
+        if not budget.is_hard_wrap_up_sent:
+            current_input = _convert_input_to_message_list(current_input) + [
+                {"role": "user", "content": _HARD_WRAP_UP_NOTICE}
+            ]
+            await writer.write(build_conversation_event("system", attempt, text=_HARD_WRAP_UP_NOTICE))
+            budget.is_hard_wrap_up_sent = True
+        return _StreamStep(next_input=current_input, max_turns=_HARD_WRAP_UP_MAX_TURNS)
+
+    async def _finish_stream_attempt(
+        self,
+        result: RunResultStreaming,
+        attempt: int,
+        writer: ConversationLogWriter,
+        budget: _TurnBudget,
+    ) -> _AttemptResult:
+        if budget.max_turns is not None:
+            budget.record_turns(len(result.raw_responses))
+        final_output = result.final_output
+        if final_output is not None:
+            await writer.write(build_conversation_event("assistant", attempt, text=final_output))
+        return _AttemptResult(
+            final_output=final_output,
+            history_items=result.to_input_list(),
+            blocked_error=None,
+        )
+
+    def _record_reached_turn_boundary_and_extract_history(
+        self,
+        result: RunResultStreaming,
+        stream_max_turns: int | None,
+        budget: _TurnBudget,
+        exc: MaxTurnsExceeded,
+    ) -> list:
+        if budget.is_tools_disabled:
+            raise RuntimeError("agent failed to produce a final output after turn limit") from exc
+        advanced = max(len(result.raw_responses), stream_max_turns or 0)
+        budget.record_turns(advanced)
+        return result.to_input_list()
 
     async def _compact_for_overflow(
         self,
@@ -647,24 +841,35 @@ class Agent[T]:
         tool_calls: dict[str, _ToolCallOutcome],
         writer: ConversationLogWriter,
         control: _RunControl,
+        budget: _TurnBudget,
     ) -> _AttemptResult:
         current_input: str | list = input_text
         retries = 0
         measure = self._build_compaction_measure(sdk_agent)
         while True:
-            result = self._open_stream(sdk_agent, current_input)
+            step = await self._prepare_stream_step(current_input, attempt, budget, writer)
+            current_input = step.next_input
+            result = self._open_stream(sdk_agent, current_input, step.max_turns)
             control.active_stream = result
             caught_exc: Exception | None = None
             try:
-                await self._record_conversation(result, attempt, tool_calls, writer)
-                final_output = result.final_output
-                if final_output is not None:
-                    await writer.write(build_conversation_event("assistant", attempt, text=final_output))
-                history_items = result.to_input_list()
-                return _AttemptResult(final_output=final_output, history_items=history_items)
+                await self._record_conversation(result, attempt, tool_calls, writer, budget)
+                return await self._finish_stream_attempt(result, attempt, writer, budget)
             except Exception as exc:
                 if control.is_stop_requested:
                     raise _AgentRunStopped("agent run stopped on request") from exc
+                if isinstance(exc, MaxTurnsExceeded) and budget.max_turns is not None:
+                    current_input = self._record_reached_turn_boundary_and_extract_history(result, step.max_turns, budget, exc)
+                    retries = 0
+                    continue
+                if budget.is_tools_disabled and isinstance(exc, (_ToolsDisabledError, ModelBehaviorError)):
+                    return _AttemptResult(
+                        final_output=None,
+                        history_items=_convert_input_to_message_list(current_input),
+                        blocked_error=_TOOLS_DISABLED_FEEDBACK,
+                    )
+                if budget.max_turns is not None:
+                    budget.record_turns(len(result.raw_responses))
                 if result.new_items:
                     current_input = result.to_input_list()
                     retries = 0
@@ -753,9 +958,11 @@ class Agent[T]:
         call_names: dict[str, str],
         call_starts: dict[str, float],
         writer: ConversationLogWriter,
+        budget: _TurnBudget,
     ) -> None:
         if item.type == "tool_call_item":
-            await self._record_tool_call_started(item, attempt, tool_calls, call_names, call_starts, writer)
+            if not budget.is_tools_disabled:
+                await self._record_tool_call_started(item, attempt, tool_calls, call_names, call_starts, writer)
         elif item.type == "tool_call_output_item":
             await self._record_tool_call_finished(item, attempt, tool_calls, call_names, call_starts, writer)
 
@@ -765,6 +972,7 @@ class Agent[T]:
         attempt: int,
         tool_calls: dict[str, _ToolCallOutcome],
         writer: ConversationLogWriter,
+        budget: _TurnBudget,
     ) -> None:
         call_names: dict[str, str] = {}
         call_starts: dict[str, float] = {}
@@ -786,5 +994,5 @@ class Agent[T]:
                     await writer.write(build_conversation_event(section, attempt, text=delta))
             elif isinstance(event, RunItemStreamEvent):
                 await self._record_tool_item(
-                    event.item, attempt, tool_calls, call_names, call_starts, writer
+                    event.item, attempt, tool_calls, call_names, call_starts, writer, budget
                 )

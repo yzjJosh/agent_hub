@@ -28,6 +28,7 @@ from tests.app.agents.research.conftest import (
     assert_cancels_agent_task,
     patch_agent_run,
     patch_runner,
+    patch_wrap_up_runner,
     stub_result,
     text_event,
     track_agent_runs,
@@ -46,6 +47,10 @@ _COLLECT_GOAL = "GPU market"
 _INSTRUCTION = "Search for GPU prices"
 _RUN_TEXT = "## Results\n1. **GPU prices**\n   URL: https://x.test/a"
 _MAX_PARALLEL = 3
+_EXPECTED_MAX_TURNS = 135
+_EXPECTED_WRAP_UP_TURNS_REMAINING = 10
+_STAGE_ONE_TURNS = _EXPECTED_MAX_TURNS - _EXPECTED_WRAP_UP_TURNS_REMAINING
+_MAX_ATTEMPTS = 10
 _POLL = 0.01
 
 
@@ -142,6 +147,8 @@ def _patch_call_runner(
     def _stub(sdk_agent: SdkAgent, _input: str | list) -> MagicMock:
         stub = MagicMock()
         stub.final_output = citations
+        stub.raw_responses = []
+        stub.new_items = []
         stub.to_input_list = MagicMock(return_value=[{"role": "user", "content": "collector"}])
         stub.cancel = MagicMock()
 
@@ -449,6 +456,74 @@ class TestCollectorBackend:
         assert callable(kwargs["validator"])
         assert result.task.status.value == "completed"
 
+    async def test_agent_configures_turn_limits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_spy = MagicMock(wraps=collector_module.Agent)
+        monkeypatch.setattr(collector_module, "Agent", agent_spy)
+        result = await _collect_one(monkeypatch, _CITATIONS, calls=(_GPU_PRICES_CALL,))
+        kwargs = agent_spy.call_args.kwargs
+        assert kwargs["max_turns"] == _EXPECTED_MAX_TURNS
+        assert kwargs["wrap_up_turns_remaining"] == _EXPECTED_WRAP_UP_TURNS_REMAINING
+        assert result.task.status.value == "completed"
+
+
+class TestCollectorTurnLimit:
+    async def test_stage_two_wrap_up_ingests_cited_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=_CITATIONS,
+            role="collector",
+        )
+        patch_agent_run(monkeypatch, calls=(_GPU_PRICES_CALL,))
+        write_search_result(_GPU_PRICES_CALL.run_dir, _RUN_TEXT)
+        ledger = CollectionLedger()
+        store = _recording_store()
+
+        text = await _collect(CollectEvidence(_COLLECT_GOAL, store, ledger), _INSTRUCTION)
+
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING, 1]
+        assert f"{_EXPECTED_WRAP_UP_TURNS_REMAINING} tool-enabled turns remaining" in calls.inputs[1][-1]["content"]
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
+        assert text == (
+            "[c001]\n"
+            f"Summary: {_SUMMARY}\n"
+            f"- run_id={_CITED_ID} (brave_search)"
+        )
+        assert ledger.records[0].summary == _SUMMARY
+        assert ledger.records[0].evidence == [EvidenceItem(run_id=_CITED_ID, tool_name="brave_search")]
+
+    async def test_stage_two_exhaustion_without_data_source_call_falls_back_to_empty_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=_deliverable([]),
+            role="collector",
+        )
+        tasks = _track_canned_runs(monkeypatch, ())
+        ledger = CollectionLedger()
+        store = _recording_store()
+
+        text = await _collect(CollectEvidence(_COLLECT_GOAL, store, ledger), _INSTRUCTION)
+
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING] + [1] * _MAX_ATTEMPTS
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
+        assert text == "[c001]\nNo evidence collected."
+        assert _writes(store) == []
+        assert ledger.registry == {}
+        assert [(r.id, r.summary, r.evidence) for r in ledger.records] == [("c001", "", [])]
+        with pytest.raises(RuntimeError, match="No data-source tool call completed during the run."):
+            await tasks[0].result()
+
 
 def _writes(store: MagicMock) -> list[dict]:
     """List the keyword arguments of every store write, with the text under the key text."""
@@ -479,6 +554,8 @@ class _CollectorRuns:
 
         return MagicMock(
             final_output=self.deliverable,
+            raw_responses=[],
+            new_items=[],
             stream_events=MagicMock(side_effect=_stream),
             to_input_list=MagicMock(return_value=[{"role": "user", "content": "collector"}]),
             cancel=MagicMock(),

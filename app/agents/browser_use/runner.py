@@ -14,7 +14,7 @@ from agents.run_config import CallModelData, ModelInputData
 
 from app.agents.browser_use.checkpoint import CheckpointTool
 from app.agents.browser_use.checkpoint_store import CaptureInterval, CheckpointStore, DomCapture, TabCapture
-from app.agents.browser_use.models import BrowserUseResult, TransactionResult, TransactionStatus
+from app.agents.browser_use.models import BrowserUseResult, TransactionResult
 from app.agents.browser_use.prompts.role import (
     ROLE_OUTPUT_JSON_SCHEMA,
     build_role_prompt,
@@ -34,6 +34,8 @@ from app.tools.task_tool import task_tool
 __all__ = ["run_browser_use"]
 
 _AGENT_NAME = "browser_use"
+_MAX_TURNS = 180
+_WRAP_UP_TURNS_REMAINING = 10
 
 _NETWORK_IDLE_TIMEOUT_MS = 2000
 _CLICK_SETTLE_DELAY_SECONDS = 2.0
@@ -386,14 +388,13 @@ def _scroll_action(dx: float, dy: float, x: float | None, y: float | None) -> Ac
 
 
 class _ActionTool(Tool):
-    """One browser action bound to the session and the cap signal."""
+    """One browser action bound to the session."""
 
     is_tracked: ClassVar[bool] = True
     result_render_type: ClassVar[str] = "text"
 
-    def __init__(self, session: BrowserSession, cap_reached: asyncio.Event) -> None:
+    def __init__(self, session: BrowserSession) -> None:
         self._session = session
-        self._cap_reached = cap_reached
 
     async def _transact(
         self,
@@ -412,8 +413,6 @@ class _ActionTool(Tool):
             source_action=self.name,
             capture_dom=capture_dom,
         )
-        if result.status is TransactionStatus.CAP_REACHED:
-            self._cap_reached.set()
         base = self._step_result(result)
         return ToolResult(
             text=f"{_time_line()}\n{base.text}",
@@ -481,8 +480,8 @@ class _UploadResourcesTool(_ActionTool):
         Param("target_id", str | None, None, description=_TARGET_ID_DESC),
     )
 
-    def __init__(self, session: BrowserSession, cap_reached: asyncio.Event, resources_dir: str) -> None:
-        super().__init__(session, cap_reached)
+    def __init__(self, session: BrowserSession, resources_dir: str) -> None:
+        super().__init__(session)
         self._resources_dir = resources_dir
 
     @override
@@ -755,8 +754,8 @@ class _DownloadClickTool(_ActionTool):
         Param("target_id", str | None, None, description=_TARGET_ID_DESC),
     )
 
-    def __init__(self, session: BrowserSession, cap_reached: asyncio.Event, resources_dir: str) -> None:
-        super().__init__(session, cap_reached)
+    def __init__(self, session: BrowserSession, resources_dir: str) -> None:
+        super().__init__(session)
         self._resources_dir = resources_dir
 
     @override
@@ -850,25 +849,25 @@ class _DumpPageTool(_ActionTool):
         )
 
 
-def _build_tools(session: BrowserSession, cap_reached: asyncio.Event, resources_dir: str) -> tuple[Tool, ...]:
-    """The browser action tools bound to the session and the cap signal."""
+def _build_tools(session: BrowserSession, resources_dir: str) -> tuple[Tool, ...]:
+    """The browser action tools bound to the session."""
     return (
-        _OpenUrlTool(session, cap_reached),
-        _ClickTool(session, cap_reached),
-        _UploadResourcesTool(session, cap_reached, resources_dir),
-        _MoveMouseTool(session, cap_reached),
-        _TypeTextTool(session, cap_reached),
-        _ReplaceInputTextTool(session, cap_reached),
-        _ScrollTool(session, cap_reached),
-        _PressKeyTool(session, cap_reached),
-        _GoBackTool(session, cap_reached),
-        _GoForwardTool(session, cap_reached),
-        _ClosePageTool(session, cap_reached),
-        _SolveCaptchaTool(session, cap_reached),
-        _WaitTool(session, cap_reached),
-        _DownloadClickTool(session, cap_reached, resources_dir),
-        _RefreshTool(session, cap_reached),
-        _DumpPageTool(session, cap_reached),
+        _OpenUrlTool(session),
+        _ClickTool(session),
+        _UploadResourcesTool(session, resources_dir),
+        _MoveMouseTool(session),
+        _TypeTextTool(session),
+        _ReplaceInputTextTool(session),
+        _ScrollTool(session),
+        _PressKeyTool(session),
+        _GoBackTool(session),
+        _GoForwardTool(session),
+        _ClosePageTool(session),
+        _SolveCaptchaTool(session),
+        _WaitTool(session),
+        _DownloadClickTool(session, resources_dir),
+        _RefreshTool(session),
+        _DumpPageTool(session),
     )
 
 
@@ -878,6 +877,8 @@ def _build_agent(tools: tuple[Tool, ...], backend: config.Backend) -> Agent:
         system_prompt=build_role_prompt(tools + (task_tool, read_media_or_doc_tool)),
         validator=validate_role_output,
         backend=backend,
+        max_turns=_MAX_TURNS,
+        wrap_up_turns_remaining=_WRAP_UP_TURNS_REMAINING,
         tool_results_by_id=False,
         model_input_filter=_prune_model_history,
         compact_hook=_compact_dom_dumps,
@@ -913,34 +914,18 @@ async def run_browser_use(
     store = CheckpointStore(downloads_dir, resources_root=resources_dir)
     session = BrowserSession(downloads_dir, checkpoint_store=store)
     agent_run: AgentRun | None = None
-    cap_task: asyncio.Task[None] | None = None
-    result_task: asyncio.Task[str] | None = None
     try:
         await session.open()
-        cap_reached = asyncio.Event()
-        tools = _build_tools(session, cap_reached, resources_dir) + (CheckpointTool(store),)
+        tools = _build_tools(session, resources_dir) + (CheckpointTool(store),)
         agent = _build_agent(tools, llm_backend)
         agent_run = await agent.run(prompt)
-        cap_task = asyncio.create_task(cap_reached.wait())
-        result_task = asyncio.create_task(agent_run.task.result())
-        done, _ = await asyncio.wait({result_task, cap_task}, return_when=asyncio.FIRST_COMPLETED)
-        if result_task in done:
-            raw = await result_task
-            return _final_result(raw, await session.get_downloaded_files(), resources_dir)
-        agent_run.cancel_run_loop()
-        downloads = await session.get_downloaded_files()
-        return BrowserUseResult("incomplete", "", _resource_paths(downloads, resources_dir))
+        raw = await agent_run.task.result()
+        return _final_result(raw, await session.get_downloaded_files(), resources_dir)
     except asyncio.CancelledError:
         if agent_run is not None:
             await asyncio.shield(agent_run.task.cancel())
         raise
     finally:
-        if cap_task is not None:
-            if not cap_task.done():
-                cap_task.cancel()
-            if not result_task.done():
-                result_task.cancel()
-            await asyncio.gather(cap_task, result_task, return_exceptions=True)
         try:
             await session.close()
         finally:

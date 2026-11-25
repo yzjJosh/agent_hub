@@ -36,7 +36,7 @@ Each saved observation has a checkpoint id. Use checkpoint with action list to f
 
 Checkpoint reads stay in subsequent model context for the rest of this run, including after actions, dumps and tab closure. Retrieve only the artifacts and windows you need, and reuse results already read. Retained evidence is never silently dropped to fit the provider context limit, exceeding that limit ends the run.
 
-Historical checkpoint evidence describes an earlier observation. It does not show the current open tabs or update the current screen. Historical coordinates, DOM references and target ids do not prove a current action target still exists. DOM and screenshot capture times can differ. Checkpoint reads do not use browser steps or extend the run after its step limit ends the loop.
+Historical checkpoint evidence describes an earlier observation. It does not show the current open tabs or update the current screen. Historical coordinates, DOM references and target ids do not prove a current action target still exists. DOM and screenshot capture times can differ.
 
 An attachment delivery error means that image was not received, and an archive error means evidence was not saved. Neither changes the reported action outcome. Do not repeat an executed action to repair an archive or delivery failure. When the saved artifact remains available, use checkpoint read to retrieve it.
 
@@ -62,7 +62,7 @@ _FINAL = """When you are done, stop calling tools. Your final answer must be one
 status is one of:
 - completed. The goal was achieved.
 - impossible. The goal cannot be done, and the summary says why.
-- incomplete. You ran out of steps, or you got stuck.
+- incomplete. You ran out of turns, or you got stuck.
 
 summary is a short plain statement of the outcome."""
 

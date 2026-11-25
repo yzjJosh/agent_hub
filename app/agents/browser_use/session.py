@@ -28,7 +28,6 @@ _VERBOSE = True
 _CAPTURE_TIMEOUT_S = 60
 _TITLE_CAP = 120
 _URL_CAP = 300
-_TRANSACTION_BUDGET = 200
 _GUARD_SIMILARITY = 0.70
 _GUARD_BLOCK_LIMIT = 3
 _DOWNLOAD_TIMEOUT_S = 30
@@ -220,19 +219,10 @@ class BrowserSession:
             txn = self._transaction_id
             if _VERBOSE:
                 print(
-                    f"[BrowserSession.transact] txn {txn} of {_TRANSACTION_BUDGET} start, action={action!r}, "
+                    f"[BrowserSession.transact] txn {txn} start, action={action!r}, "
                     f"target_id={target_id!r}, new_tab={new_tab}, monitor_download={monitor_download}",
                     flush=True,
                 )
-            if txn >= _TRANSACTION_BUDGET:
-                used_up = "step budget is used up"
-                if _VERBOSE:
-                    print(
-                        f"[BrowserSession.transact] txn {txn} end, status=CAP_REACHED, message={used_up!r}",
-                        flush=True,
-                    )
-                snapshot = self._last_snapshot if self._last_snapshot is not None else Snapshot(tabs={})
-                return TransactionResult(TransactionStatus.CAP_REACHED, used_up, snapshot, ())
             return await self._transact_action(
                 manager, action, target_id, new_tab, monitor_download, source_action, capture_dom,
             )

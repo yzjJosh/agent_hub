@@ -17,6 +17,7 @@ from tests.app.agents.research.conftest import (
     assert_cancels_agent_task,
     patch_agent_run,
     patch_runner,
+    patch_wrap_up_runner,
     record_user_messages,
     search_result_for,
     stub_result,
@@ -26,6 +27,10 @@ from tests.app.agents.research.conftest import (
 
 _GOAL = "GPU market analysis"
 _BACKEND = "http://backend.test/"
+_EXPECTED_MAX_TURNS = 50
+_EXPECTED_WRAP_UP_TURNS_REMAINING = 5
+_STAGE_ONE_TURNS = _EXPECTED_MAX_TURNS - _EXPECTED_WRAP_UP_TURNS_REMAINING
+_MAX_ATTEMPTS = 10
 _UNVERIFIED = (
     "Report cites references that were not verified "
     "(not read with task(action='result') and not surfaced in a search_evidence result)"
@@ -139,13 +144,65 @@ class TestResearcherRun:
         assert "[c001] Instruction: Search for GPU prices\nNo evidence collected." in messages[0]
         assert "Summary:" not in messages[0]
 
-    async def test_agent_does_not_set_output_json_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run_capturing_agent_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         report = "# Report\n\nGPU prices rose 15% this year [[ref:run-1]]."
         _stub_report(monkeypatch, report, events=(_read_event("run-1"),))
         agent_spy = MagicMock(wraps=researcher_module.Agent)
         monkeypatch.setattr(researcher_module, "Agent", agent_spy)
         assert await run_researcher(_GOAL, _ledger("run-1"), tools=(FakeTool(),)) == report
-        assert agent_spy.call_args.kwargs.get("output_json_schema") is None
+        return agent_spy.call_args.kwargs
+
+    async def test_agent_does_not_set_output_json_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        kwargs = await self._run_capturing_agent_kwargs(monkeypatch)
+        assert kwargs.get("output_json_schema") is None
+
+    async def test_agent_configures_turn_limits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        kwargs = await self._run_capturing_agent_kwargs(monkeypatch)
+        assert kwargs["max_turns"] == _EXPECTED_MAX_TURNS
+        assert kwargs["wrap_up_turns_remaining"] == _EXPECTED_WRAP_UP_TURNS_REMAINING
+
+
+class TestResearcherTurnLimit:
+    async def test_stage_two_wrap_up_returns_verified_report(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", _BACKEND)
+        report = "# Report\n\nGPU prices rose 15% this year [[ref:run-1]]."
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=report,
+            role="researcher",
+        )
+        patch_agent_run(monkeypatch, events=(_read_event("run-1"),))
+
+        result = await run_researcher(_GOAL, _ledger("run-1"), tools=(FakeTool(),))
+
+        assert result == report
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING, 1]
+        assert f"{_EXPECTED_WRAP_UP_TURNS_REMAINING} tool-enabled turns remaining" in calls.inputs[1][-1]["content"]
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
+
+    async def test_stage_two_exhaustion_without_collection_raises_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", _BACKEND)
+        report = "# Report\n\n[INSUFFICIENT DATA] The market grew steadily across all segments."
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=report,
+            role="researcher",
+        )
+        patch_agent_run(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="Call collect_evidence before writing the report."):
+            await run_researcher(_GOAL, CollectionLedger(), tools=(FakeTool(),))
+
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING] + [1] * _MAX_ATTEMPTS
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
 
 
 class TestResearcherCollectionHappened:

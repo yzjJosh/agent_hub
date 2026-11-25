@@ -23,7 +23,6 @@ class TransactionStatus(Enum):
 
     SUCCESS = auto()
     STALE = auto()
-    CAP_REACHED = auto()
     FAILED = auto()
 
 

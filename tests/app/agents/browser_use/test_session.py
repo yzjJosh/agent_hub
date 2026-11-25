@@ -13,7 +13,7 @@ from app.lib.browser.browser_manager import BrowserManager
 from tests.app.agents.browser_use.conftest import FakeManager
 
 _DOWNLOADS_DIR = "/tmp/downloads"
-_BUDGET = 200
+_PAST_OLD_CAP_TRANSACTIONS = 200
 _QUARTER_RATIO = 0.25
 _TENTH_RATIO = 0.1
 _FIFTH_RATIO = 0.2
@@ -109,13 +109,11 @@ async def _transact_with_colors(
     return statuses
 
 
-async def _use_up_budget(session: BrowserSession) -> TransactionResult:
-    """Run one transaction per budget slot, and give back the last one."""
-    result = await session.transact(_action_ok, None)
-    for _ in range(_BUDGET - 1):
-        result = await session.transact(_action_ok, None)
-    assert result.status is TransactionStatus.SUCCESS
-    return result
+async def _run_transactions(session: BrowserSession, tab: str, count: int) -> None:
+    """Run count successful transactions on the given tab."""
+    for _ in range(count):
+        result = await session.transact(_action_ok, tab)
+        assert result.status is TransactionStatus.SUCCESS
 
 
 async def _transact_admitted(
@@ -278,30 +276,27 @@ class TestTransact:
         assert list(result.snapshot.tabs) == ["tab1"]
         assert result.snapshot.tabs["tab1"].screenshot_path == str(tmp_path / "checkpoints" / str(result.snapshot.checkpoint_id) / "01.jpg")
 
-    async def test_cap_reached_skips_action(
+    async def test_transact_continues_past_two_hundred_with_monotonic_artifact_dirs(
         self,
         fake_manager: FakeManager,
         tmp_path: Path,
     ) -> None:
-        fake_manager.open_tab()
+        tab = fake_manager.open_tab()
+        fake_manager.download_queue = [{"downloaded": True}, {"downloaded": True}]
         session = await _open_session(str(tmp_path))
-        await _use_up_budget(session)
+        first = await session.transact(_action_ok, tab, monitor_download=True)
+        assert first.status is TransactionStatus.SUCCESS
+        assert first.files == (str(tmp_path / "txn_0" / "download"),)
+        await _run_transactions(session, tab, _PAST_OLD_CAP_TRANSACTIONS - 1)
         calls, action = _counting_action()
-        result = await session.transact(action, None)
-        assert result.status is TransactionStatus.CAP_REACHED
-        assert result.message == "step budget is used up"
-        assert calls == []
-
-    async def test_cap_returns_last_snapshot_after_budget_used(
-        self,
-        fake_manager: FakeManager,
-        tmp_path: Path,
-    ) -> None:
-        session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        last = await _use_up_budget(session)
-        result = await session.transact(_action_ok, None)
-        assert result.status is TransactionStatus.CAP_REACHED
-        assert result.snapshot is last.snapshot
+        after_two_hundred = await session.transact(action, tab, monitor_download=True)
+        assert after_two_hundred.status is TransactionStatus.SUCCESS
+        assert calls == [1]
+        assert after_two_hundred.files == (str(tmp_path / f"txn_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),)
+        assert await session.get_downloaded_files() == [
+            str(tmp_path / "txn_0" / "download"),
+            str(tmp_path / f"txn_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),
+        ]
 
     async def test_failed_action_reports_failed(
         self,
@@ -1027,18 +1022,6 @@ class TestCheckpointAcquisition:
         assert saved.text == "Still available"
         assert saved.tab.screenshot.unavailable_reason == "Screenshot capture failed"
         assert result.status is TransactionStatus.SUCCESS
-
-    async def test_cap_response_reuses_checkpoint(
-        self, fake_manager: FakeManager, tmp_path: Path,
-    ) -> None:
-        """The step limit returns the last actual observation."""
-        fake_manager.open_tab()
-        store, session = await _open_archived_session(tmp_path)
-        last = await _use_up_budget(session)
-        capped = await session.transact(_action_ok, None)
-        assert capped.status is TransactionStatus.CAP_REACHED
-        assert capped.snapshot == last.snapshot
-        assert len((await store.list(limit=_BUDGET)).rows) == _BUDGET
 
     async def test_archive_failure_preserves_executed_action(
         self, fake_manager: FakeManager, tmp_path: Path,

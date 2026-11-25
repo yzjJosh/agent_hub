@@ -5,7 +5,7 @@ import json
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
 from datetime import timedelta
 from functools import partial
@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import aiofiles.threadpool
 from agents import Agent as _SdkAgent
 from agents import (
+    MaxTurnsExceeded,
     ModelBehaviorError,
     OpenAIChatCompletionsModel,
     ToolOutputFileContent,
@@ -2013,6 +2014,21 @@ class _CountedTool(Tool):
         return ToolResult(text=f"noted:{params['text']}")
 
 
+def _install_mock_openai_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[httpx.Request], httpx.Response] | Callable[[httpx.Request], Awaitable[httpx.Response]],
+    clients: list[httpx.AsyncClient],
+) -> None:
+    real_openai = engine.AsyncOpenAI
+
+    def _build_client(base_url: str, api_key: str) -> AsyncOpenAI:
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+        clients.append(http_client)
+        return real_openai(base_url=base_url, api_key=api_key, http_client=http_client)
+
+    monkeypatch.setattr(engine, "AsyncOpenAI", _build_client)
+
+
 def _wire_mock_openai(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[httpx.Response],
@@ -2029,17 +2045,21 @@ def _wire_mock_openai(
             wire_bodies.append(body)
         return queue.pop(0)
 
-    real_openai = engine.AsyncOpenAI
-
-    def _build_client(base_url: str, api_key: str) -> AsyncOpenAI:
-        http_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
-        clients.append(http_client)
-        return real_openai(base_url=base_url, api_key=api_key, http_client=http_client)
-
+    _install_mock_openai_handler(monkeypatch, _handler, clients)
     model_spy = MagicMock(wraps=engine.OpenAIChatCompletionsModel)
-    monkeypatch.setattr(engine, "AsyncOpenAI", _build_client)
     monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", model_spy)
     return model_spy, wire_messages
+
+
+async def _stop_in_drain_and_assert_failed(
+    run: AgentRun, entered: asyncio.Event, release: asyncio.Event
+) -> None:
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    run.cancel_run_loop()
+    release.set()
+    with pytest.raises(RuntimeError, match="stopped on request"):
+        await run.task.result()
+    assert run.task.status.value == "failed"
 
 
 async def _close_clients(clients: list[httpx.AsyncClient]) -> None:
@@ -2353,12 +2373,7 @@ class TestServerRetry:
         run, run_mock = await self._run_stubs(
             monkeypatch, [stub, _stub_result([_text_delta("ok", 1)], "ok")]
         )
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        run.cancel_run_loop()
-        release.set()
-        with pytest.raises(RuntimeError, match="stopped on request"):
-            await run.task.result()
-        assert run.task.status.value == "failed"
+        await _stop_in_drain_and_assert_failed(run, entered, release)
         assert run_mock.call_count == 1
         assert _sleep_delays() == []
 
@@ -2790,6 +2805,43 @@ class TestContextOverflowRecovery:
         assert stub.cancel.call_count == 1
 
 
+async def _run_wire_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[httpx.Response],
+    *,
+    validator: Callable[[str, AgentRun], ValidationResult[str | dict]] = _accept_any,
+    with_tool: bool = False,
+    output_json_schema: dict | None = None,
+    model_input_filter: CallModelInputFilter | None = None,
+    max_attempts: int = 10,
+    max_turns: int | None = None,
+    wrap_up_turns_remaining: int | None = None,
+) -> tuple[AgentRun, list[dict]]:
+    monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+    _CountedTool.calls = 0
+    clients: list[httpx.AsyncClient] = []
+    wire_bodies: list[dict] = []
+    _wire_mock_openai(monkeypatch, responses, clients, wire_bodies=wire_bodies)
+    try:
+        agent = Agent(
+            name="res",
+            system_prompt="sys",
+            validator=validator,
+            max_attempts=max_attempts,
+            max_turns=max_turns,
+            wrap_up_turns_remaining=wrap_up_turns_remaining,
+            output_json_schema=output_json_schema,
+            model_input_filter=model_input_filter,
+        )
+        if with_tool:
+            agent.add_tool_adapter(_CountedTool())
+        run = await agent.run("do it")
+        await run.task.result()
+        return run, wire_bodies
+    finally:
+        await _close_clients(clients)
+
+
 class TestOutputJsonSchema:
     """The output_json_schema option attaches a strict json_schema response_format to model calls."""
 
@@ -2823,26 +2875,14 @@ class TestOutputJsonSchema:
         with_tool: bool = False,
         model_input_filter: CallModelInputFilter | None = None,
     ) -> tuple[AgentRun, list[dict]]:
-        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
-        _CountedTool.calls = 0
-        clients: list[httpx.AsyncClient] = []
-        wire_bodies: list[dict] = []
-        _wire_mock_openai(monkeypatch, responses, clients, wire_bodies=wire_bodies)
-        try:
-            agent = Agent(
-                name="res",
-                system_prompt="sys",
-                validator=validator,
-                output_json_schema=output_json_schema,
-                model_input_filter=model_input_filter,
-            )
-            if with_tool:
-                agent.add_tool_adapter(_CountedTool())
-            run = await agent.run("do it")
-            await run.task.result()
-            return run, wire_bodies
-        finally:
-            await _close_clients(clients)
+        return await _run_wire_agent(
+            monkeypatch,
+            responses,
+            validator=validator,
+            with_tool=with_tool,
+            output_json_schema=output_json_schema,
+            model_input_filter=model_input_filter,
+        )
 
     async def test_without_output_json_schema_sends_no_response_format(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2922,6 +2962,699 @@ class TestOutputJsonSchema:
         retry_user = wire_bodies[1]["messages"][-1]
         assert retry_user["role"] == "user"
         assert retry_user["content"] == "answer must be good" + _CORRECTIVE_NOTICE
+
+
+def _build_sse_multi_tool_call_response(calls: list[tuple[str, str, str]]) -> httpx.Response:
+    tool_calls = [
+        {
+            "index": index,
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+        for index, (call_id, name, arguments) in enumerate(calls)
+    ]
+    body = (
+        _sse_chunk({"role": "assistant", "tool_calls": tool_calls}, None)
+        + _sse_chunk({}, "tool_calls")
+        + b"data: [DONE]\n\n"
+    )
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+
+def _build_sse_text_and_tool_call_response(
+    text: str, call_id: str, name: str, arguments: str
+) -> httpx.Response:
+    tool_call = {
+        "index": 0,
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+    body = (
+        _sse_chunk({"role": "assistant", "content": text}, None)
+        + _sse_chunk({"tool_calls": [tool_call]}, None)
+        + _sse_chunk({}, "tool_calls")
+        + b"data: [DONE]\n\n"
+    )
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+
+def _build_http_overflow_400_response() -> httpx.Response:
+    return httpx.Response(
+        400,
+        json={"error": {"code": "context_length_exceeded", "message": "too long"}},
+    )
+
+
+def _spy_run_streamed(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
+    seen_max_turns: list[int | None] = []
+    real_run_streamed = engine.Runner.run_streamed
+
+    def _wrapped(
+        starting_agent: _SdkAgent,
+        input_data: str | list,
+        *,
+        max_turns: int | None = None,
+        run_config: RunConfig | None = None,
+    ) -> MagicMock:
+        seen_max_turns.append(max_turns)
+        if run_config is None:
+            return real_run_streamed(starting_agent, input_data, max_turns=max_turns)  # type: ignore[arg-type]
+        return real_run_streamed(
+            starting_agent, input_data, max_turns=max_turns, run_config=run_config  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(engine.Runner, "run_streamed", _wrapped)
+    return seen_max_turns
+
+
+def _build_turn_stub(
+    events: list[RawResponsesStreamEvent],
+    final_output: str | None,
+    *,
+    turns: int = 1,
+    input_list: list[dict] | None = None,
+    error: Exception | None = None,
+    new_items: list[dict] | None = None,
+) -> MagicMock:
+    async def _gen() -> AsyncIterator[RawResponsesStreamEvent]:
+        for event in events:
+            yield event
+        if error is not None:
+            raise error
+
+    stub = _build_stub(_gen, final_output)
+    stub.raw_responses = [MagicMock() for _ in range(turns)]
+    if new_items is not None:
+        stub.new_items = list(new_items)
+    if input_list is not None:
+        stub.to_input_list = MagicMock(return_value=list(input_list))
+    return stub
+
+
+class TestTurnLimitValidation:
+    """Validate max_turns and wrap_up_turns_remaining fail fast at construction."""
+
+    @pytest.mark.parametrize(
+        ("max_turns", "wrap_up_turns_remaining"),
+        [
+            (0, None),
+            (-1, None),
+            (-5, None),
+            (True, None),
+            (False, None),
+            (None, 0),
+            (None, 2),
+            (None, False),
+            (5, -1),
+            (5, 5),
+            (5, 8),
+            (1, 1),
+            (5, True),
+            (5, False),
+        ],
+    )
+    def test_invalid_turn_limit_configuration_raises_value_error(
+        self,
+        max_turns: int | None,
+        wrap_up_turns_remaining: int | None,
+    ) -> None:
+        with pytest.raises(ValueError):
+            Agent(
+                name="res",
+                system_prompt="sys",
+                validator=_accept_any,
+                max_turns=max_turns,
+                wrap_up_turns_remaining=wrap_up_turns_remaining,
+            )
+
+    @pytest.mark.parametrize(
+        ("max_turns", "wrap_up_turns_remaining"),
+        [(None, None), (1, None), (1, 0), (5, None), (5, 0), (5, 4)],
+    )
+    def test_valid_turn_limit_configuration_constructs_agent(
+        self,
+        max_turns: int | None,
+        wrap_up_turns_remaining: int | None,
+    ) -> None:
+        agent = Agent(
+            name="res",
+            system_prompt="sys",
+            validator=_accept_any,
+            max_turns=max_turns,
+            wrap_up_turns_remaining=wrap_up_turns_remaining,
+        )
+        assert isinstance(agent, Agent)
+
+
+class TestTurnLimitBehavior:
+    """Exercise two-stage wrap-up, tool blocking, refusal, and accounting."""
+
+    async def _run_wire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        responses: list[httpx.Response],
+        *,
+        max_turns: int | None = None,
+        wrap_up_turns_remaining: int | None = None,
+        max_attempts: int = 3,
+        validator: Callable[[str, AgentRun], ValidationResult[str]] = _accept_any,
+        with_tool: bool = True,
+        output_json_schema: dict | None = None,
+    ) -> tuple[AgentRun, list[dict], list[int | None]]:
+        seen_max_turns = _spy_run_streamed(monkeypatch)
+        run, wire_bodies = await _run_wire_agent(
+            monkeypatch,
+            responses,
+            validator=validator,
+            with_tool=with_tool,
+            output_json_schema=output_json_schema,
+            max_attempts=max_attempts,
+            max_turns=max_turns,
+            wrap_up_turns_remaining=wrap_up_turns_remaining,
+        )
+        return run, wire_bodies, seen_max_turns
+
+    @pytest.mark.fast_sleeps
+    async def test_unlimited_mode_skips_raw_responses_and_retries_zero_tool_model_behavior(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+
+        def _forbid_raw_responses(_self: MagicMock) -> list:
+            raise AssertionError("raw_responses must not be read when max_turns is None")
+
+        failing = _failing_stub(ModelBehaviorError("incomplete stream"))
+        succeeding = _stub_result([_text_delta("ok", 1)], "ok")
+        type(failing).raw_responses = property(_forbid_raw_responses)
+        type(succeeding).raw_responses = property(_forbid_raw_responses)
+        run_mock = _patch_runner_seq(monkeypatch, [failing, succeeding])
+
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
+        run = await agent.run("do it")
+        assert await run.task.result() == "ok"
+        assert run_mock.call_count == 2
+        assert [call.kwargs["max_turns"] for call in run_mock.call_args_list] == [None, None]
+        assert _sleep_delays() == [_FIRST_DELAY]
+
+    @pytest.mark.parametrize("max_turns", [None, 3], ids=["unlimited", "limited_pre_stage_two"])
+    async def test_pre_stage_two_malformed_tool_args_return_tool_error_string(
+        self, monkeypatch: pytest.MonkeyPatch, max_turns: int | None
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_bad", "counted_note", '{"text":'),
+            _sse_text_response("recovered"),
+        ]
+        run, wire_bodies, _seen = await self._run_wire(
+            monkeypatch, responses, max_turns=max_turns, with_tool=True
+        )
+        assert await run.task.result() == "recovered"
+        assert _CountedTool.calls == 0
+        tool_reply = wire_bodies[1]["messages"][-1]
+        assert tool_reply["role"] == "tool"
+        assert "An error occurred" in tool_reply["content"]
+
+    async def test_normal_completion_before_stage_one_sends_no_wrap_up_notices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"a"}'),
+            _sse_text_response("all done"),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=5, wrap_up_turns_remaining=2
+        )
+        assert await run.task.result() == "all done"
+        assert _CountedTool.calls == 1
+        assert seen_max_turns == [3]
+        assert len(wire_bodies) == 2
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        assert [e.text for e in system_events] == ["sys"]
+
+    async def test_stage_one_soft_nudge_fires_once_with_exact_count_and_keeps_tools_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+            _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+            _sse_tool_call_response("call_3", "counted_note", '{"text":"t3"}'),
+            _sse_text_response("wrapped up"),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=4, wrap_up_turns_remaining=2
+        )
+        assert await run.task.result() == "wrapped up"
+        assert _CountedTool.calls == 3
+        assert seen_max_turns == [2, 2]
+        soft_notice = wire_bodies[2]["messages"][-1]
+        assert soft_notice["role"] == "user"
+        assert "2 tool-enabled turns remaining" in soft_notice["content"]
+        events = await run.read_events()
+        system_events = [e for e in events if e.type == "system"]
+        assert len(system_events) == 2
+        assert system_events[1].text == soft_notice["content"]
+        tool_result_indices = [i for i, e in enumerate(events) if e.type == "tool_result"]
+        soft_index = next(i for i, e in enumerate(events) if e.type == "system" and i > 0)
+        assert tool_result_indices[1] < soft_index < tool_result_indices[2]
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize("interruption", ["transient_500", "overflow", "validation_failure"])
+    async def test_stage_one_reentry_keeps_remaining_turns_without_duplicate_notice(
+        self, monkeypatch: pytest.MonkeyPatch, interruption: str
+    ) -> None:
+        if interruption == "transient_500":
+            responses = [
+                _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+                _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+                _sse_tool_call_response("call_3", "counted_note", '{"text":"t3"}'),
+                _http_500_response(),
+                _sse_text_response("good"),
+            ]
+            validator = _accept_any
+            expected_max_turns = [2, 2, 1]
+        elif interruption == "overflow":
+            responses = [
+                _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+                _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+                _sse_tool_call_response("call_3", "counted_note", '{"text":"t3"}'),
+                _build_http_overflow_400_response(),
+                _sse_text_response("good"),
+            ]
+            validator = _accept_any
+            expected_max_turns = [2, 2, 1]
+        else:
+            responses = [
+                _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+                _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+                _sse_text_response("bad"),
+                _sse_tool_call_response("call_3", "counted_note", '{"text":"t3"}'),
+                _sse_text_response("good"),
+            ]
+            validator = _accept_good
+            expected_max_turns = [2, 2, 1, 1]
+
+        if interruption == "overflow":
+            responses[2] = _build_sse_text_and_tool_call_response(
+                "r" * 2000, "call_3", "counted_note", '{"text":"t3"}'
+            )
+
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch,
+            responses,
+            max_turns=4,
+            wrap_up_turns_remaining=2,
+            validator=validator,
+        )
+        assert await run.task.result() == "good"
+        assert _CountedTool.calls == 3
+        assert seen_max_turns == expected_max_turns
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        soft_notices = [e for e in system_events[1:] if "tool-enabled" in e.text]
+        assert len(soft_notices) == 1
+        final_user_notices = [
+            m["content"]
+            for m in wire_bodies[-1]["messages"]
+            if m.get("role") == "user" and "tool-enabled" in str(m.get("content", ""))
+        ]
+        assert len(final_user_notices) == 1
+
+    async def test_stage_two_preserves_wire_tools_prompt_and_schema_and_logs_system_notices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        schema: dict = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
+        payload = json.dumps({"summary": "complete"})
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+            _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+            _sse_tool_call_response("call_3", "counted_note", '{"text":"t3"}'),
+            _sse_text_response(payload),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch,
+            responses,
+            max_turns=3,
+            wrap_up_turns_remaining=1,
+            output_json_schema=schema,
+        )
+        assert await run.task.result() == payload
+        assert _CountedTool.calls == 3
+        assert seen_max_turns == [2, 1, 1]
+        assert len(wire_bodies) == 4
+        assert all(body["tools"] == wire_bodies[0]["tools"] for body in wire_bodies)
+        assert all(body["messages"][0] == wire_bodies[0]["messages"][0] for body in wire_bodies)
+        assert all(
+            body["response_format"] == wire_bodies[0]["response_format"] for body in wire_bodies
+        )
+        hard_notice = wire_bodies[3]["messages"][-1]
+        assert hard_notice["role"] == "user"
+        assert "tools are now disabled" in hard_notice["content"]
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        assert len(system_events) == 3
+        assert "1 tool-enabled turn remaining" in system_events[1].text
+        assert "tools are now disabled" in system_events[2].text
+
+    @pytest.mark.parametrize("wrap_up_turns_remaining", [None, 0], ids=["none", "zero"])
+    async def test_disabled_stage_one_transitions_directly_to_stage_two(
+        self, monkeypatch: pytest.MonkeyPatch, wrap_up_turns_remaining: int | None
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+            _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+            _sse_text_response("final"),
+        ]
+        run, _wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch,
+            responses,
+            max_turns=2,
+            wrap_up_turns_remaining=wrap_up_turns_remaining,
+        )
+        assert await run.task.result() == "final"
+        assert _CountedTool.calls == 2
+        assert seen_max_turns == [2, 1]
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        assert len(system_events) == 2
+        assert "tools are now disabled" in system_events[1].text
+
+    @pytest.mark.fast_sleeps
+    @pytest.mark.parametrize(
+        "blocked_response",
+        [
+            _sse_tool_call_response("call_b1", "counted_note", '{"text":"blocked"}'),
+            _build_sse_multi_tool_call_response(
+                [
+                    ("call_b1", "counted_note", '{"text":"one"}'),
+                    ("call_b2", "counted_note", '{"text":"two"}'),
+                ]
+            ),
+            _sse_tool_call_response("call_b1", "counted_note", '{"text":'),
+            _sse_tool_call_response("call_b1", "counted_note", "{}"),
+            _sse_tool_call_response("call_b1", "unknown_tool", '{"x":1}'),
+            _build_sse_text_and_tool_call_response("partial", "call_b1", "counted_note", '{"text":"mix"}'),
+        ],
+        ids=[
+            "single_valid_call",
+            "parallel_batch",
+            "malformed_json_args",
+            "schema_invalid_args",
+            "unknown_tool_name",
+            "mixed_text_and_tool",
+        ],
+    )
+    async def test_stage_two_blocks_every_tool_call_shape_and_recovers_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, blocked_response: httpx.Response
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"allowed"}'),
+            blocked_response,
+            _sse_text_response("clean final"),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=1, max_attempts=2
+        )
+        assert await run.task.result() == "clean final"
+        assert _CountedTool.calls == 1
+        assert _sleep_delays() == []
+        assert seen_max_turns == [1, 1, 1]
+
+        retry_messages = wire_bodies[2]["messages"]
+        assert [m for m in retry_messages if m.get("tool_calls")] == [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "counted_note", "arguments": '{"text":"allowed"}'},
+                    }
+                ],
+            }
+        ]
+        assert "Tools are disabled" in retry_messages[-1]["content"]
+        assert _CORRECTIVE_NOTICE in retry_messages[-1]["content"]
+
+        events = await run.read_events()
+        assert [e.call_id for e in events if e.type == "tool_call"] == ["call_1"]
+        assert [e.call_id for e in events if e.type == "tool_result"] == ["call_1"]
+        assert [(e.attempt, e.text) for e in events if e.type == "assistant"] == [(2, "clean final")]
+
+    @pytest.mark.fast_sleeps
+    async def test_stage_two_repeated_blocked_tool_calls_fail_after_max_attempts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        clients: list[httpx.AsyncClient] = []
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"ok"}'),
+            _sse_tool_call_response("call_2", "counted_note", '{"text":"blocked1"}'),
+            _sse_tool_call_response("call_3", "counted_note", '{"text":"blocked2"}'),
+        ]
+        _wire_mock_openai(monkeypatch, responses, clients)
+        try:
+            agent = Agent(
+                name="res", system_prompt="sys", validator=_accept_any, max_turns=1, max_attempts=2
+            )
+            agent.add_tool_adapter(_CountedTool())
+            run = await agent.run("do it")
+            with pytest.raises(RuntimeError, match="after 2 attempts"):
+                await run.task.result()
+        finally:
+            await _close_clients(clients)
+        assert run.task.status.value == "failed"
+        assert _CountedTool.calls == 1
+        assert _sleep_delays() == []
+
+    async def test_stage_two_max_turns_exceeded_immediately_raises_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        stubs = [
+            _build_turn_stub(
+                [],
+                None,
+                turns=1,
+                input_list=[{"role": "user", "content": "do it"}],
+                error=MaxTurnsExceeded("tool budget hit"),
+            ),
+            _build_turn_stub([], None, turns=0, error=MaxTurnsExceeded("stage two exceeded")),
+        ]
+        run_mock = _patch_runner_seq(monkeypatch, stubs)
+        agent = Agent(
+            name="res", system_prompt="sys", validator=_accept_any, max_turns=1, max_attempts=3
+        )
+        run = await agent.run("do it")
+        with pytest.raises(RuntimeError, match="after turn limit"):
+            await run.task.result()
+        assert run.task.status.value == "failed"
+        assert run_mock.call_count == 2
+
+    @pytest.mark.parametrize("bad_output", [None, "", "   ", "\n\t  "], ids=["none", "empty", "spaces", "whitespace"])
+    async def test_missing_or_blank_final_output_rejected_before_validator(
+        self, monkeypatch: pytest.MonkeyPatch, bad_output: str | None
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        validator_inputs: list[str] = []
+
+        def validator(text: str, _run: AgentRun) -> ValidationResult[str]:
+            validator_inputs.append(text)
+            return ValidationResult(is_valid=True, value=text)
+
+        stubs = [
+            _build_turn_stub([], bad_output, turns=1),
+            _build_turn_stub([_text_delta("real answer", 1)], "real answer", turns=1),
+        ]
+        _patch_runner_seq(monkeypatch, stubs)
+        agent = Agent(name="res", system_prompt="sys", validator=validator, max_turns=2, max_attempts=2)
+        run = await agent.run("do it")
+        assert await run.task.result() == "real answer"
+        assert validator_inputs == ["real answer"]
+
+    async def test_validation_failure_at_turn_boundary_and_in_stage_two_keeps_tools_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_text_response("bad"),
+            _sse_tool_call_response("call_blocked", "counted_note", '{"text":"nope"}'),
+            _sse_text_response("still bad"),
+            _sse_text_response("good"),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=1, max_attempts=4, validator=_accept_good
+        )
+        assert await run.task.result() == "good"
+        assert _CountedTool.calls == 0
+        assert seen_max_turns == [1, 1, 1, 1]
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        assert len(system_events) == 2
+        assert "tools are now disabled" in system_events[1].text
+        hard_notices = [
+            m
+            for m in wire_bodies[-1]["messages"]
+            if m.get("role") == "user" and "tools are now disabled" in str(m.get("content", ""))
+        ]
+        assert len(hard_notices) == 1
+
+    @pytest.mark.parametrize(
+        "phase",
+        ["stage_one_transition", "stage_two_max_turns", "stage_two_model_behavior"],
+    )
+    async def test_cancel_run_loop_during_wrap_up_exceptions_stops_immediately(
+        self, monkeypatch: pytest.MonkeyPatch, phase: str
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        if phase == "stage_one_transition":
+            stub, entered, release = _release_in_drain("x", error=MaxTurnsExceeded("hit"))
+            stub.raw_responses = [MagicMock()]
+            stubs = [stub]
+            max_turns = 2
+            wrap_up = 1
+        elif phase == "stage_two_max_turns":
+            first = _build_turn_stub(
+                [],
+                None,
+                turns=1,
+                input_list=[{"role": "user", "content": "do it"}],
+                error=MaxTurnsExceeded("hit"),
+            )
+            stub, entered, release = _release_in_drain("x", error=MaxTurnsExceeded("stage two"))
+            stub.raw_responses = []
+            stubs = [first, stub]
+            max_turns = 1
+            wrap_up = None
+        else:
+            first = _build_turn_stub(
+                [],
+                None,
+                turns=1,
+                input_list=[{"role": "user", "content": "do it"}],
+                error=MaxTurnsExceeded("hit"),
+            )
+            stub, entered, release = _release_in_drain("x", error=ModelBehaviorError("bad tool"))
+            stub.raw_responses = []
+            stubs = [first, stub]
+            max_turns = 1
+            wrap_up = None
+
+        run_mock = _patch_runner_seq(monkeypatch, stubs)
+        agent = Agent(
+            name="res",
+            system_prompt="sys",
+            validator=_accept_any,
+            max_turns=max_turns,
+            wrap_up_turns_remaining=wrap_up,
+            max_attempts=3,
+        )
+        run = await agent.run("do it")
+        await _stop_in_drain_and_assert_failed(run, entered, release)
+        assert run_mock.call_count == len(stubs)
+
+    @pytest.mark.fast_sleeps
+    async def test_stage_two_context_overflow_compacts_preserving_notice_and_keeps_tools_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _build_sse_text_and_tool_call_response("r" * 2000, "call_1", "counted_note", '{"text":"t1"}'),
+            _build_http_overflow_400_response(),
+            _sse_tool_call_response("call_blocked", "counted_note", '{"text":"nope"}'),
+            _sse_text_response("final after compact"),
+        ]
+        run, wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=1, max_attempts=2
+        )
+        assert await run.task.result() == "final after compact"
+        assert _CountedTool.calls == 1
+        assert seen_max_turns == [1, 1, 1, 1]
+        compacted_messages = wire_bodies[2]["messages"]
+        assert any(
+            m.get("role") == "user" and "tools are now disabled" in str(m.get("content", ""))
+            for m in compacted_messages
+        )
+        system_events = [e for e in await run.read_events() if e.type == "system"]
+        assert len(system_events) == 2
+
+    @pytest.mark.fast_sleeps
+    async def test_transient_errors_do_not_consume_turns_or_reset_retries_when_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+            _http_500_response(),
+            _http_500_response(),
+            _http_500_response(),
+            _sse_tool_call_response("call_2", "counted_note", '{"text":"t2"}'),
+            _sse_text_response("final"),
+        ]
+        run, _wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=2
+        )
+        assert await run.task.result() == "final"
+        assert _CountedTool.calls == 2
+        assert _sleep_delays() == [_FIRST_DELAY, _SECOND_DELAY, _THIRD_DELAY]
+        assert seen_max_turns == [2, 1, 1, 1, 1]
+
+    async def test_turn_budget_is_shared_across_validation_attempts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = [
+            _sse_tool_call_response("call_1", "counted_note", '{"text":"t1"}'),
+            _sse_text_response("bad"),
+            _sse_tool_call_response("call_blocked", "counted_note", '{"text":"nope"}'),
+            _sse_text_response("good"),
+        ]
+        run, _wire_bodies, seen_max_turns = await self._run_wire(
+            monkeypatch, responses, max_turns=2, max_attempts=3, validator=_accept_good
+        )
+        assert await run.task.result() == "good"
+        assert _CountedTool.calls == 1
+        assert seen_max_turns == [2, 1, 1]
+
+    async def test_concurrent_runs_of_one_agent_isolate_stage_two_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        _CountedTool.calls = 0
+        run_a_in_stage_two = asyncio.Event()
+        run_b_tool_done = asyncio.Event()
+        clients: list[httpx.AsyncClient] = []
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            messages = body["messages"]
+            prompt = str(messages[1]["content"])
+            if prompt == "run A":
+                if len(messages) == 2:
+                    return _sse_tool_call_response("call_a1", "counted_note", '{"text":"a1"}')
+                run_a_in_stage_two.set()
+                await asyncio.wait_for(run_b_tool_done.wait(), timeout=5)
+                if not any("Tools are disabled" in str(m.get("content", "")) for m in messages):
+                    return _sse_tool_call_response("call_a2", "counted_note", '{"text":"blocked"}')
+                return _sse_text_response("A done")
+            await asyncio.wait_for(run_a_in_stage_two.wait(), timeout=5)
+            if len(messages) == 2:
+                return _sse_tool_call_response("call_b1", "counted_note", '{"text":"b1"}')
+            run_b_tool_done.set()
+            return _sse_text_response("B done")
+
+        _install_mock_openai_handler(monkeypatch, _handler, clients)
+        try:
+            agent = Agent(
+                name="res", system_prompt="sys", validator=_accept_any, max_turns=1, max_attempts=2
+            )
+            agent.add_tool_adapter(_CountedTool())
+            run_a, run_b = await asyncio.gather(agent.run("run A"), agent.run("run B"))
+            result_a, result_b = await asyncio.gather(run_a.task.result(), run_b.task.result())
+        finally:
+            await _close_clients(clients)
+        assert result_a == "A done"
+        assert result_b == "B done"
+        assert _CountedTool.calls == 2
 
 
 @pytest.mark.live

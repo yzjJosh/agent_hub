@@ -48,7 +48,7 @@ class TestSnapshot:
 
 class TestTransactionStatus:
     def test_members(self) -> None:
-        assert {s.name for s in TransactionStatus} == {"SUCCESS", "STALE", "CAP_REACHED", "FAILED"}
+        assert {s.name for s in TransactionStatus} == {"SUCCESS", "STALE", "FAILED"}
 
 
 class TestTransactionResult:

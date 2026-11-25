@@ -144,6 +144,8 @@ class TestBuildRolePrompt:
         assert "before repeating navigation or dump_page" in prompt
         assert "stay in subsequent model context for the rest of this run" in prompt
         assert "Historical checkpoint evidence describes an earlier observation" in prompt
+        assert "Checkpoint reads do not use browser steps" not in prompt
+        assert "- incomplete. You ran out of turns, or you got stuck." in prompt
         assert "Do not repeat an executed action to repair" in prompt
         assert "never silently dropped to fit the provider context limit" in prompt
 

@@ -6,6 +6,9 @@ from typing import ClassVar, override
 from unittest.mock import MagicMock
 
 import pytest
+from agents import Agent as SdkAgent
+from agents import MaxTurnsExceeded
+from agents.run_config import RunConfig
 from agents.stream_events import RawResponsesStreamEvent
 from openai.types.responses import ResponseTextDeltaEvent
 
@@ -44,6 +47,8 @@ def stub_result(
 
     stub = MagicMock()
     stub.final_output = final_output
+    stub.raw_responses = []
+    stub.new_items = []
     stub.stream_events = MagicMock(side_effect=_replay)
     stub.to_input_list = MagicMock(return_value=[{"role": "user", "content": role}])
     stub.cancel = MagicMock()
@@ -57,6 +62,8 @@ def stalled_stub() -> MagicMock:
 
     return MagicMock(
         final_output=None,
+        raw_responses=[],
+        new_items=[],
         stream_events=MagicMock(side_effect=_hold),
         to_input_list=MagicMock(return_value=[]),
         cancel=MagicMock(),
@@ -66,6 +73,73 @@ def stalled_stub() -> MagicMock:
 def patch_runner(monkeypatch: pytest.MonkeyPatch, stub: MagicMock) -> None:
     """Point the engine's runner at the given stub."""
     monkeypatch.setattr(engine.Runner, "run_streamed", MagicMock(return_value=stub))
+
+
+@dataclass
+class WrapUpCalls:
+    """Stream calls recorded across a wrap up run."""
+
+    max_turns: list[int | None]
+    inputs: list[str | list]
+
+
+def _build_turn_limit_stream(
+    history: list[dict],
+    *,
+    turns: int,
+    final_output: str | None = None,
+    error: Exception | None = None,
+) -> MagicMock:
+    async def _replay() -> AsyncIterator[RawResponsesStreamEvent]:
+        if final_output is not None:
+            yield text_event(final_output)
+        if error is not None:
+            raise error
+
+    return MagicMock(
+        final_output=final_output,
+        raw_responses=[MagicMock() for _ in range(turns)],
+        new_items=[],
+        stream_events=MagicMock(side_effect=_replay),
+        to_input_list=MagicMock(return_value=list(history)),
+        cancel=MagicMock(),
+    )
+
+
+def patch_wrap_up_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stage_one_turns: int,
+    wrap_up_turns: int,
+    final_output: str,
+    role: str,
+) -> WrapUpCalls:
+    """Run both wrap up stages, then return the final output."""
+    calls = WrapUpCalls(max_turns=[], inputs=[])
+
+    def _run_streamed(
+        _agent: SdkAgent,
+        items: str | list,
+        *,
+        max_turns: int | None = None,
+        run_config: RunConfig | None = None,
+    ) -> MagicMock:
+        _ = run_config
+        calls.max_turns.append(max_turns)
+        calls.inputs.append(items)
+        history = [{"role": "user", "content": role}] if isinstance(items, str) else list(items)
+        if max_turns == stage_one_turns:
+            return _build_turn_limit_stream(
+                history, turns=stage_one_turns, error=MaxTurnsExceeded("limit")
+            )
+        if max_turns == wrap_up_turns:
+            return _build_turn_limit_stream(
+                history, turns=wrap_up_turns, error=MaxTurnsExceeded("limit")
+            )
+        return _build_turn_limit_stream(history, turns=1, final_output=final_output)
+
+    monkeypatch.setattr(engine.Runner, "run_streamed", _run_streamed)
+    return calls
 
 
 def track_agent_runs(monkeypatch: pytest.MonkeyPatch) -> list[Task]:

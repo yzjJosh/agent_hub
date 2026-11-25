@@ -12,6 +12,7 @@ from tests.app.agents.research.conftest import (
     assert_cancels_agent_task,
     patch_agent_run,
     patch_runner,
+    patch_wrap_up_runner,
     record_user_messages,
     search_result_for,
     stub_result,
@@ -20,6 +21,10 @@ from tests.app.agents.research.conftest import (
 )
 
 ENGINE_PREFIX = "agent validation failed after 10 attempts: "
+_EXPECTED_MAX_TURNS = 70
+_EXPECTED_WRAP_UP_TURNS_REMAINING = 5
+_STAGE_ONE_TURNS = _EXPECTED_MAX_TURNS - _EXPECTED_WRAP_UP_TURNS_REMAINING
+_MAX_ATTEMPTS = 10
 
 
 class TestReviewerRun:
@@ -54,17 +59,20 @@ class TestReviewerRun:
         assert review.action == "collect"
         assert review.iteration == 2
 
-    async def test_agent_passes_output_json_schema_and_validator(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def _run_capturing_agent_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
         valid = json.dumps({"pass": True, "reason": "All backed", "action": "approve", "feedback": ""})
         patch_runner(monkeypatch, stub_result([text_event(valid)], valid, "reviewer"))
         agent_spy = MagicMock(wraps=reviewer_module.Agent)
         monkeypatch.setattr(reviewer_module, "Agent", agent_spy)
-
         review = await run_reviewer("GPU market analysis", "# Draft", tools=(FakeTool(),))
-        kwargs = agent_spy.call_args.kwargs
+        assert review.passed is True
+        return agent_spy.call_args.kwargs
+
+    async def test_agent_passes_output_json_schema_and_validator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = await self._run_capturing_agent_kwargs(monkeypatch)
         assert kwargs["output_json_schema"] == {
             "type": "object",
             "properties": {
@@ -77,7 +85,68 @@ class TestReviewerRun:
             "additionalProperties": False,
         }
         assert callable(kwargs["validator"])
-        assert review.passed is True
+
+    async def test_agent_configures_turn_limits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = await self._run_capturing_agent_kwargs(monkeypatch)
+        assert kwargs["max_turns"] == _EXPECTED_MAX_TURNS
+        assert kwargs["wrap_up_turns_remaining"] == _EXPECTED_WRAP_UP_TURNS_REMAINING
+
+
+class TestReviewerTurnLimit:
+    async def test_stage_two_wrap_up_returns_fail_verdict_without_verified_refs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        verdict = json.dumps(
+            {
+                "pass": False,
+                "reason": "Turn limit reached before verifying citations",
+                "action": "collect",
+                "feedback": "Verify run-1",
+            }
+        )
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=verdict,
+            role="reviewer",
+        )
+        patch_agent_run(monkeypatch)
+
+        draft = "# Draft\n\nPrices rose 15% [[ref:run-1]]."
+        review = await run_reviewer("GPU market analysis", draft, tools=(FakeTool(),))
+
+        assert review.passed is False
+        assert review.action == "collect"
+        assert review.reason == "Turn limit reached before verifying citations"
+        assert review.feedback == "Verify run-1"
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING, 1]
+        assert f"{_EXPECTED_WRAP_UP_TURNS_REMAINING} tool-enabled turns remaining" in calls.inputs[1][-1]["content"]
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
+
+    async def test_stage_two_exhaustion_with_unverified_pass_verdict_raises_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
+        verdict = json.dumps({"pass": True, "reason": "All backed", "action": "approve", "feedback": ""})
+        calls = patch_wrap_up_runner(
+            monkeypatch,
+            stage_one_turns=_STAGE_ONE_TURNS,
+            wrap_up_turns=_EXPECTED_WRAP_UP_TURNS_REMAINING,
+            final_output=verdict,
+            role="reviewer",
+        )
+        patch_agent_run(monkeypatch)
+
+        draft = "# Draft\n\nPrices rose 15% [[ref:run-1]]."
+        with pytest.raises(RuntimeError, match="run-1"):
+            await run_reviewer("GPU market analysis", draft, tools=(FakeTool(),))
+
+        assert calls.max_turns == [_STAGE_ONE_TURNS, _EXPECTED_WRAP_UP_TURNS_REMAINING] + [1] * _MAX_ATTEMPTS
+        assert "tools are now disabled" in calls.inputs[2][-1]["content"]
 
 
 class TestReviewerValidation:

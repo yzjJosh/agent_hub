@@ -18,6 +18,8 @@ from app.lib.tool.base import Tool
 __all__ = ["run_researcher"]
 
 _MIN_REPORT_LEN = 50
+_MAX_TURNS = 50
+_WRAP_UP_TURNS_REMAINING = 5
 _TITLE_RE = re.compile(r"^# \S")
 _COLLECTION_HEADER = "### COLLECTION SO FAR"
 _PREVIOUS_DRAFT_HEADER = "### PREVIOUS DRAFT"
@@ -129,6 +131,8 @@ async def run_researcher(
         name="researcher",
         system_prompt=system_prompt,
         validator=_researcher_validator(ledger, prior_draft_refs),
+        max_turns=_MAX_TURNS,
+        wrap_up_turns_remaining=_WRAP_UP_TURNS_REMAINING,
     )
     for tool in tools:
         agent.add_tool_adapter(tool)

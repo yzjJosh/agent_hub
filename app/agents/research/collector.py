@@ -38,6 +38,8 @@ __all__ = ["CollectEvidence", "CollectionLedger", "format_records"]
 
 _MAX_LISTED_IDS = 10
 _MAX_PARALLEL = 3
+_MAX_TURNS = 135
+_WRAP_UP_TURNS_REMAINING = 10
 _COLLECTOR_TOOLS: tuple[Tool, ...] = (
     brave_search_tool, google_search_tool, x_search_tool, github_tool,
     web_fetch_tool, rednote_research_tool, task_tool, read_media_or_doc_tool,
@@ -151,6 +153,8 @@ async def _run_collector(
         name=f"research_collector_{task.id}",
         system_prompt=system_prompt,
         validator=_validate_collector_output,
+        max_turns=_MAX_TURNS,
+        wrap_up_turns_remaining=_WRAP_UP_TURNS_REMAINING,
         tool_results_by_id=True,
         output_json_schema=_OUTPUT_JSON_SCHEMA,
     )
