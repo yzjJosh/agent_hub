@@ -376,7 +376,7 @@ async def test_missing_result_file_raises_file_not_found(tmp_path: Path, monkeyp
 
 
 async def test_empty_csv_override_returns_no_rows_note(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Degrade whitespace-only CSV content to raw preview with the empty-table note."""
+    """Show whitespace-only CSV content as raw text with the empty-table note."""
     task_id, run_dir = _seed(tmp_path, monkeypatch, b"   \n\n  \n")
     descriptor = await rd.build_result_descriptor(task_id, run_dir, kind=RenderKind.CSV)
     assert descriptor["kind"] == "csv"
@@ -399,7 +399,7 @@ async def test_invalid_structured_override_degrades_to_raw(
     invalid_body: bytes,
     expected_label: str,
 ) -> None:
-    """Degrade invalid YAML or XML overrides to raw preview with a parse error note."""
+    """Show invalid YAML or XML overrides as raw text with a parse error note."""
     task_id, run_dir = _seed(tmp_path, monkeypatch, invalid_body)
     descriptor = await rd.build_result_descriptor(task_id, run_dir, kind=override_kind)
     expected_note = (

@@ -361,7 +361,8 @@ async def _detect_text_kind(text: str) -> Detection:
 
 
 def _has_matching_cached_kind(cached_entry: tuple[str, dict], effective_kind: RenderKind) -> bool:
-    return cached_entry[1].get("kind") == effective_kind.value
+    _, cached_metadata = cached_entry
+    return cached_metadata.get("kind") == effective_kind.value
 
 
 async def _write_cached_text_fragment(context: _TextResultContext, rendered: _RenderedFragment) -> str:
@@ -470,6 +471,14 @@ async def build_result_descriptor(
     effective_kind = declared_kind if declared_kind is not None else (kind if kind is not None else detection.kind)
     cache_key = cache.key_for(result_file.relative_path, result_file.modified_time_seconds)
     context = _TextResultContext(
-        task_id, cache_key, result_file, detection, effective_kind, kind, declared_kind, line_offset, full,
+        task_id=task_id,
+        cache_key=cache_key,
+        result_file=result_file,
+        detection=detection,
+        effective_kind=effective_kind,
+        requested_kind=kind,
+        declared_kind=declared_kind,
+        line_offset=line_offset,
+        is_full=full,
     )
     return await _describe_text_result(context)
