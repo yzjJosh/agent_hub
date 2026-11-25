@@ -111,11 +111,13 @@ class SyncChallenger(BaseChallenger):
         retry_limit = DETECT_RETRY_MAX
         retries = 0
         detected = False
+        click_coordinates: list[tuple[int, int]] = []
         while not detected:
             if self._verbose:
                 print("[recognizer] running detector...", flush=True)
-            response, coordinates = self.detector.detect(prompt, img_data, area_captcha=area_captcha)
-            if response:
+            detection: DetectionResult = self.detector.detect(prompt, img_data, is_split_image=area_captcha)
+            if detection.tile_matches:
+                click_coordinates = detection.click_coordinates
                 detected = True
                 break
             retries += 1
@@ -128,7 +130,7 @@ class SyncChallenger(BaseChallenger):
             self._browser_ops.wait_for_timeout(DETECT_RETRY_TIMEOUT)
             img_data = self._browser_ops.screenshot(timeout=SCREENSHOT_TIMEOUT)
 
-        for coord_x, coord_y in coordinates:
+        for coord_x, coord_y in click_coordinates:
             if self._verbose:
                 print(f"[recognizer] clicking tile at ({coord_x}, {coord_y})", flush=True)
             self._browser_ops.mouse_click(coord_x, coord_y)
@@ -298,6 +300,7 @@ class _SyncBrowserOps(BrowserOps):
 
 
 if TYPE_CHECKING:
+    from ...components.detector import DetectionResult
     from .._types import (
         PatchrightElementHandle,
         PatchrightFrameLocator,

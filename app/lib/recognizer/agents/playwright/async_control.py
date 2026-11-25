@@ -36,6 +36,7 @@ from .._types import (
     PlaywrightRoute,
     PlaywrightTimeoutError,
 )
+from ...components.detector import DetectionResult
 from .base_challenger import BaseChallenger, BrowserOps
 
 
@@ -115,9 +116,8 @@ class AsyncChallenger(BaseChallenger):
         while True:
             if self._verbose:
                 print("[recognizer] running detector...", flush=True)
-            result = await self.detector.detect_async(prompt, image, area_captcha=area_captcha)
-            response, coordinates = result
-            if response:
+            result: DetectionResult = await self.detector.detect_async(prompt, image, is_split_image=area_captcha)
+            if result.tile_matches:
                 break
             attempt += 1
             if attempt > max_attempts:
@@ -129,7 +129,7 @@ class AsyncChallenger(BaseChallenger):
             await self._browser_ops.wait_for_timeout(DETECT_RETRY_TIMEOUT)
             image = await self._browser_ops.screenshot(timeout=SCREENSHOT_TIMEOUT)
 
-        for coord_x, coord_y in coordinates:
+        for coord_x, coord_y in result.click_coordinates:
             if self._verbose:
                 print(f"[recognizer] clicking tile at ({coord_x}, {coord_y})", flush=True)
             await self._browser_ops.mouse_click(coord_x, coord_y)
