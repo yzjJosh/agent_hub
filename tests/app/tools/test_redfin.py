@@ -145,7 +145,7 @@ async def _run_search(mock_bm: MagicMock, location: str, **kwargs: int | str | b
     """Run the tool with the fake browser and return the finished result."""
     mock_cls = MagicMock()
     mock_cls.create = AsyncMock(return_value=mock_bm)
-    patcher = patch("app.tools.redfin.BrowserManager", mock_cls)
+    patcher = patch("app.lib.redfin.search.BrowserManager", mock_cls)
     patcher.start()
     try:
         task = await redfin_search_tool.run({"location": location, **kwargs})
@@ -642,7 +642,7 @@ async def test_search_csv_active_listings_pass_date_filter(tmp_path: Path) -> No
 
     # The current date is held fixed for the 30 day check.
     fixed_now = datetime(2026, 6, 27)
-    with patch("app.tools.redfin.datetime", wraps=datetime) as mock_dt:
+    with patch("app.lib.redfin.filters.datetime", wraps=datetime) as mock_dt:
         mock_dt.now.return_value = fixed_now
         result = await _run_search(mock_bm, "San Jose, CA", date_from="2026-06-15")
 
