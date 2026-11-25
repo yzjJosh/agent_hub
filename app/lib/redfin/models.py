@@ -9,8 +9,8 @@ __all__ = [
     "REDFIN_BASE_URL",
     "RedfinSearchError",
     "SearchOptions",
+    "build_absolute_redfin_url",
     "parse_iso_date",
-    "to_absolute_redfin_url",
 ]
 
 from dataclasses import dataclass
@@ -81,7 +81,7 @@ def parse_iso_date(value: str) -> datetime | None:
         return None
 
 
-def to_absolute_redfin_url(url: str) -> str:
+def build_absolute_redfin_url(url: str) -> str:
     """Turn a short Redfin path into a full Redfin URL.
 
     A link that is already full comes back unchanged.

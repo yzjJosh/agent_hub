@@ -13,8 +13,8 @@ from app.lib.redfin.models import (
     REDFIN_BASE_URL,
     RedfinSearchError,
     SearchOptions,
+    build_absolute_redfin_url,
     parse_iso_date,
-    to_absolute_redfin_url,
 )
 
 
@@ -80,9 +80,9 @@ def test_parse_iso_date(date_text: str, expected: datetime | None) -> None:
         ("http://example.com/home/1", "http://example.com/home/1"),
     ],
 )
-def test_to_absolute_redfin_url(url: str, expected: str) -> None:
+def test_build_absolute_redfin_url(url: str, expected: str) -> None:
     """Relative Redfin paths gain the base host and full URLs stay unchanged."""
-    assert to_absolute_redfin_url(url) == expected
+    assert build_absolute_redfin_url(url) == expected
 
 
 def test_redfin_search_error_preserves_message() -> None:

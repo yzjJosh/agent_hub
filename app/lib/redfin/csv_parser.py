@@ -107,7 +107,7 @@ def _build_csv_address(row: dict[str, str]) -> str:
 
 
 def _parse_csv_row(row: dict[str, str]) -> dict:
-    """Turn one CSV row into a property dictionary."""
+    """Turn one CSV row into a property record."""
     sale_type = _clean_text(row.get("SALE TYPE", ""))
     status = "Sold" if sale_type == "PAST SALE" else "Active"
     price = _format_price(row.get("PRICE", ""))

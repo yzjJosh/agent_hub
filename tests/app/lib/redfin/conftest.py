@@ -1,8 +1,16 @@
-"""Shared fake snapshot helper for Redfin library unit tests."""
+"""Shared helpers and test data for Redfin library unit tests."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+
+CSV_HEADER = (
+    '"SALE TYPE","PRICE","BEDS","BATHS","ADDRESS","CITY","STATE OR PROVINCE",'
+    '"ZIP OR POSTAL CODE","SQUARE FEET","LOT SIZE","YEAR BUILT","DAYS ON MARKET",'
+    '"$/SQUARE FEET","HOA/MONTH","STATUS","PROPERTY TYPE","SOLD DATE",'
+    '"NEXT OPEN HOUSE START TIME","NEXT OPEN HOUSE END TIME","URL","SOURCE",'
+    '"MLS#","LATITUDE","LONGITUDE"\n'
+)
 
 
 def make_fake_snapshot(

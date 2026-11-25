@@ -26,7 +26,7 @@ from app.lib.redfin.models import (
     REDFIN_BASE_URL,
     RedfinSearchError,
     SearchOptions,
-    to_absolute_redfin_url,
+    build_absolute_redfin_url,
 )
 from app.lib.redfin.property_parser import (
     extract_card_property,
@@ -49,7 +49,7 @@ _POST_SEARCH_DELAY_S = 1
 _CSV_DOWNLOAD_TIMEOUT_S = 15
 _PUBLIC_PAGE_MAX_POLLS = 30
 _URL_POLL_INTERVAL_S = 0.5
-_BROWSER_OP_RETRY_COUNT = 3
+_DOWNLOAD_RETRY_COUNT = 3
 _OWNER_DASHBOARD_PATH = "/myredfin/owner-dashboard/"
 _PUBLIC_PAGE_BUTTON = "View public page"
 _MISSING_CELL = "—"
@@ -104,7 +104,7 @@ async def _capture_page_snapshot(
 
 
 async def _read_filtered_tree(snapshot: PageSnapshot) -> dict | None:
-    """Read the filtered page tree as a dictionary, or None."""
+    """Read the filtered page tree, or None when it is missing."""
     tree = await snapshot.filtered_tree()
     return tree if isinstance(tree, dict) else None
 
@@ -123,7 +123,7 @@ async def _capture_results_tree(browser: BrowserManager, target_id: str) -> dict
 async def _submit_initial_search(
     browser: BrowserManager, target_id: str, location: str
 ) -> dict:
-    """Open Redfin, submit the search query, and return the landing tree."""
+    """Search Redfin for a location and return the landing page tree."""
     await browser.navigate(
         target_id, REDFIN_BASE_URL, timeout=_NAVIGATION_TIMEOUT_MS, verbose=_VERBOSE
     )
@@ -293,7 +293,7 @@ async def _navigate_to_suggestion(
 
     await browser.navigate(
         target_id,
-        to_absolute_redfin_url(suggestion_url),
+        build_absolute_redfin_url(suggestion_url),
         timeout=_NAVIGATION_TIMEOUT_MS,
         verbose=_VERBOSE,
     )
@@ -304,7 +304,7 @@ async def _download_csv(
     browser: BrowserManager, target_id: str, save_path: str
 ) -> str | None:
     """Download the CSV of the search results, or return None."""
-    for _ in range(_BROWSER_OP_RETRY_COUNT):
+    for _ in range(_DOWNLOAD_RETRY_COUNT):
         snapshot = await _capture_page_snapshot(browser, target_id)
         if snapshot is None:
             continue

@@ -12,14 +12,7 @@ from app.lib.redfin.csv_parser import (
     parse_results_csv,
 )
 from app.lib.redfin.models import RedfinSearchError, SearchOptions
-
-_CSV_HEADER = (
-    '"SALE TYPE","PRICE","BEDS","BATHS","ADDRESS","CITY","STATE OR PROVINCE",'
-    '"ZIP OR POSTAL CODE","SQUARE FEET","LOT SIZE","YEAR BUILT","DAYS ON MARKET",'
-    '"$/SQUARE FEET","HOA/MONTH","STATUS","PROPERTY TYPE","SOLD DATE",'
-    '"NEXT OPEN HOUSE START TIME","NEXT OPEN HOUSE END TIME","URL","SOURCE",'
-    '"MLS#","LATITUDE","LONGITUDE"\n'
-)
+from tests.app.lib.redfin.conftest import CSV_HEADER
 
 
 async def test_parse_results_csv_parses_rows_and_skips_mls_notice(
@@ -28,7 +21,7 @@ async def test_parse_results_csv_parses_rows_and_skips_mls_notice(
     """CSV parser builds structured listings and drops MLS notice rows."""
     csv_path = tmp_path / "results.csv"
     csv_path.write_text(
-        _CSV_HEADER
+        CSV_HEADER
         + '"In accordance with local MLS rules, some MLS listings are not included","","","","",'
         '"","","","","","","","","","","","","","","","","","",""\n'
         + '"MLS Listing","650000","3","2.5","100 Main St","San Jose","CA","95117",'

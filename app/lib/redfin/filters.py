@@ -22,7 +22,7 @@ _VERBOSE = True
 _CLICK_TIMEOUT_MS = 10000
 _TIME_FILTER_SELECT_TIMEOUT_MS = 10000
 _SNAPSHOT_TIMEOUT_MS = 2000
-_BROWSER_OP_RETRY_COUNT = 3
+_FILTER_RETRY_COUNT = 3
 _RETRY_BACKOFF_S = 1
 _BEDS_OPTION_THRESHOLD = 5
 _DAYS_ON_MARKET_COMBOBOX_NAME = "dom"
@@ -303,15 +303,15 @@ async def _apply_sold_filter(browser: BrowserManager, target_id: str) -> bool:
 async def _retry_filter_step[*Ts](
     browser: BrowserManager,
     target_id: str,
-    filter_fn: Callable[[BrowserManager, str, *Ts], Awaitable[bool]],
+    apply_filter: Callable[[BrowserManager, str, *Ts], Awaitable[bool]],
     filter_args: tuple[*Ts],
     filter_name: str,
 ) -> bool:
     """Try to set a filter a few times before giving up."""
-    for attempt in range(_BROWSER_OP_RETRY_COUNT):
-        if await filter_fn(browser, target_id, *filter_args):
+    for attempt in range(_FILTER_RETRY_COUNT):
+        if await apply_filter(browser, target_id, *filter_args):
             return True
-        if attempt < _BROWSER_OP_RETRY_COUNT - 1:
+        if attempt < _FILTER_RETRY_COUNT - 1:
             await asyncio.sleep(_RETRY_BACKOFF_S)
 
     print(
@@ -325,13 +325,13 @@ async def _retry_filter_step[*Ts](
 async def _require_filter[*Ts](
     browser: BrowserManager,
     target_id: str,
-    filter_fn: Callable[[BrowserManager, str, *Ts], Awaitable[bool]],
+    apply_filter: Callable[[BrowserManager, str, *Ts], Awaitable[bool]],
     filter_args: tuple[*Ts],
     filter_name: str,
 ) -> None:
     """Apply a required filter step, or raise when all tries fail."""
     if not await _retry_filter_step(
-        browser, target_id, filter_fn, filter_args, filter_name
+        browser, target_id, apply_filter, filter_args, filter_name
     ):
         raise RedfinSearchError(f"could not apply {filter_name} filter")
 

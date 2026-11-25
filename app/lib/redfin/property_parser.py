@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.lib.redfin.models import PROPERTY_URL_SEGMENT, to_absolute_redfin_url
+from app.lib.redfin.models import PROPERTY_URL_SEGMENT, build_absolute_redfin_url
 from app.lib.redfin.snapshot_tree import (
     collect_node_text,
     find_descendant_text,
@@ -428,7 +428,7 @@ def _extract_card_link(card: dict) -> _PropertyLink:
         url = link.get("url", "")
         if PROPERTY_URL_SEGMENT in url:
             return _PropertyLink(
-                url=to_absolute_redfin_url(url),
+                url=build_absolute_redfin_url(url),
                 label=link.get("name", ""),
             )
     return _PropertyLink(url=None, label=None)
@@ -544,5 +544,5 @@ def find_home_page_url(tree: dict, location: str) -> str | None:
                 re.IGNORECASE,
             )
         ):
-            return to_absolute_redfin_url(url)
+            return build_absolute_redfin_url(url)
     return None

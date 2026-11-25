@@ -65,7 +65,7 @@ def test_extract_single_property_skips_payment_figures_and_returns_none() -> Non
 
 
 @pytest.mark.parametrize(
-    ("body_text", "expected_price", "expected_date", "expected_pps"),
+    ("body_text", "expected_price", "expected_date", "expected_price_per_sqft"),
     [
         ("Mar 5, 2025 Sold $2,075,000", "$2,075,000", "2025-03-05", "$1383"),
         ("Off Market Mar 2025 for $2M", "$2,000,000", "2025-03-01", "$1333"),
@@ -76,7 +76,7 @@ def test_extract_off_market_property_reads_exact_and_short_prices(
     body_text: str,
     expected_price: str,
     expected_date: str,
-    expected_pps: str,
+    expected_price_per_sqft: str,
 ) -> None:
     """Off market pages parse both sale history lines and abbreviated lines."""
     tree = {
@@ -104,7 +104,7 @@ def test_extract_off_market_property_reads_exact_and_short_prices(
         "city": "San Jose",
         "zip": "95117",
         "street": "123 Main St",
-        "price_per_sqft": expected_pps,
+        "price_per_sqft": expected_price_per_sqft,
     }
 
 
