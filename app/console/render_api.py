@@ -10,13 +10,13 @@ from app.lib.render.classify import kind_label
 from app.lib.render.detect import TEXT_FAMILY_KINDS, detect
 from app.lib.render.fragments import build_fragment_bytes
 
-__all__ = ["render_message_impl"]
+__all__ = ["render_message"]
 
 _ABSOLUTE_CAP = 4 * 1024 * 1024
 _NO_PREVIEW_NOTE = "No preview available for this content."
 
 
-async def render_message_impl(request: Request) -> Response:
+async def render_message(request: Request) -> Response:
     """Render one assistant message's bytes through the generic pipeline.
 
     Args:

@@ -7,6 +7,7 @@ import json
 import os
 from collections.abc import AsyncGenerator
 
+from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 import app.lib.db.store as store_module
@@ -14,7 +15,7 @@ from app.console.errors import error_response
 from app.console.windows import OFFSET_MAX_BYTES, forward_window, parse_max_bytes, parse_offset
 from app.lib.agent.conversation_log import tail_lines
 
-__all__ = ["conversation_snapshot_impl", "conversation_stream_impl", "conversation_window_impl"]
+__all__ = ["get_conversation_snapshot", "get_conversation_window", "stream_conversation"]
 
 _CONV_FILE = "conversation.jsonl"
 _WINDOW_DEFAULT_MAX_BYTES = 524288
@@ -95,18 +96,19 @@ def _read_snapshot_sync(path: str) -> dict:
     return {"offset": aligned_offset, "size": size, "event_count": event_count, "events": events}
 
 
-async def conversation_snapshot_impl(task_id: str) -> Response:
+async def get_conversation_snapshot(request: Request) -> Response:
     """Read a compacted snapshot of an agent run's conversation events.
 
     Adjacent thinking or content pieces from the same attempt are joined, and
     the reply gives the byte offset after the last complete line.
 
     Args:
-        task_id: Which task to look at.
+        request: The incoming HTTP request.
 
     Returns:
         The snapshot with its byte offset and event count, or an error reply.
     """
+    task_id = request.path_params["task_id"]
     result = await _agent_conversation_file(task_id)
     if isinstance(result, Response):
         return result
@@ -115,24 +117,23 @@ async def conversation_snapshot_impl(task_id: str) -> Response:
     return JSONResponse(snapshot, headers=_NO_STORE_HEADERS)
 
 
-async def conversation_stream_impl(task_id: str, params: dict | None = None) -> Response:
+async def stream_conversation(request: Request) -> Response:
     """Stream an agent run's conversation file as chunked text.
 
     Every complete line is sent as it appears, and the stream closes when the
     task leaves running and the file has been read to the end.
 
     Args:
-        task_id: Which task to look at.
-        params: The query values from the request, or None.
+        request: The incoming HTTP request.
 
     Returns:
         The chunked stream, or an error reply.
     """
-    result = await _conversation_path(task_id)
+    result = await _conversation_path(request.path_params["task_id"])
     if isinstance(result, Response):
         return result
     _tid, path = result
-    offset = parse_offset((params or {}).get("offset"))
+    offset = parse_offset(request.query_params.get("offset"))
     if offset is None:
         return error_response(
             400,
@@ -155,22 +156,21 @@ async def conversation_stream_impl(task_id: str, params: dict | None = None) -> 
     )
 
 
-async def conversation_window_impl(task_id: str, params: dict) -> Response:
+async def get_conversation_window(request: Request) -> Response:
     """Read a window of an agent run's conversation file.
 
     Args:
-        task_id: Which task to look at.
-        params: The query values from the request.
+        request: The incoming HTTP request.
 
     Returns:
         The window, or an error reply.
     """
-    result = await _conversation_path(task_id)
+    result = await _conversation_path(request.path_params["task_id"])
     if isinstance(result, Response):
         return result
     _, path = result
-    offset = parse_offset(params.get("offset"))
-    max_bytes = parse_max_bytes(params.get("max_bytes"), _WINDOW_DEFAULT_MAX_BYTES)
+    offset = parse_offset(request.query_params.get("offset"))
+    max_bytes = parse_max_bytes(request.query_params.get("max_bytes"), _WINDOW_DEFAULT_MAX_BYTES)
     if offset is None or max_bytes is None:
         return error_response(
             400,

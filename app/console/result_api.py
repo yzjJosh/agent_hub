@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 import app.lib.db.store as store_module
@@ -14,7 +15,7 @@ from app.lib.render.classify import RenderKind
 from app.lib.render.detect import TEXT_FAMILY_KINDS
 from app.lib.tool.base import parse_files_sidecar
 
-__all__ = ["result_files_for", "result_feed_impl", "result_view_impl"]
+__all__ = ["get_result_feed", "get_result_view", "result_files_for"]
 
 _TEXT_KIND_TOKENS = {k.value for k in TEXT_FAMILY_KINDS}
 
@@ -114,35 +115,35 @@ async def _build_feed(task_id: str, context: tuple[RenderKind | None, int, str, 
     return JSONResponse(feed)
 
 
-async def result_view_impl(task_id: str, params: dict) -> Response:
+async def get_result_view(request: Request) -> Response:
     """Describe a task's result for the viewer.
 
     The request can ask for another text kind and for a starting line.
 
     Args:
-        task_id: Which task to look at.
-        params: The query values from the request.
+        request: The incoming HTTP request.
 
     Returns:
         The description of the result, or an error reply.
     """
-    context = await _view_context(task_id, params)
+    task_id = request.path_params["task_id"]
+    context = await _view_context(task_id, dict(request.query_params))
     if isinstance(context, Response):
         return context
     return await _describe_result(task_id, context)
 
 
-async def result_feed_impl(task_id: str, params: dict) -> Response:
+async def get_result_feed(request: Request) -> Response:
     """Describe a task's result feed, the body plus its files.
 
     Args:
-        task_id: Which task to look at.
-        params: The query values from the request.
+        request: The incoming HTTP request.
 
     Returns:
         The feed, or an error reply.
     """
-    context = await _view_context(task_id, params)
+    task_id = request.path_params["task_id"]
+    context = await _view_context(task_id, dict(request.query_params))
     if isinstance(context, Response):
         return context
     return await _build_feed(task_id, context)

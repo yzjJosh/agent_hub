@@ -16,7 +16,7 @@ from app.lib.task import ImmediateTask, Task
 from app.lib.tool.base import Param, Tool, ToolMessageError, ToolResult, format_staleness
 from app.mcp.registry import tool_class
 
-__all__ = ["tool_call_impl", "tool_schema_impl"]
+__all__ = ["call_tool", "get_tool_schema"]
 
 _MAX_BODY = 10 * 2**20
 
@@ -151,15 +151,16 @@ def _exposed_tool_or_error(tool: str) -> type[Tool] | JSONResponse:
     return cls
 
 
-def tool_schema_impl(tool: str) -> Response:
+def get_tool_schema(request: Request) -> Response:
     """Describe one tool and its parameters for the console.
 
     Args:
-        tool: The tool name.
+        request: The incoming HTTP request.
 
     Returns:
         The tool's name, words, settings, and parameters, or an error reply.
     """
+    tool = request.path_params["tool"]
     cls = _exposed_tool_or_error(tool)
     if isinstance(cls, JSONResponse):
         return cls
@@ -244,19 +245,19 @@ async def _task_response(task: Task[ToolResult]) -> Response:
     return await _run_response(str(task.id))
 
 
-async def tool_call_impl(request: Request, tool: str) -> Response:
+async def call_tool(request: Request) -> Response:
     """Run one tool by hand.
 
     A bad param set answers 400 with the tool's own words. Everything else
     started, or reused, a run and answers 202.
 
     Args:
-        request: The incoming request.
-        tool: The tool name.
+        request: The incoming HTTP request.
 
     Returns:
         The task id of the run, or an error reply.
     """
+    tool = request.path_params["tool"]
     if not _is_json_media_type(request) or _origin_host_mismatch(request):
         return error_response(415, "unsupported_media_type", "The request must be JSON with an Origin matching this host.")
     cls = _exposed_tool_or_error(tool)

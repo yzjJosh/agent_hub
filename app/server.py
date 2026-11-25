@@ -16,8 +16,8 @@ from app.console.api import (
     STATIC_DIR,
     api_not_found,
     build_api_routes,
-    dav_download,
 )
+from app.console.resources_api import download_resource
 from app.console.vnc import websockify_proxy
 from app.lib.db.store import init_store
 from app.lib.render import thumbs
@@ -105,7 +105,7 @@ def build_app() -> Starlette:
     outer = Starlette(routes=list(mcp_app.routes), lifespan=lambda _app: _lifespan(mcp_app))
     outer.add_middleware(ConsoleSecurityMiddleware)
     outer.add_middleware(ConsolePathSanitizer)
-    outer.add_route("/dav/dl", dav_download, methods=("GET", "HEAD"))
+    outer.add_route("/dav/dl", download_resource, methods=("GET", "HEAD"))
     outer.mount("/dav", WSGIMiddleware(create_dav_app(_RESOURCES_DIR)))
     outer.mount("/v1", create_openai_tts_app())
     outer.add_route("/api", api_not_found, methods=API_ROUTE_METHODS)

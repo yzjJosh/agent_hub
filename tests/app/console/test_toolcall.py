@@ -36,8 +36,8 @@ def test_call_handler_runs_tools_itself_and_writes_no_rows() -> None:
 
     The call handler is async and the schema handler is not.
     """
-    assert asyncio.iscoroutinefunction(toolcall_module.tool_call_impl)
-    assert not asyncio.iscoroutinefunction(toolcall_module.tool_schema_impl)
+    assert asyncio.iscoroutinefunction(toolcall_module.call_tool)
+    assert not asyncio.iscoroutinefunction(toolcall_module.get_tool_schema)
     source = (Path(api_module.STATIC_DIR).parent / "toolcall.py").read_text()
     assert ".call_tool(" not in source
     assert "FastMCP" not in source
