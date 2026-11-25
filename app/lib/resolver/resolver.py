@@ -53,11 +53,11 @@ class ResolvedContent:
     binary_path: str | None = None
 
 
-_BINARY_DOWNLOAD_DIR = "downloads"
+_BINARY_DOWNLOAD_FOLDER = "downloads"
 _MAX_BINARY_PASSTHROUGH_BYTES = 50 * 1024 * 1024
 _DOWNLOAD_LINK_ID = "resolver_download_link"
 _DOWNLOAD_LINK_TEXT = "DOWNLOAD"
-_TEMP_NAME = "resolver"
+_SCRATCH_FOLDER_NAME = "resolver"
 
 _HTTP_OK = 200
 _HTTP_UNAUTHORIZED = 401
@@ -66,7 +66,7 @@ _HTTP_CLIENT_ERROR_MIN = 400
 _HTTP_CLIENT_ERROR_MAX = 499
 _HTTP_SERVER_ERROR_MIN = 500
 _HTTP_SERVER_ERROR_MAX = 599
-_ASR_TIMEOUT_S = 300
+_ASR_TIMEOUT_SECONDS = 300
 
 _MIME_DOC = "application/msword"
 _MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -83,12 +83,12 @@ _OFFICE_TEXT_PARSERS: dict[str, Callable[[str, bool], Awaitable[str]]] = {
     _MIME_XLSX: xlsx_to_text,
 }
 
-_BROWSER_WAIT_TIMEOUT_MS = 30000
-_DOWNLOAD_WAIT_TIMEOUT_S = 60
-_CLEANUP_DELAY_S = 1
+_BROWSER_WAIT_TIMEOUT_MILLISECONDS = 30000
+_DOWNLOAD_WAIT_TIMEOUT_SECONDS = 60
+_CLEANUP_DELAY_SECONDS = 1
 _FILE_SCHEME = "file"
 _MIN_CONTENT_LENGTH = 500
-_HTML_MIMES = ("text/html", "application/xhtml+xml")
+_HTML_MIME_TYPES = ("text/html", "application/xhtml+xml")
 
 
 def _log_verbose(is_verbose: bool, message: str, is_error: bool = False) -> None:
@@ -202,7 +202,7 @@ def _build_download_link_script(url: str) -> str:
 async def _remove_download_link(browser_manager: BrowserManager, target_id: str) -> None:
     """Remove the injected download link from the page."""
     try:
-        await asyncio.sleep(_CLEANUP_DELAY_S)
+        await asyncio.sleep(_CLEANUP_DELAY_SECONDS)
         await browser_manager.evaluate(
             target_id,
             f"""() => {{
@@ -237,7 +237,7 @@ async def _inject_download_link(
     selector = f"#{_DOWNLOAD_LINK_ID}"
     _log_verbose(is_verbose, f"Waiting for download link to appear for {url}")
     is_found = await browser_manager.wait_for_selector(
-        target_id, selector, timeout=_BROWSER_WAIT_TIMEOUT_MS, verbose=is_verbose
+        target_id, selector, timeout=_BROWSER_WAIT_TIMEOUT_MILLISECONDS, verbose=is_verbose
     )
     if not is_found:
         _log_verbose(is_verbose, f"Download link did not appear for {url}", is_error=True)
@@ -271,7 +271,7 @@ async def _download_browser_media(
         target_id=target_id,
         action=_click_download_link,
         save_path=download_path,
-        timeout=_DOWNLOAD_WAIT_TIMEOUT_S,
+        timeout=_DOWNLOAD_WAIT_TIMEOUT_SECONDS,
         verbose=is_verbose,
     )
     if not download_result.get("downloaded"):
@@ -372,10 +372,10 @@ async def _try_curl_download(url: str, download_path: str, is_verbose: bool = Fa
     status_command = [
         "curl", "-L", "-s", "--compressed", "-o", "/dev/null", "-D", "-", "-w", "\n%{http_code}", url
     ]
-    status = await run_cli(status_command, "curl status check")
-    if status.returncode != 0:
+    header_result = await run_cli(status_command, "curl status check")
+    if header_result.returncode != 0:
         return None
-    headers, _, http_code = status.stdout.rpartition("\n")
+    headers, _, http_code = header_result.stdout.rpartition("\n")
 
     if http_code.isdigit():
         http_code_int = int(http_code)
@@ -412,7 +412,7 @@ async def _browse_and_extract_url(
         target_id=target_id,
         url=url,
         save_path=download_path,
-        timeout=_DOWNLOAD_WAIT_TIMEOUT_S,
+        timeout=_DOWNLOAD_WAIT_TIMEOUT_SECONDS,
         verbose=is_verbose,
     )
     if download_result.get("downloaded"):
@@ -576,9 +576,9 @@ async def _fetch_url_content(
     if not url:
         raise ResolveError("URL is None or empty")
     file_name = url.split("/")[-1].split("?")[0] or "downloaded_file"
-    temp_dir = paths.scratch_dir(_TEMP_NAME)
-    await asyncio.to_thread(os.makedirs, temp_dir, exist_ok=True)
-    download_path = os.path.join(temp_dir, file_name)
+    scratch_folder = paths.scratch_dir(_SCRATCH_FOLDER_NAME)
+    await asyncio.to_thread(os.makedirs, scratch_folder, exist_ok=True)
+    download_path = os.path.join(scratch_folder, file_name)
 
     _log_verbose(is_verbose, f"[CURL] Attempting download: {url}")
     try:
@@ -589,7 +589,7 @@ async def _fetch_url_content(
                 saved_path, context, is_verbose, should_passthrough_binary, mime_type=mime_type
             )
             if resolved is not None:
-                if mime_type not in _HTML_MIMES or not await _is_blocked_page(saved_path, url, is_verbose):
+                if mime_type not in _HTML_MIME_TYPES or not await _is_blocked_page(saved_path, url, is_verbose):
                     return resolved
     except _EmptyHtmlError:
         _log_verbose(is_verbose, f"[FALLBACK] No text left in HTML, using browser for: {url}")
@@ -621,7 +621,7 @@ async def _transcribe_audio(audio_path: str, is_verbose: bool = False) -> str:
             response = await client.post(
                 f"{server_url.rstrip('/')}/asr",
                 files={"audio_file": (os.path.basename(audio_path), audio_data)},
-                timeout=_ASR_TIMEOUT_S,
+                timeout=_ASR_TIMEOUT_SECONDS,
             )
 
         if response.status_code != _HTTP_OK:
@@ -779,7 +779,7 @@ async def _save_binary_file(file_path: str, is_verbose: bool) -> ResolvedContent
     except Exception as error:
         raise ResolveError(f"Error saving binary file '{file_path}': {error}") from error
     _log_verbose(is_verbose, f"[BINARY] Saved {file_path} to {destination_path}", is_error=True)
-    notice = await binary_download_notice(f"{_BINARY_DOWNLOAD_DIR}/{filename}")
+    notice = await binary_download_notice(f"{_BINARY_DOWNLOAD_FOLDER}/{filename}")
     return ResolvedContent(content=notice)
 
 
@@ -791,7 +791,7 @@ def _copy_into_downloads(source_path: str, destination_path: str) -> None:
 
 def _build_binary_download_path(file_path: str) -> str:
     """Build the destination path for a copied binary file in the resources folder."""
-    return os.path.join(paths.resources_dir(), _BINARY_DOWNLOAD_DIR, os.path.basename(file_path))
+    return os.path.join(paths.resources_dir(), _BINARY_DOWNLOAD_FOLDER, os.path.basename(file_path))
 
 
 async def _copy_binary_for_passthrough(file_path: str, is_verbose: bool) -> ResolvedContent:
