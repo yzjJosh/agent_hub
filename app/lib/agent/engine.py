@@ -77,7 +77,7 @@ _INTERNAL_ERROR_STATUS = 500
 _RETRYABLE_STATUS_CODES = (408, 409, 429)
 _RESPONSE_SCHEMA_NAME = "response_schema"
 _REJECTED_STATUS = "rejected"
-_SHORT_TASK_ID_LEN = 8
+_SHORT_TASK_ID_LENGTH = 8
 _RETRY_NOTICE = (
     "IMPORTANT NOTE: Your last response is dropped. Please correct the error and re-generate your "
     "entire response in your next message. Please don't put any filler content. Your message must "
@@ -244,7 +244,7 @@ class AgentRun:
         if control is None:
             print(
                 f"[{_format_log_timestamp()}] cancel_run_loop: no run control for task "
-                f"{str(self._task.id)[:_SHORT_TASK_ID_LEN]}",
+                f"{str(self._task.id)[:_SHORT_TASK_ID_LENGTH]}",
                 file=sys.stderr,
             )
             return
@@ -284,7 +284,7 @@ class Agent[T]:
     class _AgentToolAdapter:
         def __init__(self, inner: Tool, results_by_id: bool) -> None:
             self.inner_tool = inner
-            self.uses_results_by_id = results_by_id
+            self.should_return_results_by_id = results_by_id
             self._added_max_char = (
                 _AGENT_MAX_CHAR_PARAM if (inner.is_result_long and not results_by_id) else None
             )
@@ -326,7 +326,11 @@ class Agent[T]:
             task_id: str | None,
             status: str | None,
         ) -> str | list[ToolOutputText | ToolOutputImage | ToolOutputFileContent]:
-            if self.uses_results_by_id and status == TaskStatus.COMPLETED.value and task_id is not None:
+            if (
+                self.should_return_results_by_id
+                and status == TaskStatus.COMPLETED.value
+                and task_id is not None
+            ):
                 return _format_task_result_notice(task_id)
             try:
                 result = await task.result()
@@ -707,7 +711,7 @@ class Agent[T]:
         outcome = tool_calls.get(call_id, _EMPTY_TOOL_CALL_OUTCOME) if call_id else _EMPTY_TOOL_CALL_OUTCOME
         print(
             f"[{_format_log_timestamp()}] tool_call {tool_name} -> "
-            f"task {(outcome.task_id or '?')[:_SHORT_TASK_ID_LEN]}"
+            f"task {(outcome.task_id or '?')[:_SHORT_TASK_ID_LENGTH]}"
         )
 
     async def _record_tool_call_finished(
@@ -766,29 +770,21 @@ class Agent[T]:
         call_starts: dict[str, float] = {}
         async for event in result.stream_events():
             if isinstance(event, RawResponsesStreamEvent):
-                if isinstance(
-                    event.data,
-                    (
-                        ResponseTextDeltaEvent,
-                        ResponseReasoningTextDeltaEvent,
-                        ResponseReasoningSummaryTextDeltaEvent,
-                    ),
+                event_data = event.data
+                if isinstance(event_data, ResponseTextDeltaEvent):
+                    section = "content"
+                    delta = event_data.delta
+                elif isinstance(
+                    event_data,
+                    (ResponseReasoningTextDeltaEvent, ResponseReasoningSummaryTextDeltaEvent),
                 ):
-                    section = self._classify_stream_section(event)
-                    if section is not None and event.data.delta:
-                        await writer.write(
-                            build_conversation_event(section, attempt, text=event.data.delta)
-                        )
+                    section = "thinking"
+                    delta = event_data.delta
+                else:
+                    continue
+                if delta:
+                    await writer.write(build_conversation_event(section, attempt, text=delta))
             elif isinstance(event, RunItemStreamEvent):
                 await self._record_tool_item(
                     event.item, attempt, tool_calls, call_names, call_starts, writer
                 )
-
-    @staticmethod
-    def _classify_stream_section(event: RawResponsesStreamEvent) -> str | None:
-        event_data = event.data
-        if isinstance(event_data, ResponseTextDeltaEvent):
-            return "content"
-        if isinstance(event_data, (ResponseReasoningTextDeltaEvent, ResponseReasoningSummaryTextDeltaEvent)):
-            return "thinking"
-        return None

@@ -22,7 +22,7 @@ __all__ = ["install_wire_converter", "should_always_replay_reasoning"]
 
 
 @dataclass(frozen=True)
-class _ReasoningRun:
+class _ReasoningItemGroup:
     items: list[dict]
     next_index: int
 
@@ -70,14 +70,14 @@ def _convert_tool_media_parts(
 
 
 def _merge_reasoning_items(
-    run_items: list[dict],
+    reasoning_items: list[dict],
     model: str,
     base_url: str | None,
     replay_check: ShouldReplayReasoningContent,
 ) -> str:
     normalized_url = base_url.rstrip("/") if base_url is not None else None
     texts: list[str] = []
-    for item in run_items:
+    for item in reasoning_items:
         raw_provider = item.get("provider_data")
         provider_data = raw_provider if isinstance(raw_provider, dict) else {}
         raw_origin = provider_data.get("model")
@@ -98,10 +98,10 @@ def _merge_reasoning_items(
     return "\n".join(texts)
 
 
-def _collect_reasoning_run(
+def _collect_reasoning_item_group(
     raw_items: list[TResponseInputItem],
     start_index: int,
-) -> _ReasoningRun:
+) -> _ReasoningItemGroup:
     end_index = start_index + 1
     while (
         end_index < len(raw_items)
@@ -109,7 +109,7 @@ def _collect_reasoning_run(
     ):
         end_index += 1
     items: list[dict] = [dict(item) for item in raw_items[start_index:end_index] if isinstance(item, dict)]
-    return _ReasoningRun(items=items, next_index=end_index)
+    return _ReasoningItemGroup(items=items, next_index=end_index)
 
 
 class _ChatCompletionsWireConverter(chatcmpl_converter.Converter):
@@ -214,14 +214,18 @@ class _ChatCompletionsWireConverter(chatcmpl_converter.Converter):
                 )
             )
             pending = []
-            reasoning_run = _collect_reasoning_run(raw_items, index)
+            reasoning_group = _collect_reasoning_item_group(raw_items, index)
             merged_reasoning = _merge_reasoning_items(
-                reasoning_run.items, effective_model, base_url, replay_check
+                reasoning_group.items, effective_model, base_url, replay_check
             )
-            next_item = raw_items[reasoning_run.next_index] if reasoning_run.next_index < len(raw_items) else None
+            next_item = (
+                raw_items[reasoning_group.next_index]
+                if reasoning_group.next_index < len(raw_items)
+                else None
+            )
             index = cls._emit_reasoning_turn(
-                messages, pending, reasoning_run.items, merged_reasoning,
-                next_item, reasoning_run.next_index, preserve_thinking_blocks,
+                messages, pending, reasoning_group.items, merged_reasoning,
+                next_item, reasoning_group.next_index, preserve_thinking_blocks,
             )
         messages.extend(
             cls._convert_batch(

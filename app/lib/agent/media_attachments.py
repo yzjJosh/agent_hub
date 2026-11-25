@@ -21,7 +21,7 @@ from app.lib.shared.paths import is_image_mime, is_video_mime, mime_type, resolv
 __all__ = ["load_media_attachment_parts"]
 
 _MEDIA_DECODE_TIMEOUT_SECONDS = 30
-_ERROR_PATH_PREVIEW_LEN = 100
+_ERROR_PATH_PREVIEW_LENGTH = 100
 
 
 def _encode_data_url(raw_bytes: bytes, mime: str) -> str:
@@ -73,7 +73,7 @@ async def _build_media_part(
 
 
 def _build_delivery_error_part(path: str, reason: str, error: Exception) -> ToolOutputText:
-    print(f"[Agent] Attachment delivery failed for {path[:_ERROR_PATH_PREVIEW_LEN]}", file=sys.stderr)
+    print(f"[Agent] Attachment delivery failed for {path[:_ERROR_PATH_PREVIEW_LENGTH]}", file=sys.stderr)
     traceback.print_exception(error, file=sys.stderr)
     return ToolOutputText(text=f"Attachment delivery failed for {path!r}. {reason}")
 

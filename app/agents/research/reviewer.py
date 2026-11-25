@@ -51,8 +51,8 @@ def _validate_reviewer_output(text: str) -> ValidationResult[dict]:
         Validation result holding the parsed verdict dict when valid, or an error message.
     """
     ok, parsed = parse_json_object(text)
-    if not ok:
-        return ValidationResult(is_valid=False, error=parsed)
+    if not ok or not isinstance(parsed, dict):
+        return ValidationResult(is_valid=False, error=str(parsed))
     problems: list[str] = []
     for field in _FIELDS:
         if field not in parsed:
@@ -93,8 +93,10 @@ def _reviewer_validator(draft: str) -> Callable[[str, AgentRun], Awaitable[Valid
 
     async def validate(text: str, run: AgentRun) -> ValidationResult[dict]:
         validation = _validate_reviewer_output(text)
-        if not validation.is_valid or validation.value is None:
+        if not validation.is_valid:
             return validation
+        if validation.value is None:
+            return ValidationResult(is_valid=False, error="Reviewer output is missing.")
         if not validation.value["pass"]:
             return validation
         missing = await unverified_refs(draft, run)
@@ -148,11 +150,13 @@ async def run_reviewer(
         agent.add_tool_adapter(tool)
     agent_run = await agent.run(user_message)
     try:
-        verdict = await agent_run.task.result()
+        raw_verdict = await agent_run.task.result()
     except asyncio.CancelledError:
         await asyncio.shield(agent_run.task.cancel())
         raise
-    verdict = json.loads(verdict)
+    if raw_verdict is None:
+        raise RuntimeError("reviewer agent run did not return a verdict dict")
+    verdict = json.loads(raw_verdict)
     if not isinstance(verdict, dict):
         raise RuntimeError("reviewer agent run did not return a verdict dict")
     return Review(

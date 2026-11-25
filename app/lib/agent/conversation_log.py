@@ -28,8 +28,8 @@ __all__ = [
 
 _CONVERSATION_LOG_FILENAME = "conversation.jsonl"
 _TAIL_POLL_SECONDS = 0.05
-_UTF8_CONT_MASK = 0xC0
-_UTF8_CONT_TAG = 0x80
+_UTF8_CONTINUATION_MASK = 0xC0
+_UTF8_CONTINUATION_TAG = 0x80
 
 
 @dataclass(frozen=True)
@@ -223,7 +223,7 @@ async def _read_tail_bytes(path: str, offset: int) -> bytes:
 
 def _skip_utf8_continuations(chunk: bytes) -> int:
     position = 0
-    while position < len(chunk) and (chunk[position] & _UTF8_CONT_MASK) == _UTF8_CONT_TAG:
+    while position < len(chunk) and (chunk[position] & _UTF8_CONTINUATION_MASK) == _UTF8_CONTINUATION_TAG:
         position += 1
     return position
 
