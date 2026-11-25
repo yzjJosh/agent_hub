@@ -384,7 +384,7 @@ class TestCollectorToolResults:
         assert result.citation_ids == []
         assert result.summary == _SUMMARY
         assert result.task.status.value == "completed"
-        calls = await AgentRun(result.task).tool_calls()
+        calls = await AgentRun(result.task).read_tool_calls()
         task_id = calls[0].task_id
         assert seen["output"] == (
             f"Task completed. task_id={task_id}. Retrieve the result with the task tool: "
@@ -405,18 +405,18 @@ class TestCollectorCachedCalls:
     async def test_borrowed_task_id_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stored = await self._collect(monkeypatch)
         assert stored.task.status.value == "completed"
-        stored_id = (await AgentRun(stored.task).tool_calls())[0].task_id
+        stored_id = (await AgentRun(stored.task).read_tool_calls())[0].task_id
 
         reusing = await self._collect(monkeypatch, _deliverable([stored_id]))
         assert reusing.task.status.value == "completed"
         assert reusing.summary == _SUMMARY
         assert reusing.citation_ids == [stored_id]
-        assert [c.task_id for c in await AgentRun(reusing.task).tool_calls()] == [stored_id]
+        assert [c.task_id for c in await AgentRun(reusing.task).read_tool_calls()] == [stored_id]
 
     async def test_a_run_of_only_cached_calls_is_not_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         await self._collect(monkeypatch)
         reusing = await self._collect(monkeypatch)
-        calls = await AgentRun(reusing.task).tool_calls()
+        calls = await AgentRun(reusing.task).read_tool_calls()
         assert [(c.tool_name, c.status) for c in calls] == [(rednote_research_tool.name, "completed")]
 
 

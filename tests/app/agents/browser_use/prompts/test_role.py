@@ -37,49 +37,49 @@ def _run() -> AgentRun:
 
 class TestValidateRoleOutput:
     def test_valid_json_passes(self) -> None:
-        ok, value = validate_role_output('{"status": "completed", "summary": "done"}', _run())
-        assert ok is True
-        assert value == {"status": "completed", "summary": "done"}
+        result = validate_role_output('{"status": "completed", "summary": "done"}', _run())
+        assert result.is_valid is True
+        assert result.value == {"status": "completed", "summary": "done"}
 
     def test_missing_summary_fails(self) -> None:
-        ok, value = validate_role_output('{"status": "completed"}', _run())
-        assert ok is False
-        assert value == "'summary' must be a non-empty string."
+        result = validate_role_output('{"status": "completed"}', _run())
+        assert result.is_valid is False
+        assert result.error == "'summary' must be a non-empty string."
 
     def test_bad_status_fails(self) -> None:
-        ok, value = validate_role_output('{"status": "done", "summary": "x"}', _run())
-        assert ok is False
-        assert value == "'status' must be one of completed, impossible, incomplete."
+        result = validate_role_output('{"status": "done", "summary": "x"}', _run())
+        assert result.is_valid is False
+        assert result.error == "'status' must be one of completed, impossible, incomplete."
 
     def test_blank_summary_fails(self) -> None:
-        ok, value = validate_role_output('{"status": "impossible", "summary": "  "}', _run())
-        assert ok is False
-        assert value == "'summary' must be a non-empty string."
+        result = validate_role_output('{"status": "impossible", "summary": "  "}', _run())
+        assert result.is_valid is False
+        assert result.error == "'summary' must be a non-empty string."
 
     def test_non_object_fails(self) -> None:
-        ok, value = validate_role_output('["completed"]', _run())
-        assert ok is False
-        assert value == "Output must be a JSON object."
+        result = validate_role_output('["completed"]', _run())
+        assert result.is_valid is False
+        assert result.error == "Output must be a JSON object."
 
     def test_unparsable_text_fails_with_the_parse_message(self) -> None:
-        ok, value = validate_role_output("no json here", _run())
-        assert ok is False
-        assert value == (
+        result = validate_role_output("no json here", _run())
+        assert result.is_valid is False
+        assert result.error == (
             "Output must be the pure JSON value only, the JSON array or object itself, "
             "with no extra text, no markdown wrapper, and no commentary."
         )
 
     def test_code_fenced_json_passes(self) -> None:
         text = '```json\n{"status": "impossible", "summary": "cannot"}\n```'
-        ok, value = validate_role_output(text, _run())
-        assert ok is True
-        assert value == {"status": "impossible", "summary": "cannot"}
+        result = validate_role_output(text, _run())
+        assert result.is_valid is True
+        assert result.value == {"status": "impossible", "summary": "cannot"}
 
     def test_leading_filler_passes(self) -> None:
         text = 'Here is my answer:\n{"status": "incomplete", "summary": "stuck"}'
-        ok, value = validate_role_output(text, _run())
-        assert ok is True
-        assert value == {"status": "incomplete", "summary": "stuck"}
+        result = validate_role_output(text, _run())
+        assert result.is_valid is True
+        assert result.value == {"status": "incomplete", "summary": "stuck"}
 
 
 class TestBuildRolePrompt:

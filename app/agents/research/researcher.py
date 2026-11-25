@@ -11,7 +11,7 @@ from app.agents.research.coverage import UNVERIFIED_NOTE, unverified_refs
 from app.agents.research.models import REF_RE, Review
 from app.agents.research.prompt import REVIEW_FEEDBACK_HEADER, load_prompt
 from app.lib.agent.checks import combine_problems, normalize_markdown_body
-from app.lib.agent.engine import Agent, AgentRun
+from app.lib.agent.engine import Agent, AgentRun, ValidationResult
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Tool
 
@@ -54,7 +54,7 @@ def _report_problems(text: str, known_run_ids: frozenset[str]) -> list[str]:
 def _researcher_validator(
     ledger: CollectionLedger,
     prior_draft_refs: frozenset[str],
-) -> Callable[[str, AgentRun], Awaitable[tuple[bool, str]]]:
+) -> Callable[[str, AgentRun], Awaitable[ValidationResult[str]]]:
     """Build the researcher validator over the run's collection ledger.
 
     The report is only accepted once some collection happened, and when every
@@ -69,10 +69,10 @@ def _researcher_validator(
         The validator callable the researcher agent is wired with.
     """
 
-    async def validate(text: str, run: AgentRun) -> tuple[bool, str]:
+    async def validate(text: str, run: AgentRun) -> ValidationResult[str]:
         ok, body = normalize_markdown_body(text)
         if not ok:
-            return False, body
+            return ValidationResult(is_valid=False, error=body)
         problems: list[str] = []
         if not ledger.records:
             problems.append("Call collect_evidence before writing the report.")
@@ -89,8 +89,8 @@ def _researcher_validator(
                 f"{', '.join(missing)}."
             )
         if problems:
-            return False, combine_problems(problems)
-        return True, body
+            return ValidationResult(is_valid=False, error=combine_problems(problems))
+        return ValidationResult(is_valid=True, value=body)
 
     return validate
 

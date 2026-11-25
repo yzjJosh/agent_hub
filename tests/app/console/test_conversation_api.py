@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 import app.lib.db.store as store_module
-from app.lib.agent.engine import tail_lines
+from app.lib.agent.conversation_log import tail_lines
 from tests.app.conftest import seed_task, write_run_file
 
 

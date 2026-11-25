@@ -16,7 +16,7 @@ from app.lib.agent.checks import (
     combine_problems,
     parse_json_object,
 )
-from app.lib.agent.engine import Agent, AgentRun
+from app.lib.agent.engine import Agent, AgentRun, ValidationResult
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Tool
 
@@ -41,18 +41,18 @@ _DRAFT_HEADER = (
 )
 
 
-def _validate_reviewer_output(text: str) -> tuple[bool, dict | str]:
+def _validate_reviewer_output(text: str) -> ValidationResult[dict]:
     """Check that the reviewer output is a JSON verdict object.
 
     Args:
         text: The raw output text from the reviewer agent run.
 
     Returns:
-        An ok flag and a value, the parsed verdict dict when ok, else the message for every problem found.
+        Validation result holding the parsed verdict dict when valid, or an error message.
     """
     ok, parsed = parse_json_object(text)
     if not ok:
-        return False, parsed
+        return ValidationResult(is_valid=False, error=parsed)
     problems: list[str] = []
     for field in _FIELDS:
         if field not in parsed:
@@ -74,11 +74,11 @@ def _validate_reviewer_output(text: str) -> tuple[bool, dict | str]:
         if not ok:
             problems.append(error)
     if problems:
-        return False, combine_problems(problems)
-    return True, parsed
+        return ValidationResult(is_valid=False, error=combine_problems(problems))
+    return ValidationResult(is_valid=True, value=parsed)
 
 
-def _reviewer_validator(draft: str) -> Callable[[str, AgentRun], Awaitable[tuple[bool, dict | str]]]:
+def _reviewer_validator(draft: str) -> Callable[[str, AgentRun], Awaitable[ValidationResult[dict]]]:
     """Build the reviewer validator for the draft under review.
 
     A pass verdict is only accepted when the run verified every reference of
@@ -91,19 +91,22 @@ def _reviewer_validator(draft: str) -> Callable[[str, AgentRun], Awaitable[tuple
         The validator callable the reviewer agent is wired with.
     """
 
-    async def validate(text: str, run: AgentRun) -> tuple[bool, dict | str]:
-        ok, value = _validate_reviewer_output(text)
-        if not ok:
-            return ok, value
-        if not value["pass"]:
-            return ok, value
+    async def validate(text: str, run: AgentRun) -> ValidationResult[dict]:
+        validation = _validate_reviewer_output(text)
+        if not validation.is_valid or validation.value is None:
+            return validation
+        if not validation.value["pass"]:
+            return validation
         missing = await unverified_refs(draft, run)
         if missing:
-            return False, (
-                f"Verdict is pass but these references were not verified {UNVERIFIED_NOTE}: "
-                f"{', '.join(missing)}."
+            return ValidationResult(
+                is_valid=False,
+                error=(
+                    f"Verdict is pass but these references were not verified {UNVERIFIED_NOTE}: "
+                    f"{', '.join(missing)}."
+                ),
             )
-        return ok, value
+        return validation
 
     return validate
 

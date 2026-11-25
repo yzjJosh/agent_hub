@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 import app.lib.db.store as store_module
 from app.console.errors import error_response
 from app.console.windows import OFFSET_MAX_BYTES, forward_window, parse_max_bytes, parse_offset
-from app.lib.agent.engine import tail_lines
+from app.lib.agent.conversation_log import tail_lines
 
 __all__ = ["conversation_snapshot_impl", "conversation_stream_impl", "conversation_window_impl"]
 

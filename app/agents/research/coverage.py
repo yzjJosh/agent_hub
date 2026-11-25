@@ -35,13 +35,13 @@ async def unverified_refs(draft: str, run: AgentRun) -> list[str]:
     if not refs:
         return []
     verified: set[str] = set()
-    for event in await run.events():
+    for event in await run.read_events():
         if event.type != "tool_call" or event.tool_name != "task":
             continue
         params = event.params
         if params and params.get("action") == "result" and params.get("task_id"):
             verified.add(str(params["task_id"]))
-    for call in await run.tool_calls():
+    for call in await run.read_tool_calls():
         if call.tool_name != "search_evidence" or call.status != "completed":
             continue
         run_path = os.path.join(store_module.task_store.data_dir, call.run_dir)

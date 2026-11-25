@@ -26,9 +26,8 @@ from agents import (
 )
 from agents.agent_output import AgentOutputSchemaBase
 from agents.handoffs import Handoff
-from agents.items import ItemHelpers, TResponseInputItem, TResponseStreamEvent, ToolCallItem, ToolCallOutputItem
+from agents.items import TResponseInputItem, TResponseStreamEvent, ToolCallItem, ToolCallOutputItem
 from agents.model_settings import ModelSettings
-from agents.models import chatcmpl_converter, openai_chatcompletions
 from agents.models.interface import ModelTracing
 from agents.run_config import CallModelData, CallModelInputFilter, ModelInputData, RunConfig
 from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
@@ -67,10 +66,9 @@ from openai.types.responses import (
 )
 import pytest
 
-import app.lib.agent.context as context_module
 import app.lib.agent.engine as engine
 import app.lib.db.store as store_module
-from app.lib.agent.engine import Agent, AgentRun
+from app.lib.agent.engine import Agent, AgentRun, ValidationResult
 from app.lib.shared import config
 from app.lib.shared.paths import resources_dir
 from app.lib.task import logcapture, task_manager
@@ -171,8 +169,16 @@ def _patch_runner_factory(monkeypatch: pytest.MonkeyPatch, factory: Callable[[_S
     monkeypatch.setattr(engine.Runner, "run_streamed", lambda a, i, **_kw: factory(a, i))
 
 
-def _accept_any(text: str, _run: AgentRun) -> tuple[bool, str]:
-    return (True, text) if text else (False, "empty output")
+def _accept_any(text: str, _run: AgentRun) -> ValidationResult[str]:
+    if text:
+        return ValidationResult(is_valid=True, value=text)
+    return ValidationResult(is_valid=False, error="empty output")
+
+
+def _accept_ending_with_42(text: str, _run: AgentRun) -> ValidationResult[str]:
+    if text.endswith("42"):
+        return ValidationResult(is_valid=True, value=text)
+    return ValidationResult(is_valid=False, error="give me 42")
 
 
 async def _completed_run(monkeypatch: pytest.MonkeyPatch) -> AgentRun:
@@ -217,7 +223,7 @@ class TestAgentLoop:
             [_reasoning_delta("A", 1), _reasoning_delta("B", 2), _text_delta("x", 3), _text_delta("y", 4)],
             "xy",
         )
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         kinds = [(e.type, e.text) for e in events]
         assert ("user", "do it") in kinds
         assert ("thinking", "A") in kinds
@@ -235,14 +241,11 @@ class TestAgentLoop:
         stub1 = _stub_result([_text_delta("bad", 1)], "bad")
         stub2 = _stub_result([_text_delta("Answer: 42", 1)], "Answer: 42")
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (True, text) if text.endswith("42") else (False, "give me 42")
-
-        agent = Agent(name="res", system_prompt="sys", validator=validator)
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_ending_with_42)
         run_mock = _patch_runner_seq(monkeypatch, [stub1, stub2])
         run = await agent.run("do it")
         assert await run.task.result() == "Answer: 42"
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         corrective = [e for e in events if e.type == "user" and e.text.startswith("give me 42")]
         assert len(corrective) == 1
         assert "IMPORTANT NOTE" in corrective[0].text
@@ -251,8 +254,8 @@ class TestAgentLoop:
     async def test_validator_exhaustion_fails_with_last_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
 
-        def validator(_text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (False, "still wrong")
+        def validator(_text: str, _run: AgentRun) -> ValidationResult[str]:
+            return ValidationResult(is_valid=False, error="still wrong")
 
         agent = Agent(name="res", system_prompt="sys", validator=validator, max_attempts=3)
         _patch_runner(monkeypatch, _stub_result([_text_delta("no", 1)], "no"))
@@ -265,9 +268,9 @@ class TestAgentLoop:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
         seen: list[AgentRun] = []
 
-        def validator(text: str, agent_run: AgentRun) -> tuple[bool, str]:
+        def validator(text: str, agent_run: AgentRun) -> ValidationResult[str]:
             seen.append(agent_run)
-            return True, text
+            return ValidationResult(is_valid=True, value=text)
 
         agent = Agent(name="res", system_prompt="sys", validator=validator)
         _patch_runner(monkeypatch, _stub_result([_text_delta("ok", 1)], "ok"))
@@ -280,8 +283,8 @@ class TestAgentLoop:
     async def test_async_validator_is_awaited(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
 
-        async def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return True, text
+        async def validator(text: str, _run: AgentRun) -> ValidationResult[str]:
+            return ValidationResult(is_valid=True, value=text)
 
         agent = Agent(name="res", system_prompt="sys", validator=validator)
         _patch_runner(monkeypatch, _stub_result([_text_delta("ok", 1)], "ok"))
@@ -307,8 +310,8 @@ class TestAgentLoop:
     async def test_agent_is_pure_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
         assert "start" not in dir(agent)
-        assert "conversation" not in dir(agent)
-        assert "tool_calls" not in dir(agent)
+        assert "stream_conversation" not in dir(agent)
+        assert "read_tool_calls" not in dir(agent)
         assert "record" not in dir(agent)
         assert await store_module.task_store.list() == []
         # the store's migration creates the runs root, but no run dir may exist yet
@@ -323,8 +326,8 @@ class TestAgentLoop:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
         value = {"a": 1, "b": [2, 3]}
 
-        def validator(_text: str, _run: AgentRun) -> tuple[bool, dict]:
-            return (True, value)
+        def validator(_text: str, _run: AgentRun) -> ValidationResult[dict]:
+            return ValidationResult(is_valid=True, value=value)
 
         agent = Agent(name="res", system_prompt="sys", validator=validator)
         _patch_runner(monkeypatch, _stub_result([_text_delta("json", 1)], "json"))
@@ -347,7 +350,7 @@ class TestAgentLoop:
         await run.task.result()
         conv = self._run_path(run.task.id) / "conversation.jsonl"
         conv.unlink()
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         assert events == []
 
     async def test_sequential_runs_of_one_agent_are_isolated(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -360,8 +363,8 @@ class TestAgentLoop:
         run2 = await agent.run("second prompt")
         await run2.task.result()
         assert run1.task.id != run2.task.id
-        events1 = [e async for e in run1.conversation()]
-        events2 = [e async for e in run2.conversation()]
+        events1 = [e async for e in run1.stream_conversation()]
+        events2 = [e async for e in run2.stream_conversation()]
         assert events1[0].type == "system" and events1[1].type == "user" and events1[1].text == "first prompt"
         assert events2[0].type == "system" and events2[1].type == "user" and events2[1].text == "second prompt"
         assert all(e.text != "second prompt" for e in events1)
@@ -386,8 +389,8 @@ class TestAgentLoop:
         assert await run2.task.result() == "prompt B"
         assert run1.task.status.value == "completed"
         assert run2.task.status.value == "completed"
-        events1 = [e async for e in run1.conversation()]
-        events2 = [e async for e in run2.conversation()]
+        events1 = [e async for e in run1.stream_conversation()]
+        events2 = [e async for e in run2.stream_conversation()]
         assert events1[0].type == "system" and events1[1].type == "user" and events1[1].text == "prompt A"
         assert events2[0].type == "system" and events2[1].type == "user" and events2[1].text == "prompt B"
         assert all(e.text != "prompt B" for e in events1)
@@ -517,10 +520,7 @@ class TestModelInputFilter:
         _ScriptedModel.received = []
         _ScriptedModel.order = []
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (True, text) if text.endswith("42") else (False, "give me 42")
-
-        agent = Agent(name="res", system_prompt="sys", validator=validator,
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_ending_with_42,
                       model_input_filter=model_input_filter)
         monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", _ScriptedModel)
         run = await agent.run("do it")
@@ -595,10 +595,7 @@ class TestRunStopChannel:
             stub.cancel = MagicMock(side_effect=lambda: order.append("cancel"))
             return stub
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (True, text) if text.endswith("42") else (False, "give me 42")
-
-        agent = Agent(name="res", system_prompt="sys", validator=validator)
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_ending_with_42)
         run_mock = _patch_runner_seq(
             monkeypatch, [_ordered_stub("bad", history), _ordered_stub("Answer: 42", [])]
         )
@@ -621,8 +618,8 @@ class TestRunStopChannel:
         stub, entered, release = _release_in_drain("bad")
         _patch_runner(monkeypatch, stub)
 
-        def validator(_text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (False, "give me 42")
+        def validator(_text: str, _run: AgentRun) -> ValidationResult[str]:
+            return ValidationResult(is_valid=False, error="give me 42")
 
         agent = Agent(name="res", system_prompt="sys", validator=validator, max_attempts=3)
         run = await agent.run("do it")
@@ -642,9 +639,9 @@ class TestRunStopChannel:
         stub, entered, release = _release_in_drain("ok")
         _patch_runner(monkeypatch, stub)
 
-        def validator(_text: str, run: AgentRun) -> tuple[bool, str]:
+        def validator(_text: str, run: AgentRun) -> ValidationResult[str]:
             run.cancel_run_loop()
-            return (True, _text)
+            return ValidationResult(is_valid=True, value=_text)
 
         agent = Agent(name="res", system_prompt="sys", validator=validator)
         run = await agent.run("do it")
@@ -660,9 +657,9 @@ class TestRunStopChannel:
         _ScriptedModel.script = ["bad"]
         _ScriptedModel.received = []
 
-        def validator(_text: str, run: AgentRun) -> tuple[bool, str]:
+        def validator(_text: str, run: AgentRun) -> ValidationResult[str]:
             run.cancel_run_loop()
-            return (False, "give me 42")
+            return ValidationResult(is_valid=False, error="give me 42")
 
         agent = Agent(name="res", system_prompt="sys", validator=validator)
         monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", _ScriptedModel)
@@ -671,7 +668,7 @@ class TestRunStopChannel:
             await run.task.result()
         assert run.task.status.value == "failed"
         assert _ScriptedModel.received == [[{"role": "user", "content": "do it"}]]
-        assert [e.text for e in await run.events() if e.type == "user"] == ["do it"]
+        assert [e.text for e in await run.read_events() if e.type == "user"] == ["do it"]
 
     async def test_cancel_run_loop_without_a_control_is_a_logged_noop(
         self,
@@ -693,8 +690,8 @@ class TestRunStopChannel:
     ) -> None:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
 
-        def validator(_text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (False, "nope")
+        def validator(_text: str, _run: AgentRun) -> ValidationResult[str]:
+            return ValidationResult(is_valid=False, error="nope")
 
         if mode == "cancellation":
             stub, entered = _stall_in_drain()
@@ -724,10 +721,7 @@ class TestRunStopChannel:
         _ScriptedModel.script = ["bad", "Answer: 42"]
         _ScriptedModel.received = []
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (True, text) if text.endswith("42") else (False, "give me 42")
-
-        agent = Agent(name="res", system_prompt="sys", validator=validator)
+        agent = Agent(name="res", system_prompt="sys", validator=_accept_ending_with_42)
         monkeypatch.setattr(engine, "OpenAIChatCompletionsModel", _ScriptedModel)
         run = await agent.run("do it")
         assert await run.task.result() == "Answer: 42"
@@ -986,7 +980,7 @@ class TestBuildFunctionTool:
         assert await run.task.result() == "done"
         assert out_holder["out"] == "results for cats"
         # the subtask's tool row carries the same task id the bridge recorded
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert calls[0].task_id
         record = await store_module.tool_store.get(calls[0].task_id)
         assert record.task_id == calls[0].task_id
@@ -1016,7 +1010,7 @@ class TestBuildFunctionTool:
         run = await agent.run("do it")
         assert await run.task.result() == "done"
 
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert len(calls) == 1
         call = calls[0]
         assert call.tool_name == tool_name
@@ -1024,7 +1018,7 @@ class TestBuildFunctionTool:
         assert call.status == "completed"
         assert call.task_id and call.run_dir
 
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         tool_call_events = [e for e in events if e.type == "tool_call"]
         tool_result_events = [e for e in events if e.type == "tool_result"]
         assert len(tool_call_events) == 1 and tool_call_events[0].params == {"query": "cats"}
@@ -1040,7 +1034,7 @@ class TestBuildFunctionTool:
                                                     args_json='{"max_char":600,"query":"q"}', capture=out_holder, with_text=False))
         run = await agent.run("do it")
         await run.task.result()
-        task_id = (await run.tool_calls())[0].task_id
+        task_id = (await run.read_tool_calls())[0].task_id
         assert out_holder["out"] == (
             "x" * 600 + "\n[Truncated: showing the first 600 of 1000 chars. "
             f"task_id={task_id} \u2014 fetch the remaining 400 chars with "
@@ -1200,7 +1194,7 @@ class TestToolOutputMedia:
         assert out[0].text == f"media {query}"
         assert out[1].text == f"Attachment delivery failed for 'img.png'. {reason}"
         assert base64.b64decode(out[2].file_data.split(",", 1)[1]) == self.MP4
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert len(calls) == 1
         assert calls[0].status == "completed"
         source = await read_run_mcp_text(os.path.join(store_module.task_store.data_dir, calls[0].run_dir))
@@ -1220,167 +1214,15 @@ class TestToolOutputMedia:
     async def test_id_notice_does_not_attempt_attachment_delivery(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _block_media_read(monkeypatch, AssertionError("attachment was read"))
         run, out = await self._drive(monkeypatch, ("img.png",), by_id=True)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == (
             f"Task completed. task_id={calls[0].task_id}. Retrieve the result with the task tool: "
             f"task(action='result', task_id='{calls[0].task_id}')."
         )
 
 
-class TestPreservingConverter:
-    """The engine installs a converter that keeps media tool output on the wire."""
-
-    async def _drive_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """One stubbed agent run, which builds the model and installs the converter swap."""
-        monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
-        agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
-        _patch_runner(monkeypatch, _stub_result([_text_delta("ok", 1)], "ok"))
-        run = await agent.run("do it")
-        await run.task.result()
-
-    def _tool_content(self, outputs: list) -> list:
-        """The wire content of one tool output, built from SDK output types."""
-        call = ResponseFunctionToolCall(type="function_call", call_id="c1", name="f", arguments="{}")
-        items = [
-            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
-            ItemHelpers.tool_call_output_item(call, outputs),
-        ]
-        messages = openai_chatcompletions.Converter.items_to_messages(items, model="default")
-        tools = [m for m in messages if m.get("role") == "tool"]
-        assert len(tools) == 1
-        return tools[0]["content"]
-
-    async def test_a_run_installs_the_converter_swap_idempotently(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        await self._drive_run(monkeypatch)
-        assert openai_chatcompletions.Converter is not chatcmpl_converter.Converter
-        await self._drive_run(monkeypatch)
-        assert openai_chatcompletions.Converter is not chatcmpl_converter.Converter
-
-    async def test_image_part_reaches_the_wire(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        await self._drive_run(monkeypatch)
-        content = self._tool_content([
-            ToolOutputText(text="t"),
-            ToolOutputImage(image_url="data:image/png;base64,AAA"),
-        ])
-        assert content[0] == {"type": "text", "text": "t"}
-        assert content[1] == {
-            "type": "image_url",
-            "image_url": {"url": "data:image/png;base64,AAA", "detail": "auto"},
-        }
-
-    async def test_video_file_part_becomes_a_video_url_part(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        await self._drive_run(monkeypatch)
-        content = self._tool_content([
-            ToolOutputText(text="t"),
-            ToolOutputFileContent(file_data="data:video/mp4;base64,BBB", filename="v.mp4"),
-        ])
-        assert content[1] == {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,BBB"}}
-        assert all(part.get("type") != "file" for part in content)
-
-    async def test_non_video_file_part_is_dropped_and_text_survives(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        await self._drive_run(monkeypatch)
-        content = self._tool_content([
-            ToolOutputText(text="t"),
-            ToolOutputFileContent(file_data="data:application/pdf;base64,CCC"),
-        ])
-        assert content == [{"type": "text", "text": "t"}]
-
-    @staticmethod
-    def _wire_payload_chars(messages: list[dict], system_prompt: str = "") -> int:
-        total = len(system_prompt)
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, str):
-                total += len(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if part.get("type") == "text":
-                        total += len(part["text"])
-                    elif part.get("type") == "image_url":
-                        total += len(part["image_url"]["url"])
-                    elif part.get("type") == "video_url":
-                        total += len(part["video_url"]["url"])
-            if isinstance(msg.get("refusal"), str):
-                total += len(msg["refusal"])
-            if isinstance(msg.get("reasoning_content"), str):
-                total += len(msg["reasoning_content"])
-            for tc in msg.get("tool_calls", []):
-                fn = tc["function"]
-                total += len(fn["name"]) + len(fn["arguments"])
-        return total
-
-    @pytest.mark.parametrize("model_name", [None, "default", "gpt-4o", "deepseek-reasoner"])
-    async def test_reasoning_preserved_across_models_and_turn_shapes_with_count_chars_parity(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        model_name: str | None,
-    ) -> None:
-        await self._drive_run(monkeypatch)
-        easy_asst = {"role": "assistant", "content": "easy reply"}
-        items: list[dict] = [
-            {"role": "user", "content": "start"},
-            {
-                "type": "reasoning",
-                "summary": [{"type": "summary_text", "text": "s1"}, {"type": "summary_text", "text": ""}],
-                "content": [{"type": "reasoning_text", "text": "c1"}],
-            },
-            {
-                "type": "reasoning",
-                "summary": [],
-                "content": [{"type": "reasoning_text", "text": "c2"}],
-            },
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "output_text", "text": "line1"},
-                    {"type": "output_text", "text": "line2"},
-                    {"type": "refusal", "refusal": "old"},
-                    {"type": "refusal", "refusal": "kept"},
-                ],
-            },
-            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "tool_thought"}]},
-            {"type": "function_call", "call_id": "c1", "name": "act", "arguments": '{"a":1}'},
-            {"type": "function_call_output", "call_id": "c1", "output": "done"},
-            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "easy_thought"}]},
-            easy_asst,
-            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "mid_standalone"}]},
-            {"role": "user", "content": "next"},
-            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "plain"}]},
-            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "tail_standalone"}]},
-        ]
-        messages = openai_chatcompletions.Converter.items_to_messages(items, model=model_name)
-        assert easy_asst == {"role": "assistant", "content": "easy reply"}
-        assert messages[1]["reasoning_content"] == "s1\nc1\nc2"
-        assert messages[1]["content"] == "line1\nline2"
-        assert messages[1]["refusal"] == "kept"
-        assert messages[2]["reasoning_content"] == "tool_thought"
-        assert messages[2]["content"] is None
-        assert messages[4] == {
-            "role": "assistant",
-            "content": "easy reply",
-            "reasoning_content": "easy_thought",
-        }
-        assert messages[5] == {
-            "role": "assistant",
-            "content": "",
-            "reasoning_content": "mid_standalone",
-        }
-        assert "reasoning_content" not in messages[7]
-        assert messages[8] == {
-            "role": "assistant",
-            "content": "",
-            "reasoning_content": "tail_standalone",
-        }
-        assert context_module.count_chars(items, system_prompt="sys") == self._wire_payload_chars(
-            messages, system_prompt="sys"
-        )
+class TestWireReasoningReplay:
+    """Verify streamed reasoning text is replayed across multi-turn agent runs."""
 
     async def test_wire_run_replays_streamed_reasoning_on_default_model(
         self,
@@ -1415,36 +1257,6 @@ class TestPreservingConverter:
             await _close_clients(clients)
         assert wire_messages[1][2]["role"] == "assistant"
         assert wire_messages[1][2]["reasoning_content"] == "deliberate thought"
-
-    async def test_replay_callback_false_skips_reasoning_content_with_thinking_blocks_on(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Returning False from the replay check omits reasoning text even when keeping blocks."""
-        await self._drive_run(monkeypatch)
-        items: list[dict] = [
-            {"role": "user", "content": "start"},
-            {
-                "type": "reasoning",
-                "summary": [{"type": "summary_text", "text": "hidden summary"}],
-                "content": [{"type": "reasoning_text", "text": "hidden content"}],
-            },
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "visible reply"}],
-            },
-        ]
-        messages = openai_chatcompletions.Converter.items_to_messages(
-            items,
-            model="default",
-            preserve_thinking_blocks=True,
-            should_replay_reasoning_content=lambda _ctx: False,
-        )
-        assert len(messages) == 2
-        assert messages[1]["role"] == "assistant"
-        assert messages[1]["content"] == "visible reply"
-        assert "reasoning_content" not in messages[1]
 
 
 def _id_message(task_id: str) -> str:
@@ -1524,13 +1336,13 @@ class TestToolResultsById(_ToolCallDriver):
 
     async def test_tracked_tool_hands_back_the_task_id_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _BlockTool(), '{"query":"cats"}', by_id=True)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == _id_message(calls[0].task_id)
         assert "results for cats" not in out
 
     async def test_result_stays_on_disk_under_the_reported_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _out, run = await self._call_tool(monkeypatch, _BlockTool(), '{"query":"cats"}', by_id=True)
-        call = (await run.tool_calls())[0]
+        call = (await run.read_tool_calls())[0]
         result_file = Path(store_module.tool_store.data_dir) / call.run_dir / "result"
         assert result_file.read_text() == "results for cats"
         record = await store_module.tool_store.get(call.task_id)
@@ -1539,30 +1351,30 @@ class TestToolResultsById(_ToolCallDriver):
 
     async def test_tool_call_still_reaches_the_conversation_log(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _out, run = await self._call_tool(monkeypatch, _BlockTool(), '{"query":"cats"}', by_id=True)
-        call = (await run.tool_calls())[0]
-        results = [e async for e in run.conversation() if e.type == "tool_result"]
+        call = (await run.read_tool_calls())[0]
+        results = [e async for e in run.stream_conversation() if e.type == "tool_result"]
         assert len(results) == 1
         assert results[0].task_id == call.task_id
         assert results[0].tool_name == "search_web"
 
     async def test_flag_off_still_hands_back_the_real_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _BlockTool(), '{"query":"cats"}', by_id=False)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == "results for cats"
         assert calls[0].task_id
-        results = [e async for e in run.conversation() if e.type == "tool_result"]
+        results = [e async for e in run.stream_conversation() if e.type == "tool_result"]
         assert results[0].task_id == calls[0].task_id
 
     async def test_async_tool_hands_back_the_task_id_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _AsyncTool(), '{"prompt":"a cat"}', by_id=True)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == _id_message(calls[0].task_id)
         assert "Task started" not in out
 
     async def test_truncating_tool_hands_back_the_id_message_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _BigTool(), '{"query":"q"}',
                                           by_id=True, with_text=False)
-        task_id = (await run.tool_calls())[0].task_id
+        task_id = (await run.read_tool_calls())[0].task_id
         assert out == _id_message(task_id)
         assert "[Truncated:" not in out
 
@@ -1581,7 +1393,7 @@ class TestToolResultsById(_ToolCallDriver):
     async def test_cached_hit_hands_back_the_first_run_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _CachedTool(), '{"query":"cats"}',
                                          by_id=True, count=2)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert len(calls) == 2
         assert len({c.task_id for c in calls}) == 1
         assert out == _id_message(calls[0].task_id)
@@ -1606,14 +1418,14 @@ class TestToolResultByIdOptIn(_ToolCallDriver):
     ) -> None:
         out, run = await self._call_tool(monkeypatch, _IdOnlyTool(), '{"query":"cats"}',
                                          by_id=False, results_by_id=True)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == _id_message(calls[0].task_id)
         assert "results for cats" not in out
 
     async def test_tool_opt_in_wins_over_the_files_branch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out, run = await self._call_tool(monkeypatch, _IdOnlyMediaTool(), '{"query":"cats"}',
                                          by_id=False, results_by_id=True)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert out == _id_message(calls[0].task_id)
         assert "media cats" not in out
 
@@ -1639,7 +1451,7 @@ class TestResultsByIdLayering(_ToolCallDriver):
     ) -> None:
         out, run = await self._call_tool(monkeypatch, _BlockTool(), '{"query":"cats"}',
                                          by_id=by_id, results_by_id=results_by_id)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         if id_only:
             assert out == _id_message(calls[0].task_id)
             assert "results for cats" not in out
@@ -1675,7 +1487,7 @@ class TestUntrackedToolInLoop:
         _patch_runner(monkeypatch, _stub_result([], "ok"))
         run = await agent.run("go")
         assert await run.task.result() == "ok"
-        assert await run.tool_calls() == []
+        assert await run.read_tool_calls() == []
 
 
 class TestAgentRun:
@@ -1701,7 +1513,7 @@ class TestAgentRun:
         agent = Agent(name="res", system_prompt="sys", validator=_accept_any)
         _patch_runner(monkeypatch, _stub_result([_text_delta("hello", 1)], "hello"))
         run = await agent.run("do it")
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         assert [e.type for e in events] == ["system", "user", "content", "assistant"]
         assert events[1].text == "do it" and events[-1].text == "hello"
 
@@ -1712,7 +1524,7 @@ class TestAgentRun:
         _patch_runner(monkeypatch, _stub_result([_text_delta("hello", 1)], "hello"))
         run = await agent.run("do it")
         await run.task.result()
-        events = await run.events()
+        events = await run.read_events()
         assert [e.type for e in events] == ["system", "user", "content", "assistant"]
         assert events[1].text == "do it" and events[-1].text == "hello"
 
@@ -1720,11 +1532,11 @@ class TestAgentRun:
     async def test_validator_reads_events_mid_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
 
-        async def validator(text: str, agent_run: AgentRun) -> tuple[bool, str]:
-            events = await agent_run.events()
+        async def validator(text: str, agent_run: AgentRun) -> ValidationResult[str]:
+            events = await agent_run.read_events()
             if any(e.type == "assistant" and e.text == text for e in events):
-                return True, text
-            return False, "assistant event not in the conversation yet"
+                return ValidationResult(is_valid=True, value=text)
+            return ValidationResult(is_valid=False, error="assistant event not in the conversation yet")
 
         agent = Agent(name="res", system_prompt="sp", validator=validator)
         _patch_runner(monkeypatch, _stub_result([_text_delta("ok", 1)], "ok"))
@@ -1739,7 +1551,7 @@ class TestAgentRun:
                                                    args_json='{"query":"cats"}'))
         run = await agent.run("do it")
         await run.task.result()
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert len(calls) == 1
         assert calls[0].tool_name == "search_web"
         assert calls[0].params == {"query": "cats"}
@@ -1761,37 +1573,37 @@ class TestToolCallHistory:
 
     @staticmethod
     async def _result_statuses(run: AgentRun) -> list[str | None]:
-        return [e.status for e in await run.events() if e.type == "tool_result"]
+        return [e.status for e in await run.read_events() if e.type == "tool_result"]
 
     async def test_completed_call_is_recorded_as_completed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, _BlockTool(), '{"query":"cats"}')
         assert await self._result_statuses(run) == ["completed"]
-        assert [c.status for c in await run.tool_calls()] == ["completed"]
+        assert [c.status for c in await run.read_tool_calls()] == ["completed"]
 
     async def test_failed_call_is_recorded_as_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, _FailTool(), '{"query":"cats"}')
         assert await self._result_statuses(run) == ["failed"]
-        assert [c.status for c in await run.tool_calls()] == ["failed"]
+        assert [c.status for c in await run.read_tool_calls()] == ["failed"]
 
     async def test_cancelled_call_is_recorded_as_cancelled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, _StopTool(), '{"query":"cats"}')
         assert await self._result_statuses(run) == ["cancelled"]
-        assert [c.status for c in await run.tool_calls()] == ["cancelled"]
+        assert [c.status for c in await run.read_tool_calls()] == ["cancelled"]
 
     async def test_rejected_params_are_recorded_without_a_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, _BoundedTool(), '{"count":99}')
         assert await self._result_statuses(run) == ["rejected"]
-        assert await run.tool_calls() == []
+        assert await run.read_tool_calls() == []
 
     async def test_tool_tier_rejection_is_recorded_as_a_failed_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A rejection the tool makes in its own call is a failed run with a call report."""
         run = await self._drive(monkeypatch, _ToolTierRejectTool(), '{"count":99}')
         assert await self._result_statuses(run) == ["failed"]
-        assert [c.status for c in await run.tool_calls()] == ["failed"]
+        assert [c.status for c in await run.read_tool_calls()] == ["failed"]
 
     async def test_run_dir_points_at_the_call_s_run_folder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, _BlockTool(), '{"query":"cats"}')
-        call = (await run.tool_calls())[0]
+        call = (await run.read_tool_calls())[0]
         assert call.run_dir == f"runs/{call.task_id}"
         result_file = Path(store_module.task_store.data_dir) / call.run_dir / "result"
         assert result_file.read_text() == "results for cats"
@@ -1804,19 +1616,21 @@ class TestToolCallHistory:
                                                    args_json='{"query":"cats"}', call_id="C0"))
         run = await agent.run("do it")
         await run.task.result()
-        events = await run.events()
+        events = await run.read_events()
         assert [e.call_id for e in events if e.type == "tool_call"] == ["C0"]
         results = [e for e in events if e.type == "tool_result"]
         assert [(e.call_id, e.status) for e in results] == [("C1", "completed")]
-        assert await run.tool_calls() == []
+        assert await run.read_tool_calls() == []
 
     async def test_every_attempt_keeps_its_own_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://backend.test/")
         checked: list[str] = []
 
-        def _accept_second(text: str, _run: AgentRun) -> tuple[bool, str]:
+        def _accept_second(text: str, _run: AgentRun) -> ValidationResult[str]:
             checked.append(text)
-            return (True, text) if len(checked) > 1 else (False, "try again")
+            if len(checked) > 1:
+                return ValidationResult(is_valid=True, value=text)
+            return ValidationResult(is_valid=False, error="try again")
 
         agent = Agent(name="res", system_prompt="sys",
                       validator=_accept_second, max_attempts=2)
@@ -1825,8 +1639,8 @@ class TestToolCallHistory:
                                                    args_json='{"query":"cats"}'))
         run = await agent.run("do it")
         await run.task.result()
-        assert [e.attempt for e in await run.events() if e.type == "tool_result"] == [1, 2]
-        calls = await run.tool_calls()
+        assert [e.attempt for e in await run.read_events() if e.type == "tool_result"] == [1, 2]
+        calls = await run.read_tool_calls()
         assert [c.tool_name for c in calls] == ["search_web", "search_web"]
         assert [c.status for c in calls] == ["completed", "completed"]
         assert len({c.task_id for c in calls}) == 2
@@ -1851,7 +1665,7 @@ class TestCachedToolCalls:
         return await read_run_mcp_text(os.path.join(store_module.task_store.data_dir, run_dir))
 
     async def test_repeat_call_is_kept_under_the_first_task_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls = await (await self._drive(monkeypatch, 2)).tool_calls()
+        calls = await (await self._drive(monkeypatch, 2)).read_tool_calls()
         assert [c.tool_name for c in calls] == ["cached_search", "cached_search"]
         assert [c.status for c in calls] == ["completed", "completed"]
         assert [c.params for c in calls] == [{"query": "cats"}, {"query": "cats"}]
@@ -1860,28 +1674,28 @@ class TestCachedToolCalls:
         assert record.tool_name == "cached_search"
 
     async def test_reused_run_dir_holds_readable_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls = await (await self._drive(monkeypatch, 2)).tool_calls()
+        calls = await (await self._drive(monkeypatch, 2)).read_tool_calls()
         stored_dir = f"runs/{calls[0].task_id}"
         assert [c.run_dir for c in calls] == [stored_dir, stored_dir]
         assert await self._run_text(calls[1].run_dir) == "results for cats"
 
     async def test_reuse_is_marked_in_the_conversation_log(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, 2)
-        results = [e for e in await run.events() if e.type == "tool_result"]
+        results = [e for e in await run.read_events() if e.type == "tool_result"]
         assert [e.status for e in results] == ["completed", "completed"]
         assert len({e.task_id for e in results}) == 1
 
     async def test_only_the_first_call_makes_a_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
         run = await self._drive(monkeypatch, 2)
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         children = await store_module.task_store.list_subtasks(str(run.task.id))
         assert [t.task_id for t in children] == [calls[0].task_id]
 
     async def test_hit_on_an_earlier_run_borrows_its_task_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stored = await self._drive(monkeypatch, 1)
         reusing = await self._drive(monkeypatch, 1)
-        stored_id = (await stored.tool_calls())[0].task_id
-        borrowed = (await reusing.tool_calls())[0]
+        stored_id = (await stored.read_tool_calls())[0].task_id
+        borrowed = (await reusing.read_tool_calls())[0]
         assert borrowed.task_id == stored_id
         assert borrowed.run_dir == f"runs/{stored_id}"
         assert await self._run_text(borrowed.run_dir) == "results for cats"
@@ -1889,35 +1703,9 @@ class TestCachedToolCalls:
     async def test_hit_on_another_run_is_marked_and_makes_no_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
         await self._drive(monkeypatch, 1)
         reusing = await self._drive(monkeypatch, 1)
-        results = [e for e in await reusing.events() if e.type == "tool_result"]
+        results = [e for e in await reusing.read_events() if e.type == "tool_result"]
         assert [e.status for e in results] == ["completed"]
         assert await store_module.task_store.list_subtasks(str(reusing.task.id)) == []
-
-
-class TestLegacyEventLine:
-    """An old conversation.jsonl line that carries a cached key still parses."""
-
-    async def test_line_with_legacy_cached_key_parses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        run = await _completed_run(monkeypatch)
-        path = Path(store_module.task_store.data_dir, "runs", str(run.task.id), "conversation.jsonl")
-        legacy = json.dumps({
-            "type": "tool_result",
-            "attempt": 1,
-            "ts": "2026-01-01T00:00:00+00:00",
-            "text": "",
-            "tool_name": "cached_search",
-            "params": {"query": "cats"},
-            "task_id": "task-legacy",
-            "call_id": "call-legacy",
-            "status": "completed",
-            "cached": True,
-        })
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(legacy + "\n")
-        last = (await run.events())[-1]
-        assert last.type == "tool_result"
-        assert last.status == "completed"
-        assert last.task_id == "task-legacy"
 
 
 class TestSystemLine:
@@ -1929,7 +1717,7 @@ class TestSystemLine:
         _patch_runner(monkeypatch, _stub_result([_text_delta("hi", 1)], "hi"))
         run = await agent.run("do it")
         await run.task.result()
-        events = [e async for e in run.conversation()]
+        events = [e async for e in run.stream_conversation()]
         assert events[0].type == "system"
         assert events[0].text == "You are a helpful agent."
         assert events[0].attempt == 1
@@ -1970,7 +1758,7 @@ class TestCallId:
         agent = Agent(name="res", system_prompt="sp", validator=_accept_any)
         run = await agent.run("do it")
         await run.task.result()
-        conv = [e async for e in run.conversation()]
+        conv = [e async for e in run.stream_conversation()]
         tc = [e for e in conv if e.type == "tool_call"]
         tr = [e for e in conv if e.type == "tool_result"]
         assert len(tc) == 1 and tc[0].call_id == "call-abc"
@@ -1988,7 +1776,7 @@ class TestIncrementalFlush:
         agent = Agent(name="res", system_prompt="sp", validator=_accept_any)
         run = await agent.run("do it")
         await run.task.result()
-        content_lines = [e async for e in run.conversation() if e.type == "content"]
+        content_lines = [e async for e in run.stream_conversation() if e.type == "content"]
         assert len(content_lines) == 5
         assert "".join(e.text for e in content_lines) == final
 
@@ -1999,7 +1787,7 @@ class TestIncrementalFlush:
         agent = Agent(name="res", system_prompt="sp", validator=_accept_any)
         run = await agent.run("do it")
         await run.task.result()
-        content_lines = [e async for e in run.conversation() if e.type == "content"]
+        content_lines = [e async for e in run.stream_conversation() if e.type == "content"]
         assert [e.text for e in content_lines] == ["a", "b", "c"]
 
     async def test_small_content_single_flush(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2008,7 +1796,7 @@ class TestIncrementalFlush:
         agent = Agent(name="res", system_prompt="sp", validator=_accept_any)
         run = await agent.run("do it")
         await run.task.result()
-        content_lines = [e async for e in run.conversation() if e.type == "content"]
+        content_lines = [e async for e in run.stream_conversation() if e.type == "content"]
         assert len(content_lines) == 1
         assert content_lines[0].text == "short"
 
@@ -2033,101 +1821,6 @@ class TestMilestoneLog:
         assert "system prompt loaded" in text
         assert "attempt 1/" in text
         assert "agent completed" in text
-
-
-class TestTailLines:
-    """The shared file-tail helper yields lines and stops on signal."""
-
-    async def test_yields_complete_lines(self, tmp_path: Path) -> None:
-        path = tmp_path / "tail.jsonl"
-        path.write_text('{"a": 1}\n{"b": 2}\n')
-        lines = [line async for line in engine.tail_lines(str(path), _stop)]
-        assert lines == ['{"a": 1}', '{"b": 2}']
-
-    async def test_stops_when_signal_fires(self, tmp_path: Path) -> None:
-        path = tmp_path / "tail.jsonl"
-        path.write_text('{"a": 1}\n')
-        lines = [line async for line in engine.tail_lines(str(path), _stop)]
-        assert lines == ['{"a": 1}']
-
-    async def test_missing_file_yields_nothing(self, tmp_path: Path) -> None:
-        path = tmp_path / "nope.jsonl"
-        lines = [line async for line in engine.tail_lines(str(path), _stop)]
-        assert lines == []
-
-    async def test_default_poll_keeps_streaming_lag_low(self) -> None:
-        sig = inspect.signature(engine.tail_lines)
-        assert list(sig.parameters) == ["path", "should_stop", "poll", "offset"]
-        assert sig.parameters["poll"].default <= 0.05
-        assert sig.parameters["offset"].default == 0
-
-    async def test_offset_skips_earlier_bytes(self, tmp_path: Path) -> None:
-        path = tmp_path / "tail.jsonl"
-        first = '{"text": "héllo 🧠"}\n'.encode("utf-8")
-        rest = b'{"b": 2}\n{"c": 3}\n'
-        path.write_bytes(first + rest)
-        lines = [line async for line in engine.tail_lines(str(path), _stop, offset=len(first))]
-        assert lines == ['{"b": 2}', '{"c": 3}']
-
-    @pytest.mark.parametrize(("delta", "expected_tail"), [
-        (1, ['llo 🧠"}', '{"b": 2}']),
-        (7, ['"}', '{"b": 2}']),
-        (8, ['"}', '{"b": 2}']),
-        (9, ['"}', '{"b": 2}']),
-    ])
-    async def test_offset_mid_utf8_skips_continuation_bytes(
-        self, tmp_path: Path, delta: int, expected_tail: list[str]
-    ) -> None:
-        path = tmp_path / "tail.jsonl"
-        first = '{"text": "héllo 🧠"}\n'.encode("utf-8")
-        accent_pos = first.index("é".encode("utf-8"))
-        path.write_bytes(first + b'{"b": 2}\n')
-        lines = [line async for line in engine.tail_lines(str(path), _stop, offset=accent_pos + delta)]
-        assert lines == expected_tail
-
-    async def test_holds_partial_trailing_line_until_newline_arrives(self, tmp_path: Path) -> None:
-        path = tmp_path / "tail.jsonl"
-        path.write_bytes(b'{"a": 1}\n{"b": "hel')
-        seen: list[str] = []
-        checks = 0
-        snapshots_at_poll: list[list[str]] = []
-
-        async def stop_after_append() -> bool:
-            nonlocal checks
-            checks += 1
-            snapshots_at_poll.append(list(seen))
-            if checks == 1:
-                with path.open("ab") as fh:
-                    fh.write(b'lo"}\n{"c": 3}\n')
-                return False
-            return True
-
-        await _drain_tail(engine.tail_lines(str(path), stop_after_append, poll=0.001), seen)
-        assert snapshots_at_poll[0] == ['{"a": 1}']
-        assert seen == ['{"a": 1}', '{"b": "hello"}', '{"c": 3}']
-
-    async def test_ten_thousand_lines_complete_accurately_and_fast(self, tmp_path: Path) -> None:
-        path = tmp_path / "large.jsonl"
-        count = 10000
-        payload = "".join(f'{{"i": {i}, "msg": "row-{i}"}}\n' for i in range(count))
-        path.write_text(payload, encoding="utf-8")
-        t0 = time.monotonic()
-        lines = [line async for line in engine.tail_lines(str(path), _stop)]
-        elapsed = time.monotonic() - t0
-        assert len(lines) == count
-        assert lines[0] == '{"i": 0, "msg": "row-0"}'
-        assert lines[5000] == '{"i": 5000, "msg": "row-5000"}'
-        assert lines[-1] == f'{{"i": {count - 1}, "msg": "row-{count - 1}"}}'
-        assert elapsed < 2.0
-
-
-async def _drain_tail(gen: AsyncIterator[str], out: list[str]) -> None:
-    async for line in gen:
-        out.append(line)
-
-
-async def _stop() -> bool:
-    return True
 
 
 class _LiveBlock(Tool):
@@ -2265,8 +1958,10 @@ def _http_500_response() -> httpx.Response:
     return httpx.Response(500, json={"error": {"message": "boom"}})
 
 
-def _accept_good(text: str, _run: AgentRun) -> tuple[bool, str]:
-    return (True, text) if text == "good" else (False, "need good")
+def _accept_good(text: str, _run: AgentRun) -> ValidationResult[str]:
+    if text == "good":
+        return ValidationResult(is_valid=True, value=text)
+    return ValidationResult(is_valid=False, error="need good")
 
 
 def _http_request() -> httpx.Request:
@@ -2418,7 +2113,7 @@ class TestServerRetry:
         self,
         monkeypatch: pytest.MonkeyPatch,
         responses: list[httpx.Response],
-        validator: Callable[[str, AgentRun], tuple[bool, str]] = _accept_any,
+        validator: Callable[[str, AgentRun], ValidationResult[str]] = _accept_any,
         *,
         with_tool: bool = False,
     ) -> tuple[AgentRun, list[list[dict]], MagicMock]:
@@ -2464,7 +2159,7 @@ class TestServerRetry:
         assert run_mock.call_count == 4
         assert _sleep_delays() == [_FIRST_DELAY, _SECOND_DELAY, _THIRD_DELAY]
         assert [s.cancel.call_count for s in stubs] == [1, 1, 1, 1]
-        events = await run.events()
+        events = await run.read_events()
         assert [e.text for e in events if e.type == "user"] == ["do it"]
         assert [(e.attempt, e.text) for e in events if e.type == "assistant"] == [(1, "Answer: 42")]
 
@@ -2483,7 +2178,7 @@ class TestServerRetry:
         assert await run.task.result() == "clean"
         assert run_mock.call_count == 2
         assert _sleep_delays() == [_FIRST_DELAY]
-        events = await run.events()
+        events = await run.read_events()
         assert [e.attempt for e in events] == [1, 1, 1, 1, 1, 1]
         assert [e.text for e in events if e.type == "user"] == ["do it"]
         assert [(e.attempt, e.text) for e in events if e.type == "assistant"] == [(1, "clean")]
@@ -2571,11 +2266,11 @@ class TestServerRetry:
             expected_turn_two,
             expected_turn_two,
         ]
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert len(calls) == 1
         assert calls[0].tool_name == "counted_note"
         assert calls[0].status == "completed"
-        assert [e.attempt for e in await run.events() if e.type == "assistant"] == [1]
+        assert [e.attempt for e in await run.read_events() if e.type == "assistant"] == [1]
 
     @pytest.mark.fast_sleeps
     async def test_consecutive_retry_counter_resets_after_completed_turn(
@@ -2974,7 +2669,7 @@ class TestContextOverflowRecovery:
         with pytest.raises(BadRequestError):
             await run.task.result()
         assert run_mock.call_count == 4
-        events = await run.events()
+        events = await run.read_events()
         assert len([e for e in events if e.type == "thinking"]) == 4
 
     @pytest.mark.fast_sleeps
@@ -3124,7 +2819,7 @@ class TestOutputJsonSchema:
         responses: list[httpx.Response],
         *,
         output_json_schema: dict | None = None,
-        validator: Callable[[str, AgentRun], tuple[bool, str | dict]] = _accept_any,
+        validator: Callable[[str, AgentRun], ValidationResult[str | dict]] = _accept_any,
         with_tool: bool = False,
         model_input_filter: CallModelInputFilter | None = None,
     ) -> tuple[AgentRun, list[dict]]:
@@ -3205,12 +2900,12 @@ class TestOutputJsonSchema:
     ) -> None:
         seen_outputs: list[str] = []
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, dict | str]:
+        def validator(text: str, _run: AgentRun) -> ValidationResult[dict]:
             seen_outputs.append(text)
             data = json.loads(text)
             if data["answer"] != "good":
-                return False, "answer must be good"
-            return True, data
+                return ValidationResult(is_valid=False, error="answer must be good")
+            return ValidationResult(is_valid=True, value=data)
 
         bad_payload = json.dumps({"answer": "bad"})
         good_payload = json.dumps({"answer": "good"})
@@ -3235,8 +2930,10 @@ class TestAgentLive:
     async def test_real_loop_with_tools_and_cancellation(self) -> None:
         assert os.environ.get("REASON_THINKING_BACKEND_URL"), "REASON_THINKING_BACKEND_URL must be set for the live test"
 
-        def validator(text: str, _run: AgentRun) -> tuple[bool, str]:
-            return (True, text) if text else (False, "empty")
+        def validator(text: str, _run: AgentRun) -> ValidationResult[str]:
+            if text:
+                return ValidationResult(is_valid=True, value=text)
+            return ValidationResult(is_valid=False, error="empty")
 
         agent = Agent(
             name="live",
@@ -3251,7 +2948,7 @@ class TestAgentLive:
         assert run.task.status.value == "completed"
         assert isinstance(result, str) and result
 
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert any(c.tool_name == "note" for c in calls)
 
         conv_path = Path(store_module.task_store.data_dir) / "runs" / str(run.task.id) / "conversation.jsonl"
@@ -3278,21 +2975,21 @@ class TestAgentLive:
             "additionalProperties": False,
         }
 
-        async def validator(text: str, run: AgentRun) -> tuple[bool, dict | str]:
+        async def validator(text: str, run: AgentRun) -> ValidationResult[dict]:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError as exc:
-                return False, f"invalid json: {exc}"
+                return ValidationResult(is_valid=False, error=f"invalid json: {exc}")
             if not isinstance(data, dict):
-                return False, "output must be a json object"
+                return ValidationResult(is_valid=False, error="output must be a json object")
             if data.get("status") not in ("done", "failed"):
-                return False, "invalid status"
+                return ValidationResult(is_valid=False, error="invalid status")
             if not isinstance(data.get("note"), str) or not data["note"].strip():
-                return False, "note must be non-empty"
-            calls = await run.tool_calls()
+                return ValidationResult(is_valid=False, error="note must be non-empty")
+            calls = await run.read_tool_calls()
             if not any(call.tool_name == "note" for call in calls):
-                return False, "must call note tool first"
-            return True, data
+                return ValidationResult(is_valid=False, error="must call note tool first")
+            return ValidationResult(is_valid=True, value=data)
 
         agent = Agent(
             name="live_schema",
@@ -3313,5 +3010,5 @@ class TestAgentLive:
         assert parsed["status"] == "done"
         assert isinstance(parsed["note"], str) and parsed["note"].strip()
         assert set(parsed.keys()) == {"status", "note"}
-        calls = await run.tool_calls()
+        calls = await run.read_tool_calls()
         assert any(call.tool_name == "note" for call in calls)

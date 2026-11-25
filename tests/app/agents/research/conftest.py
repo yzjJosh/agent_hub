@@ -112,13 +112,13 @@ class CannedRun:
     def task(self) -> Task:
         return self._task
 
-    async def tool_calls(self) -> list[CannedCall]:
+    async def read_tool_calls(self) -> list[CannedCall]:
         return list(self._calls)
 
-    async def events(self) -> list[CannedEvent]:
+    async def read_events(self) -> list[CannedEvent]:
         return list(self._events)
 
-    async def conversation(self) -> AsyncIterator[CannedEvent]:
+    async def stream_conversation(self) -> AsyncIterator[CannedEvent]:
         for event in self._events:
             yield event
 

@@ -22,7 +22,7 @@ from app.agents.research.models import (
 )
 from app.agents.research.prompt import load_prompt
 from app.lib.agent.checks import check_nonblank_string, combine_problems, parse_json_object
-from app.lib.agent.engine import Agent, AgentRun
+from app.lib.agent.engine import Agent, AgentRun, ValidationResult
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Param, Tool, ToolMessageError, ToolResult, read_run_mcp_text
 from app.tools.brave_search import brave_search_tool
@@ -70,7 +70,7 @@ def _describe_completed_calls(task_ids: list[str]) -> str:
     return f"Completed data-source calls: {listed}."
 
 
-async def _validate_collector_output(text: str, run: AgentRun) -> tuple[bool, dict | str]:
+async def _validate_collector_output(text: str, run: AgentRun) -> ValidationResult[dict]:
     """Check the deliverable object and that every cited task id belongs to a completed data-source call.
 
     Args:
@@ -78,11 +78,11 @@ async def _validate_collector_output(text: str, run: AgentRun) -> tuple[bool, di
         run: The collector agent run whose tool calls are checked.
 
     Returns:
-        An ok flag and a value, the parsed deliverable dict when ok, else the message for every problem found.
+        Validation result holding the parsed deliverable dict when valid, or an error message.
     """
     ok, parsed = parse_json_object(text)
     if not ok:
-        return False, parsed
+        return ValidationResult(is_valid=False, error=parsed)
     problems: list[str] = []
     if "summary" not in parsed:
         problems.append("Missing field: summary.")
@@ -105,7 +105,7 @@ async def _validate_collector_output(text: str, run: AgentRun) -> tuple[bool, di
                 id_items.append(item)
     call_ids = [
         call.task_id
-        for call in await run.tool_calls()
+        for call in await run.read_tool_calls()
         if call.status == "completed" and call.tool_name in DATA_SOURCE_TOOLS
     ]
     unknown_ids = [task_id for task_id in id_items if task_id not in call_ids]
@@ -117,8 +117,8 @@ async def _validate_collector_output(text: str, run: AgentRun) -> tuple[bool, di
     elif not call_ids:
         problems.append("No data-source tool call completed during the run.")
     if problems:
-        return False, combine_problems(problems)
-    return True, parsed
+        return ValidationResult(is_valid=False, error=combine_problems(problems))
+    return ValidationResult(is_valid=True, value=parsed)
 
 
 async def _run_collector(
@@ -218,7 +218,7 @@ async def _ingest_collector_results(
         store: The evidence store the run text is written to.
         registry: The citable runs, by run id.
     """
-    calls = await collector_run.agent_run.tool_calls()
+    calls = await collector_run.agent_run.read_tool_calls()
     ingested_tools: dict[str, str] = {}
     for call in calls:
         if call.tool_name not in DATA_SOURCE_TOOLS:

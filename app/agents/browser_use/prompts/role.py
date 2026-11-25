@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.lib.agent.checks import parse_json_object
-from app.lib.agent.engine import AgentRun
+from app.lib.agent.engine import AgentRun, ValidationResult
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Tool
 
@@ -79,7 +79,7 @@ def build_role_prompt(tools: tuple[Tool, ...]) -> str:
     return "\n".join([_ROLE, "", _SIGNIN, "", render_tool_descriptions(tools), _READING, _FINAL])
 
 
-def validate_role_output(text: str, _run: AgentRun) -> tuple[bool, dict | str]:
+def validate_role_output(text: str, _run: AgentRun) -> ValidationResult[dict]:
     """Read the final answer, and check it has a status and a summary.
 
     Args:
@@ -87,15 +87,15 @@ def validate_role_output(text: str, _run: AgentRun) -> tuple[bool, dict | str]:
         _run: The role run. Not used.
 
     Returns:
-        An ok flag, and the parsed answer with its two fields when ok, else the message for the problem found.
+        Validation result holding the parsed answer when valid, or an error message.
     """
     ok, parsed = parse_json_object(text)
     if not ok:
-        return False, parsed
+        return ValidationResult(is_valid=False, error=parsed)
     status = parsed.get("status")
     if not isinstance(status, str) or status not in _STATUSES:
-        return False, f"'status' must be one of {', '.join(_STATUSES)}."
+        return ValidationResult(is_valid=False, error=f"'status' must be one of {', '.join(_STATUSES)}.")
     summary = parsed.get("summary")
     if not isinstance(summary, str) or not summary.strip():
-        return False, "'summary' must be a non-empty string."
-    return True, {"status": status, "summary": summary}
+        return ValidationResult(is_valid=False, error="'summary' must be a non-empty string.")
+    return ValidationResult(is_valid=True, value={"status": status, "summary": summary})
