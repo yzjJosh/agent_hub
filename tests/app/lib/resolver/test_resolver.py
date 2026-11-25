@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import app.lib.resolver.resolver as resolver
 from app.lib.laya.client import LayaError, Verdict
 from app.lib.shared import paths
-from app.lib.resolver.resolver import ResolveError, resolve_input
+from app.lib.resolver.resolver import ResolveError, ResolvedContent, resolve_input
 from tests.app.lib.conftest import mock_cli_proc
 from tests.app.lib.resolver.conftest import make_docx, make_xls, make_xlsx
 
@@ -150,22 +150,22 @@ class TestPlainTextPassthrough:
 
     async def test_resolve_input_empty_string(self) -> None:
 
-        result, is_processed = await resolve_input("")
-        assert result == ""
-        assert is_processed is False
+        resolved = await resolve_input("")
+        assert resolved.content == ""
+        assert resolved.is_described is False
 
     async def test_resolve_input_plain_text(self) -> None:
 
-        result, is_processed = await resolve_input("hello world")
-        assert result == "hello world"
-        assert is_processed is False
+        resolved = await resolve_input("hello world")
+        assert resolved.content == "hello world"
+        assert resolved.is_described is False
 
     async def test_resolve_input_html_text(self) -> None:
 
         html_str = "<html><body><h1>Hello</h1></body></html>"
-        result, is_processed = await resolve_input(html_str)
-        assert result == html_str
-        assert is_processed is False
+        resolved = await resolve_input(html_str)
+        assert resolved.content == html_str
+        assert resolved.is_described is False
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +180,9 @@ class TestLocalFileHandling:
 
         mock_run.return_value = _cli_proc(0, "application/pdf")
         mock_describe_pdf.return_value = _mock_describe("This is the PDF description.")
-        result, is_processed = await resolve_input(dummy_pdf_path)
-        assert "PDF description" in result
-        assert is_processed is True
+        resolved = await resolve_input(dummy_pdf_path)
+        assert "PDF description" in resolved.content
+        assert resolved.is_described is True
 
     @patch('app.lib.resolver.resolver.describe_pdf')
     @patch('asyncio.create_subprocess_exec')
@@ -201,9 +201,9 @@ class TestLocalFileHandling:
 
         mock_run.return_value = _cli_proc(0, "image/jpeg")
         mock_describe_image.return_value = _mock_describe("A red square image.")
-        result, is_processed = await resolve_input(dummy_image_path)
-        assert "red square" in result
-        assert is_processed is True
+        resolved = await resolve_input(dummy_image_path)
+        assert "red square" in resolved.content
+        assert resolved.is_described is True
 
     @patch('app.lib.resolver.resolver.describe_image')
     @patch('asyncio.create_subprocess_exec')
@@ -222,9 +222,9 @@ class TestLocalFileHandling:
 
         mock_run.return_value = _cli_proc(0, "video/mp4")
         mock_describe_video.return_value = _mock_describe("A short test video.")
-        result, is_processed = await resolve_input(dummy_video_path)
-        assert "short test video" in result
-        assert is_processed is True
+        resolved = await resolve_input(dummy_video_path)
+        assert "short test video" in resolved.content
+        assert resolved.is_described is True
 
     @patch('app.lib.resolver.resolver.describe_video')
     @patch('asyncio.create_subprocess_exec')
@@ -252,8 +252,8 @@ class TestLocalFileHandling:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = client
-        result, _ = await resolve_input(dummy_audio_path)
-        assert result == "This is the transcription."
+        resolved = await resolve_input(dummy_audio_path)
+        assert resolved.content == "This is the transcription."
         assert client.post.await_args.args[0] == "http://asr.example.com/asr"
 
     @pytest.mark.parametrize("value", [None, "", "  "], ids=["unset", "empty", "blank"])
@@ -278,11 +278,11 @@ class TestLocalFileHandling:
         docx_path = str(tmp_path / "doc.docx")
         make_docx(docx_path, ["Docx body text."], [["Alpha", "Beta"]])
         mock_run.return_value = _cli_proc(0, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        result, is_processed = await resolve_input(docx_path)
-        assert "Docx body text." in result
-        assert "Alpha" in result
-        assert "Beta" in result
-        assert is_processed is False
+        resolved = await resolve_input(docx_path)
+        assert "Docx body text." in resolved.content
+        assert "Alpha" in resolved.content
+        assert "Beta" in resolved.content
+        assert resolved.is_described is False
 
     @patch('asyncio.create_subprocess_exec')
     async def test_resolve_input_xlsx_file(self, mock_run: MagicMock, tmp_path: Path) -> None:
@@ -290,11 +290,11 @@ class TestLocalFileHandling:
         xlsx_path = str(tmp_path / "book.xlsx")
         make_xlsx(xlsx_path, [("Data", [["City", "Population"], ["Osaka", 2700000]])])
         mock_run.return_value = _cli_proc(0, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        result, is_processed = await resolve_input(xlsx_path)
-        assert "Sheet: Data" in result
-        assert "City\tPopulation" in result
-        assert "Osaka\t2700000" in result
-        assert is_processed is False
+        resolved = await resolve_input(xlsx_path)
+        assert "Sheet: Data" in resolved.content
+        assert "City\tPopulation" in resolved.content
+        assert "Osaka\t2700000" in resolved.content
+        assert resolved.is_described is False
 
     @patch('asyncio.create_subprocess_exec')
     async def test_resolve_input_xls_file(self, mock_run: MagicMock, tmp_path: Path) -> None:
@@ -302,11 +302,11 @@ class TestLocalFileHandling:
         xls_path = str(tmp_path / "legacy.xls")
         make_xls(xls_path, "Data", [["Key", "Value"], ["Rows", 3]])
         mock_run.return_value = _cli_proc(0, "application/vnd.ms-excel")
-        result, is_processed = await resolve_input(xls_path)
-        assert "Sheet: Data" in result
-        assert "Key\tValue" in result
-        assert "Rows\t3" in result
-        assert is_processed is False
+        resolved = await resolve_input(xls_path)
+        assert "Sheet: Data" in resolved.content
+        assert "Key\tValue" in resolved.content
+        assert "Rows\t3" in resolved.content
+        assert resolved.is_described is False
 
     @patch('app.lib.resolver.resolver.describe_presentation')
     @patch('asyncio.create_subprocess_exec')
@@ -316,9 +316,9 @@ class TestLocalFileHandling:
         pptx_path.write_bytes(b"PK\x03\x04 dummy")
         mock_run.return_value = _cli_proc(0, "application/vnd.openxmlformats-officedocument.presentationml.presentation")
         mock_describe.return_value = _mock_describe("Slides described.")
-        result, is_processed = await resolve_input(str(pptx_path))
-        assert "Slides described." in result
-        assert is_processed is True
+        resolved = await resolve_input(str(pptx_path))
+        assert "Slides described." in resolved.content
+        assert resolved.is_described is True
 
     @patch('app.lib.resolver.resolver.describe_presentation')
     @patch('asyncio.create_subprocess_exec')
@@ -328,9 +328,9 @@ class TestLocalFileHandling:
         ppt_path.write_bytes(b"PK\x03\x04 dummy")
         mock_run.return_value = _cli_proc(0, "application/vnd.ms-powerpoint")
         mock_describe.return_value = _mock_describe("Slides described.")
-        result, is_processed = await resolve_input(str(ppt_path))
-        assert "Slides described." in result
-        assert is_processed is True
+        resolved = await resolve_input(str(ppt_path))
+        assert "Slides described." in resolved.content
+        assert resolved.is_described is True
 
     @patch('app.lib.resolver.resolver.describe_presentation')
     @patch('asyncio.create_subprocess_exec')
@@ -359,9 +359,9 @@ class TestLocalFileHandling:
     async def test_resolve_input_html_file(self, mock_run: MagicMock, dummy_html_path: str) -> None:
 
         mock_run.return_value = _cli_proc(0, "text/html")
-        result, is_processed = await resolve_input(dummy_html_path)
-        assert result
-        assert is_processed is False
+        resolved = await resolve_input(dummy_html_path)
+        assert resolved.content
+        assert resolved.is_described is False
 
     @patch('asyncio.create_subprocess_exec')
     async def test_resolve_input_html_file_without_text_fails(self, mock_run: MagicMock, tmp_path: Path) -> None:
@@ -379,8 +379,8 @@ class TestLocalFileHandling:
     async def test_resolve_input_text_file(self, mock_run: MagicMock, dummy_text_path: str) -> None:
 
         mock_run.return_value = _cli_proc(0, "text/plain")
-        result, _ = await resolve_input(dummy_text_path)
-        assert "test file content" in result
+        resolved = await resolve_input(dummy_text_path)
+        assert "test file content" in resolved.content
 
     @patch('asyncio.create_subprocess_exec')
     async def test_resolve_input_binary_file_saves_copy_and_returns_notice(
@@ -394,12 +394,12 @@ class TestLocalFileHandling:
         monkeypatch.setenv("DAV_BASE_URL", "http://example.com:8315")
         mock_run.return_value = _cli_proc(0, "application/zip")
 
-        result, is_processed = await resolve_input(str(bin_file))
+        resolved = await resolve_input(str(bin_file))
 
         saved = resources_dir / "downloads" / "archive.zip"
         assert saved.read_bytes() == b"\xff\xfe\x00\x01\x02\x03\x04"
-        assert is_processed is False
-        assert result == (
+        assert resolved.is_described is False
+        assert resolved.content == (
             "Binary file with size 7 bytes. "
             "Please use WebDAV to download it instead:\n"
             "  curl -o /tmp/archive.zip http://example.com:8315/dav/downloads/archive.zip"
@@ -424,9 +424,9 @@ class TestLocalFileHandling:
 
     async def test_resolve_input_file_not_found(self) -> None:
 
-        result, is_processed = await resolve_input("/nonexistent/path.pdf")
-        assert result == "/nonexistent/path.pdf"
-        assert is_processed is False
+        resolved = await resolve_input("/nonexistent/path.pdf")
+        assert resolved.content == "/nonexistent/path.pdf"
+        assert resolved.is_described is False
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +438,8 @@ class TestURLLive:
     @pytest.mark.live
     async def test_resolve_url_html_page(self, test_server_url: str) -> None:
 
-        result, _ = await resolve_input(test_server_url)
-        assert len(result) > 0
+        resolved = await resolve_input(test_server_url)
+        assert len(resolved.content) > 0
 
     @pytest.mark.live
     async def test_resolve_url_404(self, test_server_url: str) -> None:
@@ -457,16 +457,16 @@ class TestURLLive:
     @pytest.mark.live
     async def test_resolve_url_pdf_download(self, test_server_url: str) -> None:
 
-        result, is_processed = await resolve_input(f"{test_server_url}/media/test.pdf")
-        assert is_processed is True
-        assert len(result) > 0
+        resolved = await resolve_input(f"{test_server_url}/media/test.pdf")
+        assert resolved.is_described is True
+        assert len(resolved.content) > 0
 
     @pytest.mark.live
     async def test_resolve_url_image_download(self, test_server_url: str) -> None:
 
-        result, is_processed = await resolve_input(f"{test_server_url}/media/test.png")
-        assert is_processed is True
-        assert len(result) > 0
+        resolved = await resolve_input(f"{test_server_url}/media/test.png")
+        assert resolved.is_described is True
+        assert len(resolved.content) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -484,8 +484,8 @@ class TestURLMocked:
 
         _setup_mock_browser_mgr(mock_browser_mgr, "browser content")
 
-        result, _ = await resolve_input("http://example.com")
-        assert "browser content" in result
+        resolved = await resolve_input("http://example.com")
+        assert "browser content" in resolved.content
 
     @patch('app.lib.resolver.resolver.BrowserManager')
     @patch('asyncio.create_subprocess_exec')
@@ -537,8 +537,8 @@ class TestURLMocked:
 
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered")
 
-        result, _ = await resolve_input("http://example.com/insufficient.html")
-        assert "browser rendered" in result
+        resolved = await resolve_input("http://example.com/insufficient.html")
+        assert "browser rendered" in resolved.content
         os.unlink(download_path)
 
     @patch('app.lib.resolver.resolver.BrowserManager')
@@ -560,8 +560,8 @@ class TestURLMocked:
 
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered content")
 
-        result, _ = await resolve_input("http://example.com/short_text")
-        assert "browser rendered content" in result
+        resolved = await resolve_input("http://example.com/short_text")
+        assert "browser rendered content" in resolved.content
         os.unlink(download_path)
 
     @patch('app.lib.resolver.resolver.BrowserManager')
@@ -582,9 +582,9 @@ class TestURLMocked:
             _cli_proc(0, "text/plain"),
         ]
 
-        result, _ = await resolve_input("http://example.com/sufficient")
+        resolved = await resolve_input("http://example.com/sufficient")
         mock_browser_mgr.create.assert_not_called()
-        assert long_text in result
+        assert long_text in resolved.content
         os.unlink(download_path)
 
     @patch('app.lib.resolver.resolver.BrowserManager')
@@ -606,9 +606,9 @@ class TestURLMocked:
             _cli_proc(0, "text/plain"),
         ]
 
-        result, _ = await resolve_input("http://example.com/large_page")
+        resolved = await resolve_input("http://example.com/large_page")
         mock_browser_mgr.create.assert_not_called()
-        assert large_text in result
+        assert large_text in resolved.content
         os.unlink(download_path)
 
     @pytest.mark.parametrize("mime", ["text/html", "application/xhtml+xml"])
@@ -624,9 +624,9 @@ class TestURLMocked:
         mock_run.side_effect = _curl_download_procs(mime)
         mock_classify.return_value = Verdict(blocked=False, blocked_probability=0.03)
 
-        result, _ = await resolve_input("http://example.com/page.html")
+        resolved = await resolve_input("http://example.com/page.html")
 
-        assert "Real article text." in result
+        assert "Real article text." in resolved.content
         mock_classify.assert_awaited_once_with(_ARTICLE_HTML)
         mock_browser_mgr.create.assert_not_called()
 
@@ -643,10 +643,10 @@ class TestURLMocked:
         mock_classify.return_value = Verdict(blocked=True, blocked_probability=0.97)
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered page")
 
-        result, _ = await resolve_input("http://example.com/page.html")
+        resolved = await resolve_input("http://example.com/page.html")
 
-        assert "browser rendered page" in result
-        assert "Real article text." not in result
+        assert "browser rendered page" in resolved.content
+        assert "Real article text." not in resolved.content
         mock_classify.assert_awaited_once_with(_ARTICLE_HTML)
 
     @patch('app.lib.laya.client.classify', new_callable=AsyncMock)
@@ -662,10 +662,10 @@ class TestURLMocked:
         mock_classify.side_effect = LayaError("Laya rejected the page: HTTP 503 busy")
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered page")
 
-        result, _ = await resolve_input("http://example.com/page.html")
+        resolved = await resolve_input("http://example.com/page.html")
 
-        assert "browser rendered page" in result
-        assert "Real article text." not in result
+        assert "browser rendered page" in resolved.content
+        assert "Real article text." not in resolved.content
 
     @patch('app.lib.resolver.resolver.BrowserManager')
     @patch('asyncio.create_subprocess_exec')
@@ -694,9 +694,9 @@ class TestURLMocked:
         mock_run.side_effect = _curl_download_procs("text/html")
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered page")
 
-        result, _ = await resolve_input("http://example.com/page.html")
+        resolved = await resolve_input("http://example.com/page.html")
 
-        assert "browser rendered page" in result
+        assert "browser rendered page" in resolved.content
         mock_classify.assert_not_called()
         mock_browser_mgr.create.assert_called_once()
 
@@ -712,9 +712,9 @@ class TestURLMocked:
         mock_run.side_effect = _curl_download_procs("text/html")
         _setup_mock_browser_mgr(mock_browser_mgr, "browser rendered page")
 
-        result, _ = await resolve_input("http://example.com/food")
+        resolved = await resolve_input("http://example.com/food")
 
-        assert "browser rendered page" in result
+        assert "browser rendered page" in resolved.content
         mock_classify.assert_not_called()
         mock_browser_mgr.create.assert_called_once()
 
@@ -751,9 +751,9 @@ class TestURLMocked:
         _write_curl_download("data", body)
         mock_run.side_effect = _curl_download_procs(mime)
 
-        result, _ = await resolve_input("http://example.com/data")
+        resolved = await resolve_input("http://example.com/data")
 
-        assert result == body
+        assert resolved.content == body
         mock_classify.assert_not_called()
         mock_browser_mgr.create.assert_not_called()
 
@@ -775,8 +775,8 @@ class TestURLMocked:
         ]
         mock_describe_pdf.return_value = _mock_describe("PDF content description.")
 
-        result, _ = await resolve_input("http://example.com/doc.pdf")
-        assert "PDF content description" in result
+        resolved = await resolve_input("http://example.com/doc.pdf")
+        assert "PDF content description" in resolved.content
         try:
             os.unlink(download_path)
         except FileNotFoundError:
@@ -826,12 +826,12 @@ class TestURLMocked:
             'content-disposition: attachment; filename="Hello-World-master.zip"'
         )
 
-        result, is_processed = await resolve_input("http://example.com/Hello-World/zip/master")
+        resolved = await resolve_input("http://example.com/Hello-World/zip/master")
 
         saved = resources_dir / "downloads" / "Hello-World-master.zip"
         assert saved.read_bytes() == binary
-        assert is_processed is False
-        assert result == (
+        assert resolved.is_described is False
+        assert resolved.content == (
             "Binary file with size 7 bytes. "
             "Please use WebDAV to download it instead:\n"
             "  curl -o /tmp/Hello-World-master.zip "
@@ -853,12 +853,12 @@ class TestURLMocked:
             "content-disposition: attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87.zip"
         )
 
-        result, is_processed = await resolve_input("http://example.com/download")
+        resolved = await resolve_input("http://example.com/download")
 
         saved = resources_dir / "downloads" / "中文.zip"
         assert saved.read_bytes() == binary
-        assert is_processed is False
-        assert result == (
+        assert resolved.is_described is False
+        assert resolved.content == (
             "Binary file with size 7 bytes. "
             "Please use WebDAV to download it instead:\n"
             "  curl -o /tmp/中文.zip "
@@ -890,11 +890,11 @@ class TestURLMocked:
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
 
-        result, _ = await resolve_input("http://example.com/Hello-World/zip/master")
+        resolved = await resolve_input("http://example.com/Hello-World/zip/master")
 
         saved = resources_dir / "downloads" / "Hello-World-master.zip"
         assert saved.read_bytes() == b"\xff\xfe\x00\x01\x02\x03\x04"
-        assert "dav/downloads/Hello-World-master.zip" in result
+        assert "dav/downloads/Hello-World-master.zip" in resolved.content
         try:
             os.unlink(os.path.join(_TEMP_DIR, "Hello-World-master.zip"))
         except FileNotFoundError:
@@ -913,8 +913,8 @@ class TestContextParameter:
 
         mock_run.return_value = _cli_proc(0, "application/pdf")
         mock_describe_pdf.return_value = _mock_describe("Described with context.")
-        result, _ = await resolve_input(dummy_pdf_path, context="my context")
-        assert "Described with context." in result
+        resolved = await resolve_input(dummy_pdf_path, context="my context")
+        assert "Described with context." in resolved.content
         assert mock_describe_pdf.call_count == 1
         assert mock_describe_pdf.call_args[0][1] == "my context"
 
@@ -931,9 +931,9 @@ class TestMissingCodePaths:
         original_stdin = sys.stdin
         sys.stdin = StringIO("stdin content here")
         try:
-            result, is_processed = await resolve_input("-", verbose=False)
-            assert result == "stdin content here"
-            assert is_processed is False
+            resolved = await resolve_input("-", verbose=False)
+            assert resolved.content == "stdin content here"
+            assert resolved.is_described is False
         finally:
             sys.stdin = original_stdin
 
@@ -964,8 +964,8 @@ class TestMissingCodePaths:
 
         mgr = _setup_download_mgr(mock_browser_mgr, download_path)
 
-        result, _ = await resolve_input("http://example.com/auto.png")
-        assert "auto-downloaded image" in result
+        resolved = await resolve_input("http://example.com/auto.png")
+        assert "auto-downloaded image" in resolved.content
         mgr.evaluate.assert_not_called()
         try:
             os.unlink(download_path)
@@ -1004,8 +1004,8 @@ class TestMissingCodePaths:
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
 
-        result, _ = await resolve_input("http://example.com/media/image.png")
-        assert "rendered image" in result
+        resolved = await resolve_input("http://example.com/media/image.png")
+        assert "rendered image" in resolved.content
         try:
             os.unlink(download_path)
         except FileNotFoundError:
@@ -1026,9 +1026,9 @@ class TestMissingCodePaths:
             mock_browser_mgr, "http://example.com/data.json", "application/json", raw_json
         )
 
-        result, _ = await resolve_input("http://example.com/data.json")
-        assert result == raw_json
-        assert '{"text":' not in result
+        resolved = await resolve_input("http://example.com/data.json")
+        assert resolved.content == raw_json
+        assert '{"text":' not in resolved.content
         try:
             os.unlink(download_path)
         except FileNotFoundError:
@@ -1049,9 +1049,9 @@ class TestMissingCodePaths:
             mock_browser_mgr, "http://example.com/data.txt", "text/plain", raw_text
         )
 
-        result, _ = await resolve_input("http://example.com/data.txt")
-        assert result == raw_text
-        assert '{"text":' not in result
+        resolved = await resolve_input("http://example.com/data.txt")
+        assert resolved.content == raw_text
+        assert '{"text":' not in resolved.content
         try:
             os.unlink(download_path)
         except FileNotFoundError:
@@ -1081,8 +1081,8 @@ class TestMissingCodePaths:
         mgr.close_page.return_value = True
         mgr.cleanup.return_value = None
 
-        result, _ = await resolve_input("http://example.com/doc.pdf")
-        assert "Browser-captured PDF" in result
+        resolved = await resolve_input("http://example.com/doc.pdf")
+        assert "Browser-captured PDF" in resolved.content
         try:
             os.unlink(pdf_path)
         except FileNotFoundError:
@@ -1111,8 +1111,8 @@ class TestBinaryPassthrough:
         f = tmp_path / "data.bin"
         f.write_bytes(b"\x89\x00\x01")
         monkeypatch.setattr(paths, "mime_type", AsyncMock(return_value=mime))
-        content, _ = await resolve_input(str(f), binary_passthrough=True)
-        assert content.startswith(resolver.BINARY_PASSTHROUGH_TAG)
+        resolved = await resolve_input(str(f), binary_passthrough=True)
+        assert resolved == ResolvedContent(binary_path=str(res / "downloads" / "data.bin"))
 
     @pytest.mark.parametrize(
         "mime",
@@ -1127,10 +1127,10 @@ class TestBinaryPassthrough:
         f = tmp_path / "data.txt"
         f.write_text("just some text\n")
         monkeypatch.setattr(paths, "mime_type", AsyncMock(return_value=mime))
-        content, _ = await resolve_input(str(f), binary_passthrough=True)
-        assert not content.startswith(resolver.BINARY_PASSTHROUGH_TAG)
+        resolved = await resolve_input(str(f), binary_passthrough=True)
+        assert resolved.binary_path is None
 
-    async def test_resolve_binary_copies_to_downloads_and_tags(
+    async def test_resolve_binary_copies_to_downloads_and_returns_binary_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         res = tmp_path / "resources"
@@ -1138,13 +1138,11 @@ class TestBinaryPassthrough:
         f = tmp_path / "img.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
         monkeypatch.setattr(paths, "mime_type", AsyncMock(return_value="image/png"))
-        content, processed = await resolve_input(str(f), binary_passthrough=True)
-        assert processed is False
-        assert content.startswith(resolver.BINARY_PASSTHROUGH_TAG)
-        assert content.endswith("downloads/img.png")
+        resolved = await resolve_input(str(f), binary_passthrough=True)
+        assert resolved == ResolvedContent(binary_path=str(res / "downloads" / "img.png"))
         assert (res / "downloads" / "img.png").read_bytes() == f.read_bytes()
 
-    async def test_resolve_text_file_not_tagged(
+    async def test_resolve_text_file_not_passed_through_as_binary(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         res = tmp_path / "resources"
@@ -1152,9 +1150,9 @@ class TestBinaryPassthrough:
         f = tmp_path / "notes.txt"
         f.write_text("just some text\n")
         monkeypatch.setattr(paths, "mime_type", AsyncMock(return_value="text/plain"))
-        content, _ = await resolve_input(str(f), binary_passthrough=True)
-        assert not content.startswith(resolver.BINARY_PASSTHROUGH_TAG)
-        assert content == "just some text\n"
+        resolved = await resolve_input(str(f), binary_passthrough=True)
+        assert resolved.binary_path is None
+        assert resolved.content == "just some text\n"
 
     async def test_resolve_over_cap_binary_falls_to_binary_save_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1164,7 +1162,7 @@ class TestBinaryPassthrough:
         f = tmp_path / "big.zip"
         f.write_bytes(b"PK\x03\x04" + b"\xff" * 20)
         monkeypatch.setattr(paths, "mime_type", AsyncMock(return_value="application/zip"))
-        monkeypatch.setattr(resolver, "_BINARY_PASSTHROUGH_CAP", 8)
-        content, _ = await resolve_input(str(f), binary_passthrough=True)
-        assert not content.startswith(resolver.BINARY_PASSTHROUGH_TAG)
-        assert "Binary file with size" in content
+        monkeypatch.setattr(resolver, "_MAX_BINARY_PASSTHROUGH_BYTES", 8)
+        resolved = await resolve_input(str(f), binary_passthrough=True)
+        assert resolved.binary_path is None
+        assert "Binary file with size" in resolved.content

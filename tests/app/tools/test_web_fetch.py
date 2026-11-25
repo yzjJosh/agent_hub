@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
-from app.lib.resolver.resolver import BINARY_PASSTHROUGH_TAG
+from app.lib.resolver.resolver import ResolvedContent
 from app.lib.tool.base import ToolResult
 from app.lib.tool.truncation import DEFAULT_TOOL_OUTPUT_LEN_LIMIT
 from app.tools.web_fetch import web_fetch_tool
@@ -73,7 +73,7 @@ class TestUrlValidation:
     @patch("app.tools.web_fetch.resolve_input")
     async def test_non_http_scheme_passes_through(self, mock_resolve: MagicMock) -> None:
         """A URL with a scheme other than http is accepted."""
-        mock_resolve.return_value = ("ok", False)
+        mock_resolve.return_value = ResolvedContent(content="ok")
 
         result = await run_text(web_fetch_tool, "ftp://example.com/file")
 
@@ -92,7 +92,7 @@ class TestUrlValidation:
     @patch("app.tools.web_fetch.resolve_input")
     async def test_valid_url_passes_through(self, mock_resolve: MagicMock) -> None:
         """A good URL is accepted and the page is fetched."""
-        mock_resolve.return_value = ("ok", False)
+        mock_resolve.return_value = ResolvedContent(content="ok")
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -116,7 +116,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -139,7 +139,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -169,7 +169,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -203,7 +203,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -217,7 +217,7 @@ class TestMarkdownConversion:
     @patch("app.tools.web_fetch.resolve_input")
     async def test_non_json_content_passes_through(self, mock_resolve: MagicMock) -> None:
         """Plain text comes back unchanged."""
-        mock_resolve.return_value = ("Plain text content", False)
+        mock_resolve.return_value = ResolvedContent(content="Plain text content")
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -231,7 +231,7 @@ class TestMarkdownConversion:
         raw_json = json.dumps(
             {"current_condition": [{"temp_C": "25", "weatherDesc": [{"value": "Sunny"}]}]}
         )
-        mock_resolve.return_value = (raw_json, False)
+        mock_resolve.return_value = ResolvedContent(content=raw_json)
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -244,7 +244,7 @@ class TestMarkdownConversion:
     ) -> None:
         """A page tree with no children turns into empty text, not JSON."""
         tree = json.dumps({"role": "document"})
-        mock_resolve.return_value = (tree, False)
+        mock_resolve.return_value = ResolvedContent(content=tree)
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -264,7 +264,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -284,7 +284,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -303,7 +303,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -324,7 +324,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -375,7 +375,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
         json_size = len(json.dumps(tree))
@@ -412,7 +412,7 @@ class TestMarkdownConversion:
                 {"role": "paragraph", "children": [{"text": "After"}]},
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -438,7 +438,7 @@ class TestMarkdownConversion:
                 {"role": "paragraph", "children": [{"text": "After"}]},
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -461,7 +461,7 @@ class TestMarkdownConversion:
                 {"role": "heading", "name": "Next", "children": [{"text": "Next"}]},
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -499,7 +499,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -538,7 +538,7 @@ class TestMarkdownConversion:
                 },
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -558,7 +558,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -568,7 +568,7 @@ class TestMarkdownConversion:
     async def test_long_plain_text_comes_back_whole(self, mock_resolve: MagicMock) -> None:
         """Plain text longer than 25000 characters comes back whole, with no note."""
         long_text = "x" * (DEFAULT_TOOL_OUTPUT_LEN_LIMIT + _OVERFLOW)
-        mock_resolve.return_value = (long_text, False)
+        mock_resolve.return_value = ResolvedContent(content=long_text)
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -579,7 +579,7 @@ class TestMarkdownConversion:
     async def test_short_plain_text_not_truncated(self, mock_resolve: MagicMock) -> None:
         """Text under 25000 characters comes back whole."""
         short_text = "short content"
-        mock_resolve.return_value = (short_text, False)
+        mock_resolve.return_value = ResolvedContent(content=short_text)
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -597,7 +597,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(large_tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(large_tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -619,7 +619,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
         mock_reason.return_value = ("Summary of page.", 0)
 
         result = await run_text(web_fetch_tool, "http://example.com", prompt="summarize")
@@ -642,7 +642,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
         mock_reason.return_value = ("backend unavailable", 1)
 
         result = await run_text(web_fetch_tool, "http://example.com", prompt="summarize")
@@ -664,7 +664,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), True)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree), is_described=True)
 
         result = await run_text(web_fetch_tool, "http://example.com", prompt="summarize")
 
@@ -683,7 +683,7 @@ class TestMarkdownConversion:
                 }
             ]
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
 
         result = await run_text(web_fetch_tool, "http://example.com")
 
@@ -724,7 +724,7 @@ class TestBinaryPassthrough:
         local = res / "downloads" / "a.pdf"
         local.write_bytes(b"%PDF-1.4" + b"\x00" * 8)
         monkeypatch.setenv("RESOURCES_DIR", str(res))
-        mock_resolve.return_value = (BINARY_PASSTHROUGH_TAG + str(local), False)
+        mock_resolve.return_value = ResolvedContent(binary_path=str(local))
 
         result = await web_fetch_tool.call({"url": "https://example.com/a.pdf"})
 
@@ -745,7 +745,7 @@ class TestBinaryPassthrough:
         mock_reason: MagicMock,
     ) -> None:
         """A fetch with a prompt returns text, not a file."""
-        mock_resolve.return_value = ("plain text content", False)
+        mock_resolve.return_value = ResolvedContent(content="plain text content")
         mock_reason.return_value = ("The answer.", 0)
 
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": "summarize"})
@@ -768,7 +768,7 @@ class TestDeclaredRenderType:
             "role": "document",
             "children": [{"role": "heading", "name": "H", "children": [{"text": "H"}]}],
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": ""})
         assert isinstance(result, ToolResult)
         assert result.render_type == "markdown"
@@ -777,21 +777,21 @@ class TestDeclaredRenderType:
     @patch("app.tools.web_fetch.resolve_input")
     async def test_verbatim_json_declares_json(self, mock_resolve: MagicMock) -> None:
         raw_json = json.dumps({"current_condition": [{"temp_C": "25"}]})
-        mock_resolve.return_value = (raw_json, False)
+        mock_resolve.return_value = ResolvedContent(content=raw_json)
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": ""})
         assert result.render_type == "json"
         assert result.text == raw_json
 
     @patch("app.tools.web_fetch.resolve_input")
     async def test_plain_text_stays_undeclared(self, mock_resolve: MagicMock) -> None:
-        mock_resolve.return_value = ("Plain text content", False)
+        mock_resolve.return_value = ResolvedContent(content="Plain text content")
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": ""})
         assert result.render_type is None
         assert result.text == "Plain text content"
 
     @patch("app.tools.web_fetch.resolve_input")
     async def test_scalar_text_stays_undeclared(self, mock_resolve: MagicMock) -> None:
-        mock_resolve.return_value = ("5", False)
+        mock_resolve.return_value = ResolvedContent(content="5")
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": ""})
         assert result.render_type is None
         assert result.text == "5"
@@ -805,7 +805,7 @@ class TestDeclaredRenderType:
             "role": "document",
             "children": [{"role": "paragraph", "children": [{"text": "page body"}]}],
         }
-        mock_resolve.return_value = (json.dumps(tree), False)
+        mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
         mock_reason.return_value = ("An answer.", 0)
         result = await web_fetch_tool.call({"url": "http://example.com", "prompt": "summarize"})
         assert result.text == "An answer."

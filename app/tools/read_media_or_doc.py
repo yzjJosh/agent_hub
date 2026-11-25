@@ -7,7 +7,7 @@ import os
 from datetime import timedelta
 from typing import ClassVar, override
 
-from app.lib.resolver.resolver import ResolveError, resolve_input
+from app.lib.resolver.resolver import ResolveError, ResolvedContent, resolve_input
 from app.lib.shared.format import answer_or_content
 from app.lib.shared.paths import resolve_path, resolve_path_sync, resources_dir
 from app.lib.tool.base import Param, Tool, ToolResult
@@ -95,10 +95,12 @@ class _ReadMediaOrDocTool(Tool):
 
         target = await asyncio.to_thread(_resolve_resource_file, resource_path)
         try:
-            content, processed = await resolve_input(target, context=prompt, verbose=True)
-        except ResolveError as e:
-            raise RuntimeError(f"Error converting '{resource_path}' to text: {e}") from e
-        return await answer_or_content(prompt, processed, content, f"'{resource_path}'")
+            resolved: ResolvedContent = await resolve_input(target, context=prompt, verbose=True)
+        except ResolveError as error:
+            raise RuntimeError(f"Error converting '{resource_path}' to text: {error}") from error
+        return await answer_or_content(
+            prompt, resolved.is_described, resolved.content, f"'{resource_path}'"
+        )
 
     @override
     async def cache_key(self, params: dict) -> str:

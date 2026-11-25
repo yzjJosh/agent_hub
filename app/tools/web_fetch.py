@@ -6,7 +6,7 @@ import json
 import os
 from typing import ClassVar, override
 
-from app.lib.resolver.resolver import BINARY_PASSTHROUGH_TAG, ResolveError, resolve_input
+from app.lib.resolver.resolver import ResolveError, ResolvedContent, resolve_input
 from app.lib.tool.base import Param, Tool, ToolResult
 from app.lib.shared.format import answer_or_content
 from app.lib.shared.url import validate_url
@@ -33,19 +33,20 @@ async def _fetch_impl(url: str, prompt: str) -> ToolResult:
     error = validate_url(url)
     if error:
         raise ValueError(error)
-    binary_passthrough = not prompt
+    should_passthrough_binary = not prompt
     try:
-        content, processed = await resolve_input(url, context=prompt, verbose=True,
-                                                 binary_passthrough=binary_passthrough)
-    except ResolveError as e:
-        raise RuntimeError(f"Error fetching {url}: {e}") from e
-    if content.startswith(BINARY_PASSTHROUGH_TAG):
-        return await _binary_result(content[len(BINARY_PASSTHROUGH_TAG):])
-    result = await answer_or_content(prompt, processed, content, url)
-    if prompt and not processed:
+        resolved: ResolvedContent = await resolve_input(
+            url, context=prompt, verbose=True, binary_passthrough=should_passthrough_binary
+        )
+    except ResolveError as resolve_error:
+        raise RuntimeError(f"Error fetching {url}: {resolve_error}") from resolve_error
+    if resolved.binary_path is not None:
+        return await _binary_result(resolved.binary_path)
+    result = await answer_or_content(prompt, resolved.is_described, resolved.content, url)
+    if prompt and not resolved.is_described:
         return result
     text = result.text
-    if text != content:
+    if text != resolved.content:
         return ToolResult(text=text, render_type="markdown")
     if _looks_like_json(text):
         return ToolResult(text=text, render_type="json")

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.lib.resolver.resolver import ResolveError
+from app.lib.resolver.resolver import ResolveError, ResolvedContent
 from app.lib.tool.truncation import DEFAULT_TOOL_OUTPUT_LEN_LIMIT
 from app.tools.read_media_or_doc import read_media_or_doc_tool
 from tests.app.lib.tool.conftest import assert_max_char_wire_contract, run_text
@@ -135,7 +135,7 @@ class TestConversion:
         _point_resources_at(tmp_path, monkeypatch)
         media = _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
 
         assert result == "A lecture about AI."
@@ -187,7 +187,7 @@ class TestConversion:
                 "Binary file with size 10 bytes. Please use WebDAV to download "
                 "it instead:\n  curl -o /tmp/archive.zip http://localhost/dav/downloads/archive.zip"
             )
-            mock_resolve.return_value = (notice, False)
+            mock_resolve.return_value = ResolvedContent(content=notice)
             result = await run_text(read_media_or_doc_tool, "upload/archive.zip")
 
         assert result == notice
@@ -217,7 +217,7 @@ class TestTreeConversion:
             ],
         }
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = (json.dumps(tree), False)
+            mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
             result = await run_text(read_media_or_doc_tool, "upload/page.html")
 
         assert "# Example Domain" in result
@@ -255,7 +255,7 @@ class TestTreeConversion:
             ],
         }
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = (json.dumps(tree), False)
+            mock_resolve.return_value = ResolvedContent(content=json.dumps(tree))
             result = await run_text(read_media_or_doc_tool, "upload/page.html")
 
         assert "| Col A | Col B |" in result
@@ -273,7 +273,7 @@ class TestTreeConversion:
             {"current_condition": [{"temp_C": "25", "weatherDesc": [{"value": "Sunny"}]}]}
         )
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = (raw_json, False)
+            mock_resolve.return_value = ResolvedContent(content=raw_json)
             result = await run_text(read_media_or_doc_tool, "upload/data.json")
 
         assert result == raw_json
@@ -285,7 +285,7 @@ class TestTreeConversion:
         _point_resources_at(tmp_path, monkeypatch)
         _resource_file(tmp_path, "upload/notes.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("Plain text content", False)
+            mock_resolve.return_value = ResolvedContent(content="Plain text content")
             result = await run_text(read_media_or_doc_tool, "upload/notes.txt")
 
         assert result == "Plain text content"
@@ -303,7 +303,7 @@ class TestPrompt:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             mock_reason.return_value = ("About deep learning.", 0)
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
 
@@ -319,7 +319,7 @@ class TestPrompt:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             mock_reason.return_value = ("About deep learning.", 0)
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
 
@@ -334,7 +334,7 @@ class TestPrompt:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
 
         assert result == "A lecture about AI."
@@ -349,7 +349,7 @@ class TestPrompt:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("Already processed content.", True)
+            mock_resolve.return_value = ResolvedContent(content="Already processed content.", is_described=True)
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
 
         assert result == "Already processed content."
@@ -364,7 +364,7 @@ class TestPrompt:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             mock_reason.return_value = ("boom", 1)
             result = await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
 
@@ -382,8 +382,8 @@ class TestMaxChar:
         _point_resources_at(tmp_path, monkeypatch)
         _resource_file(tmp_path, "upload/big.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = (
-                "x" * (DEFAULT_TOOL_OUTPUT_LEN_LIMIT + _OVERFLOW), False
+            mock_resolve.return_value = ResolvedContent(
+                content="x" * (DEFAULT_TOOL_OUTPUT_LEN_LIMIT + _OVERFLOW)
             )
             result = await run_text(read_media_or_doc_tool, "upload/big.txt")
 
@@ -397,7 +397,7 @@ class TestMaxChar:
         _point_resources_at(tmp_path, monkeypatch)
         _resource_file(tmp_path, "upload/small.txt")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("short content", False)
+            mock_resolve.return_value = ResolvedContent(content="short content")
             result = await run_text(read_media_or_doc_tool, "upload/small.txt")
 
         assert result == "short content"
@@ -413,7 +413,7 @@ class TestCaching:
         _point_resources_at(tmp_path, monkeypatch)
         _resource_file(tmp_path, "upload/lecture.mp4")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             first = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
             second = await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
 
@@ -430,7 +430,7 @@ class TestCaching:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             mock_reason.return_value = ("About deep learning.", 0)
             first = await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
             second = await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
@@ -448,7 +448,7 @@ class TestCaching:
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve, patch(
             "app.lib.shared.format.reason"
         ) as mock_reason:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             mock_reason.return_value = ("About deep learning.", 0)
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="summarize")
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4", prompt="what topic?")
@@ -462,7 +462,7 @@ class TestCaching:
         _point_resources_at(tmp_path, monkeypatch)
         path = _resource_file(tmp_path, "upload/lecture.mp4", b"AAAA")
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("A lecture about AI.", False)
+            mock_resolve.return_value = ResolvedContent(content="A lecture about AI.")
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
             path.write_bytes(b"BBBB")
             await run_text(read_media_or_doc_tool, "upload/lecture.mp4")
@@ -482,7 +482,7 @@ class TestCaching:
         assert first.startswith("Tool 'read_media_or_doc' failed: ")
 
         with patch("app.tools.read_media_or_doc.resolve_input") as mock_resolve:
-            mock_resolve.return_value = ("fine", False)
+            mock_resolve.return_value = ResolvedContent(content="fine")
             second = await run_text(read_media_or_doc_tool, "upload/clip.mp3")
 
         assert second == "fine"
