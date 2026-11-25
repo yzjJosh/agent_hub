@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 import zipfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -313,7 +313,7 @@ async def _no_model(_data: bytes) -> Detection:
     raise AssertionError("model detection ran on a body that parses as JSON")
 
 
-def _model_as(kind: RenderKind) -> Callable[[bytes], Detection]:
+def _model_as(kind: RenderKind) -> Callable[[bytes], Awaitable[Detection]]:
     async def _model(_data: bytes) -> Detection:
         return Detection(kind)
     return _model
@@ -363,3 +363,50 @@ async def test_text_body_falls_back_to_model(tmp_path: Path, monkeypatch: pytest
     d = await rd.build_result_descriptor(tid, run_dir)
     assert d["kind"] == "markdown" and d["detected_kind"] == "markdown"
     assert d["mode"] == "doc"
+
+
+async def test_missing_result_file_raises_file_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raise FileNotFoundError when the run folder has no result file."""
+    configure_resource_env(tmp_path, monkeypatch)
+    task_id = str(uuid.uuid4())
+    run_dir = Path(tmp_path, "data", "runs", task_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(FileNotFoundError, match=task_id):
+        await rd.build_result_descriptor(task_id, str(run_dir))
+
+
+async def test_empty_csv_override_returns_no_rows_note(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Degrade whitespace-only CSV content to raw preview with the empty-table note."""
+    task_id, run_dir = _seed(tmp_path, monkeypatch, b"   \n\n  \n")
+    descriptor = await rd.build_result_descriptor(task_id, run_dir, kind=RenderKind.CSV)
+    assert descriptor["kind"] == "csv"
+    assert descriptor["mode"] == "raw"
+    assert descriptor["note"] == "No rows found."
+    assert descriptor["fragment"].startswith('<pre class="raw-pre">')
+
+
+@pytest.mark.parametrize(
+    ("override_kind", "invalid_body", "expected_label"),
+    [
+        (RenderKind.YAML, b":\n  - [\n", "YAML"),
+        (RenderKind.XML, b"<root><unclosed></root>", "XML"),
+    ],
+)
+async def test_invalid_structured_override_degrades_to_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    override_kind: RenderKind,
+    invalid_body: bytes,
+    expected_label: str,
+) -> None:
+    """Degrade invalid YAML or XML overrides to raw preview with a parse error note."""
+    task_id, run_dir = _seed(tmp_path, monkeypatch, invalid_body)
+    descriptor = await rd.build_result_descriptor(task_id, run_dir, kind=override_kind)
+    expected_note = (
+        f"Parse error — the body is not valid {expected_label}. "
+        f"Showing raw text. Use Raw or Download for the full payload."
+    )
+    assert descriptor["kind"] == override_kind.value
+    assert descriptor["mode"] == "raw"
+    assert descriptor["note"] == expected_note
+    assert descriptor["fragment"].startswith('<pre class="raw-pre">')
