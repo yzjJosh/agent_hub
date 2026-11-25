@@ -11,6 +11,7 @@ import pytest
 
 import app.lib.render.cache as cache
 import app.lib.render.office as office
+import app.lib.render.thumbs as thumbs
 from app.lib.render.classify import RenderKind
 from app.lib.shared import activity
 from tests.app.console.conftest import console_env
@@ -193,11 +194,17 @@ async def test_office_fresh_starts_conversion(view_api: tuple[httpx.AsyncClient,
 
 async def test_retry_cached_key_deletes_entry_and_converts(view_api: tuple[httpx.AsyncClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     c, resources = view_api
+    queued: list[tuple[str, RenderKind, str]] = []
 
     async def fake_start(_path: str, _key: str, _full_path: str) -> None:
         return None
 
+    def record_thumb(thumb_key: str, kind: RenderKind, path: str) -> bool:
+        queued.append((thumb_key, kind, path))
+        return True
+
     monkeypatch.setattr(office, "start_office_conversion", fake_start)
+    monkeypatch.setattr(thumbs, "start_thumbnail_job", record_thumb)
     rel = _write(resources, "upload/cached.docx", "PK\x03\x04 fake")
     st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
@@ -207,6 +214,7 @@ async def test_retry_cached_key_deletes_entry_and_converts(view_api: tuple[httpx
     d = r.json()
     assert d["mode"] == "converting"
     assert "task_id" not in d
+    assert queued == [(key, RenderKind.OFFICE_DOC, rel)]
     assert await cache.read_doc(key) is None  # the entry was deleted
 
 
@@ -253,11 +261,17 @@ async def test_retry_in_flight_joins_and_keeps_entry(view_api: tuple[httpx.Async
                                                      monkeypatch: pytest.MonkeyPatch) -> None:
     """A retry while a conversion is running joins it and keeps the saved entry."""
     c, resources = view_api
+    queued: list[tuple[str, RenderKind, str]] = []
 
     async def running(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(office, "_conversion", running)
+    def record_thumb(thumb_key: str, kind: RenderKind, path: str) -> bool:
+        queued.append((thumb_key, kind, path))
+        return True
+
+    monkeypatch.setattr(office, "_convert_office_file", running)
+    monkeypatch.setattr(thumbs, "start_thumbnail_job", record_thumb)
     rel = _write(resources, "upload/busy.docx", "PK\x03\x04 fake")
     st = (resources / rel).stat()
     key = cache.key_for(rel, int(st.st_mtime))
@@ -267,6 +281,7 @@ async def test_retry_in_flight_joins_and_keeps_entry(view_api: tuple[httpx.Async
     assert r.status_code == 200
     assert r.json()["mode"] == "converting"
     assert "task_id" not in r.json()
+    assert queued == []
     assert await cache.read_doc(key) == ("<div class='md-doc'>y</div>", {"mode": "doc"})  # the saved entry stays
 
 

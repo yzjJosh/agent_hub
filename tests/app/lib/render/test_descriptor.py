@@ -177,7 +177,7 @@ async def test_build_descriptor_office_live_conversion_is_converting(
     async def running(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(office, "_conversion", running)
+    monkeypatch.setattr(office, "_convert_office_file", running)
     d = await build_descriptor(rel, os.path.join(str(_resources), rel))
     assert d["mode"] == "converting"
     assert "task_id" not in d

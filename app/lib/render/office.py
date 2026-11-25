@@ -1,14 +1,11 @@
-"""Turns Office files into pages the viewer can show.
-
-Only one conversion runs at a time for the same file.
-"""
+"""Convert Office files into HTML pages and PDF previews for the viewer."""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import datetime
-import html as _html
-import importlib
+import html
 import os
 import re
 import shutil
@@ -27,387 +24,309 @@ __all__ = [
     "start_office_conversion",
 ]
 
-_TIMEOUT = 90.0
-_SCRATCH_NAME = "render"
-# Office kinds that must be converted before a thumbnail can be taken.
+_CONVERSION_TIMEOUT_SECONDS = 90.0
+_SCRATCH_FOLDER_NAME = "render"
+_MAX_CONCURRENT_CONVERSIONS = 2
+_MAX_ERROR_LENGTH = 200
+_TASK_NAME_KEY_PREFIX_LENGTH = 8
+_SCRATCH_ID_BYTES = 4
 _OFFICE_KINDS = frozenset(
     {RenderKind.OFFICE_DOC, RenderKind.OFFICE_PPT, RenderKind.XLSX, RenderKind.XLS}
 )
-# Files with a conversion running right now, keyed by the saved name.
-_CONVERSIONS: dict[str, _Conversion] = {}
-# A gate per file that a caller has claimed but not registered yet.
-_GATES: dict[str, asyncio.Event] = {}
-_sem: asyncio.Semaphore | None = None
-_sem_loop: asyncio.AbstractEventLoop | None = None
+_REMOVED_HTML_TAGS = ("script", "object", "embed", "iframe", "head", "style", "link")
+_ABSOLUTE_URL_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*:")
+_LEADING_CONTROL_OR_SPACE_PATTERN = re.compile(r"^[\x00-\x20]+")
+_ALLOWED_URL_SCHEMES = ("http", "https", "mailto", "ftp")
+_URL_ATTRIBUTES = ("href", "src", "xlink:href")
 
 
-class _ConversionTimeout(Exception):
-    """The conversion took too long."""
+@dataclass(frozen=True)
+class _PreparedDocument:
+    fragment_html: str | None
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class _LibreOfficeOutput:
+    html: str
+    assets: dict[str, bytes]
+
+
+@dataclass(frozen=True)
+class _SpreadsheetFragment:
+    html: str
+    row_count: int
+    column_count: int | None
+
+
+@dataclass(frozen=True)
+class _ConvertedSpreadsheet:
+    html: str
+    metadata: dict
+
+
+class _ConversionTimeoutError(Exception):
+    """Raised when an Office conversion exceeds its time limit."""
 
 
 class _ConversionError(Exception):
-    """The conversion failed."""
+    """Raised when an Office conversion fails."""
 
 
-def _semaphore() -> asyncio.Semaphore:
-    """Get the guard that lets only two conversions run at once.
+class _ActiveConversion:
+    """Running conversion task and completion event for one cache key."""
 
-    Returns:
-        The guard.
-    """
-    global _sem, _sem_loop
-    loop = asyncio.get_running_loop()
-    if _sem is None or _sem_loop is not loop:
-        _sem = asyncio.Semaphore(2)
-        _sem_loop = loop
-    return _sem
-
-
-class _Conversion:
-    """One file's running conversion and the signal that it is done."""
-
-    def __init__(self, key: str, task: asyncio.Task) -> None:
+    def __init__(self, key: str, task: asyncio.Task[None]) -> None:
         self.key = key
         self.task = task
         self.done = asyncio.Event()
         task.add_done_callback(self._on_done)
 
-    def _on_done(self, _task: asyncio.Task) -> None:
+    def _on_done(self, _task: asyncio.Task[None]) -> None:
         self.done.set()
-        # The entry is dropped when it still points at this conversion.
-        if _CONVERSIONS.get(self.key) is self:
-            _CONVERSIONS.pop(self.key, None)
+        if _ACTIVE_CONVERSIONS.get(self.key) is self:
+            _ACTIVE_CONVERSIONS.pop(self.key, None)
 
 
-def _live_conversion(key: str) -> _Conversion | None:
-    """Find the conversion still running for a file.
+_ACTIVE_CONVERSIONS: dict[str, _ActiveConversion] = {}
+_PENDING_REGISTRATIONS: dict[str, asyncio.Event] = {}
+_conversion_semaphore: asyncio.Semaphore | None = None
+_conversion_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
-    Args:
-        key: The name the file is saved under.
 
-    Returns:
-        The running conversion, or None when there is none.
-    """
-    entry: _Conversion | None = _CONVERSIONS.get(key)
-    if entry is None or entry.task.done():
-        _CONVERSIONS.pop(key, None)
+def _get_conversion_semaphore() -> asyncio.Semaphore:
+    global _conversion_semaphore, _conversion_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _conversion_semaphore is None or _conversion_semaphore_loop is not loop:
+        _conversion_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CONVERSIONS)
+        _conversion_semaphore_loop = loop
+    return _conversion_semaphore
+
+
+def _get_active_conversion(key: str) -> _ActiveConversion | None:
+    active_conversion: _ActiveConversion | None = _ACTIVE_CONVERSIONS.get(key)
+    if active_conversion is None or active_conversion.task.done():
+        _ACTIVE_CONVERSIONS.pop(key, None)
         return None
-    return entry
+    return active_conversion
 
 
-async def start_office_conversion(path: str, key: str, full_path: str,
-                                  timeout: float = _TIMEOUT) -> None:
-    """Start converting a file, or join the conversion already going.
-
-    Returns as soon as a conversion is in progress for the file, without
-    waiting for it to finish.
+async def start_office_conversion(
+    path: str,
+    key: str,
+    full_path: str,
+    timeout: float = _CONVERSION_TIMEOUT_SECONDS,
+) -> None:
+    """Start converting an Office file, or join the conversion already running.
 
     Args:
-        path: A path inside the resources folder.
-        key: The name the file is saved under.
-        full_path: Where the file is on disk.
-        timeout: How long the conversion may run before it fails.
+        path: Resource-relative path to the file.
+        key: Cache key for the file.
+        full_path: Absolute path to the file on disk.
+        timeout: Maximum seconds the conversion may run before failing.
     """
-    # This decision has no await in it, so no two callers can claim the file.
-    handle = _live_conversion(key)
-    if handle is not None:
-        return  # A conversion is in progress, so this one joins it.
-    gate = _GATES.get(key)
-    if gate is None:
-        _GATES[key] = asyncio.Event()
-        await _claim(key, path, full_path, _GATES[key], timeout, hold=True)
+    if _get_active_conversion(key) is not None:
         return
-    await _wait_on_gate(key, path, full_path, gate, timeout)
+    registration_event = _PENDING_REGISTRATIONS.get(key)
+    if registration_event is None:
+        registration_event = asyncio.Event()
+        _PENDING_REGISTRATIONS[key] = registration_event
+        await _register_conversion(key, path, full_path, timeout, registration_event)
+        return
+    await _wait_for_registration(key, path, full_path, registration_event, timeout)
 
 
-async def _claim(key: str, path: str, full_path: str, gate: asyncio.Event | None, timeout: float,
-                 hold: bool) -> None:
-    """Classify a file, then spawn and register its conversion if still free.
-
-    When hold is set the caller owns a gate that waiters sleep on. The gate is
-    removed and signalled whether or not a conversion is registered. A claim
-    that finds a conversion already running registers nothing.
-
-    Args:
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        gate: The gate the waiters for this file sleep on, or None for a gateless claim.
-        timeout: How long the conversion may run before it fails.
-        hold: Whether this claim owns a gate that must be released on exit.
-    """
+async def _register_conversion(
+    key: str,
+    path: str,
+    full_path: str,
+    timeout: float,
+    registration_event: asyncio.Event | None = None,
+) -> None:
     try:
         kind = await classify(full_path)
-        if _live_conversion(key) is not None:
-            return  # A conversion is in progress, so this one registers nothing.
+        if _get_active_conversion(key) is not None:
+            return
         loop = asyncio.get_running_loop()
         task = loop.create_task(
-            _run_conversion(key, path, full_path, kind, timeout), name=f"office-{key[:8]}"
+            _run_conversion_task(key, path, full_path, kind, timeout),
+            name=f"office-{key[:_TASK_NAME_KEY_PREFIX_LENGTH]}",
         )
-        _CONVERSIONS[key] = _Conversion(key, task)
-        await asyncio.sleep(0)  # let the spawned conversion get going before we return
+        _ACTIVE_CONVERSIONS[key] = _ActiveConversion(key, task)
+        await asyncio.sleep(0)
     finally:
-        if hold and gate is not None:
-            _GATES.pop(key, None)
-            gate.set()
+        if registration_event is not None:
+            _PENDING_REGISTRATIONS.pop(key, None)
+            registration_event.set()
 
 
-async def _wait_on_gate(key: str, path: str, full_path: str, gate: asyncio.Event, timeout: float) -> None:
-    """Wait for the current claim to register or give up, then decide again.
-
-    A join of a live conversion, a takeover of a given-up claim, or a wait on
-    a newer gate all end the wait. The wait is bounded by the conversion
-    timeout, and a waiter that times out gives up without taking over.
-
-    Args:
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        gate: The gate this caller first found waiting on.
-        timeout: How long the conversion may run before it fails.
-
-    Raises:
-        _ConversionError: If the registration wait takes too long.
-    """
+async def _wait_for_registration(
+    key: str,
+    path: str,
+    full_path: str,
+    registration_event: asyncio.Event,
+    timeout: float,
+) -> None:
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + _TIMEOUT
+    deadline = loop.time() + _CONVERSION_TIMEOUT_SECONDS
     while True:
-        # Re-run the same await-free decision the start makes on every wake.
-        handle = _live_conversion(key)
-        if handle is not None:
-            return  # join the running conversion and stop here
-        current = _GATES.get(key)
-        if current is None:
-            # The claim gave up without registering, so take the file over.
-            # The claim runs gateless, so a waiter woken onto the same gap takes
-            # over too, and the two register at most one conversion.
-            await _claim(key, path, full_path, None, timeout, hold=False)
+        if _get_active_conversion(key) is not None:
+            return
+        current_registration = _PENDING_REGISTRATIONS.get(key)
+        if current_registration is None:
+            await _register_conversion(key, path, full_path, timeout)
             return
         try:
-            await asyncio.wait_for(gate.wait(), deadline - loop.time())
+            await asyncio.wait_for(registration_event.wait(), deadline - loop.time())
         except asyncio.TimeoutError:
             raise _ConversionError("Conversion registration did not complete in time") from None
-        if current is not gate:
-            gate = current
+        if current_registration is not registration_event:
+            registration_event = current_registration
 
 
-async def retry_office_conversion(path: str, key: str, full_path: str) -> None:
-    """Convert a file again from the start.
-
-    The saved page, the failure marks, and the thumbnail are all thrown away
-    first. A conversion already going is joined instead.
+async def retry_office_conversion(path: str, key: str, full_path: str) -> bool:
+    """Clear cached state and start a fresh conversion for an Office file.
 
     Args:
-        path: A path inside the resources folder.
-        key: The name the file is saved under.
-        full_path: Where the file is on disk.
+        path: Resource-relative path to the file.
+        key: Cache key for the file.
+        full_path: Absolute path to the file on disk.
+
+    Returns:
+        True when a fresh conversion started, or False when an active conversion was joined.
     """
-    if _live_conversion(key) is not None:
-        return  # the running conversion is joined, nothing is deleted
-    await _clear_key_state(key)
-    thumbs = importlib.import_module("app.lib.render.thumbs")
-    kind = await classify(full_path)
-    thumbs.start_thumbnail_job(key, kind, path)
+    if _get_active_conversion(key) is not None:
+        return False
+    await _delete_cached_conversion_state(key)
     await start_office_conversion(path, key, full_path)
+    return True
 
 
-async def _clear_key_state(key: str) -> None:
+async def _delete_cached_conversion_state(key: str) -> None:
     await asyncio.to_thread(shutil.rmtree, os.path.join(cache.render_root(), key), ignore_errors=True)
-    for kind in ("convert", "thumb"):
-        await cache.clear_failed(key, kind)
+    await cache.clear_failed(key, "convert")
+    await cache.clear_failed(key, "thumb")
 
 
 async def ensure_doc_for_thumb(kind: RenderKind, key: str, path: str, full_path: str) -> str:
-    """Make sure a file has a saved page a thumbnail can be taken from.
+    """Ensure a file has a cached HTML document ready for thumbnail capture.
 
     Args:
-        kind: What sort of file this is.
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
+        kind: Classified kind of the file.
+        key: Cache key for the file.
+        path: Resource-relative path to the file.
+        full_path: Absolute path to the file on disk.
 
     Returns:
-        published when the page is ready, failed when it is not.
+        published when the cached document is ready, or failed when it is not.
     """
     if kind in _OFFICE_KINDS:
-        return await _ensure_office(key, path, full_path)
-    return await _ensure_doc_kind(kind, key, path, full_path)
+        return await _ensure_office_document(key, path, full_path)
+    return await _ensure_text_document(kind, key, path, full_path)
 
 
-async def _ensure_office(key: str, path: str, full_path: str) -> str:
-    """Make sure an Office file has a saved page.
-
-    A file already marked as failed is not tried again. A file that is still
-    converting is waited out here, the one place in the system that does.
-
-    Args:
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-
-    Returns:
-        published when the page is ready, failed when it is not.
-    """
+async def _ensure_office_document(key: str, path: str, full_path: str) -> str:
     if await cache.read_doc(key) is not None:
         return "published"
-    handle = _live_conversion(key)
-    if handle is not None:
-        await handle.done.wait()
+    active_conversion = _get_active_conversion(key)
+    if active_conversion is not None:
+        await active_conversion.done.wait()
         return "published" if await cache.read_doc(key) is not None else "failed"
     if await cache.convert_failed_reason(key) is not None:
         return "failed"
     await start_office_conversion(path, key, full_path)
-    handle = _live_conversion(key)
-    if handle is not None:
-        await handle.done.wait()
+    active_conversion = _get_active_conversion(key)
+    if active_conversion is not None:
+        await active_conversion.done.wait()
     return "published" if await cache.read_doc(key) is not None else "failed"
 
 
-async def _ensure_doc_kind(kind: RenderKind, key: str, path: str, full_path: str) -> str:
-    """Make sure a document file has a saved page.
-
-    No failure mark is left behind when the page cannot be made.
-
-    Args:
-        kind: What sort of file this is.
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-
-    Returns:
-        published when the page is ready, failed when it is not.
-    """
+async def _ensure_text_document(kind: RenderKind, key: str, path: str, full_path: str) -> str:
     if await cache.read_doc(key) is not None:
         return "published"
     try:
-        fragment, meta = await _doc_fragment_for_key(kind, path, full_path)
+        prepared = await _build_document_fragment(kind, path, full_path)
     except OSError:
         return "failed"
-    # A file that does not read as text is saved with an empty page.
-    await cache.write_doc(key, fragment or "", None, meta)
+    await cache.write_doc(key, prepared.fragment_html or "", None, prepared.metadata)
     return "published"
 
 
-async def _doc_fragment_for_key(kind: RenderKind, path: str, full_path: str) -> tuple[str | None, dict]:
-    """Build the page and the saved facts for a document file.
-
-    Args:
-        kind: What sort of file this is.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-
-    Returns:
-        The page to save, or None, plus the facts to save with it.
-    """
+async def _build_document_fragment(kind: RenderKind, path: str, full_path: str) -> _PreparedDocument:
     if kind is RenderKind.HTML:
-        return (
-            f'<iframe class="html-frame" src="{paths.ephemeral_dav_url(path)}" sandbox="allow-same-origin"></iframe>',
-            {"path": path, "kind": kind.value, "mode": "frame"},
+        frame_html = (
+            f'<iframe class="html-frame" src="{paths.ephemeral_dav_url(path)}"'
+            ' sandbox="allow-same-origin"></iframe>'
         )
-    stat = await asyncio.to_thread(os.stat, full_path)
-    size = stat.st_size
-    fragment, extras = await build_fragment(kind, full_path, size)
-    # The descriptor code saves this same entry.
-    meta = text_meta(kind, path, int(stat.st_mtime), size, extras)
-    return fragment, meta
+        return _PreparedDocument(
+            fragment_html=frame_html,
+            metadata={"path": path, "kind": kind.value, "mode": "frame"},
+        )
+    file_stat = await asyncio.to_thread(os.stat, full_path)
+    file_size = file_stat.st_size
+    fragment_html, extras = await build_fragment(kind, full_path, file_size)
+    metadata = text_meta(kind, path, int(file_stat.st_mtime), file_size, extras)
+    return _PreparedDocument(fragment_html=fragment_html, metadata=metadata)
 
 
-def _bounded_reason(exc: BaseException) -> str:
-    """Turn a failure into a short message people can read.
-
-    Args:
-        exc: What went wrong.
-
-    Returns:
-        A short message, no longer than 200 letters.
-    """
-    if isinstance(exc, _ConversionTimeout):
-        return "Conversion timed out after 90 s"
-    return (str(exc) or "conversion failed")[:200]
+def _format_failure_reason(error: BaseException) -> str:
+    if isinstance(error, _ConversionTimeoutError):
+        return f"Conversion timed out after {int(_CONVERSION_TIMEOUT_SECONDS)} s"
+    return (str(error) or "conversion failed")[:_MAX_ERROR_LENGTH]
 
 
-async def _run_conversion(key: str, path: str, full_path: str, kind: RenderKind, timeout: float) -> None:
-    """Run one conversion, and mark it if it fails.
-
-    A failure writes its mark and is not re-raised. A cancellation writes no
-    mark and is re-raised.
-
-    Args:
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        kind: What sort of file this is.
-        timeout: How long the conversion may run before it fails.
-    """
-    try:
-        await _conversion(key, path, full_path, kind, timeout)
-    except asyncio.CancelledError:
-        # No mark is written. The next call starts a fresh conversion.
-        raise
-    except Exception as exc:
-        await cache.mark_failed(key, "convert", _bounded_reason(exc))
-
-
-async def _conversion(
-    key: str, path: str, full_path: str, kind: RenderKind, timeout: float,
+async def _run_conversion_task(
+    key: str, path: str, full_path: str, kind: RenderKind, timeout: float
 ) -> None:
-    """Convert one file and save the page it makes.
+    try:
+        await _convert_office_file(key, path, full_path, kind, timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await cache.mark_failed(key, "convert", _format_failure_reason(error))
 
-    The page is written before the coroutine returns, so a finished
-    conversion is always readable.
 
-    Args:
-        key: The name the file is saved under.
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        kind: What sort of file this is.
-        timeout: How long the conversion may run before it fails.
-    """
-    async with _semaphore():
+async def _convert_office_file(
+    key: str, path: str, full_path: str, kind: RenderKind, timeout: float
+) -> None:
+    async with _get_conversion_semaphore():
         if kind in (RenderKind.XLSX, RenderKind.XLS):
             try:
-                doc, assets, meta = await asyncio.wait_for(
-                    _sheet_tables(path, full_path, kind), timeout
+                converted = await asyncio.wait_for(
+                    _convert_spreadsheet(path, full_path, kind), timeout
                 )
             except asyncio.TimeoutError:
-                # The read cannot be stopped, so stop waiting for it.
-                raise _ConversionError("Sheet read failed: timed out after 90 s") from None
-        elif kind is RenderKind.OFFICE_PPT:
-            doc, assets = await _soffice_convert(full_path, timeout, "pdf")
-            meta = await asyncio.to_thread(_office_meta, path, full_path, kind, "soffice-pdf")
-            meta.update({"mode": "frame", "row_count": None, "column_count": None})
-        else:
-            html, assets = await _soffice_convert(full_path, timeout)
-            doc = await _reduce_office_html(html, key, assets)
-            meta = await asyncio.to_thread(_office_meta, path, full_path, kind, "soffice-html")
-            meta.update({"row_count": None, "column_count": None})
-        await cache.write_doc(key, doc, assets, meta)
+                raise _ConversionError(
+                    f"Sheet read failed: timed out after {int(_CONVERSION_TIMEOUT_SECONDS)} s"
+                ) from None
+            await cache.write_doc(key, converted.html, None, converted.metadata)
+            return
+        if kind is RenderKind.OFFICE_PPT:
+            output = await _convert_with_libreoffice(full_path, timeout, "pdf")
+            metadata = await _build_office_metadata(path, full_path, kind, "soffice-pdf")
+            metadata.update({"mode": "frame", "row_count": None, "column_count": None})
+            await cache.write_doc(key, output.html, output.assets, metadata)
+            return
+        output = await _convert_with_libreoffice(full_path, timeout)
+        sanitized_html = await _sanitize_office_html(output.html, key, output.assets)
+        metadata = await _build_office_metadata(path, full_path, kind, "soffice-html")
+        metadata.update({"row_count": None, "column_count": None})
+        await cache.write_doc(key, sanitized_html, output.assets, metadata)
 
 
-def _office_meta(path: str, full_path: str, kind: RenderKind, engine: str) -> dict:
-    """Collect the facts saved with a converted Office file.
-
-    Args:
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        kind: What sort of file this is.
-        engine: What made the page.
-
-    Returns:
-        The facts to save.
-    """
-    st = os.stat(full_path)
-    ext = os.path.splitext(full_path)[1]
+async def _build_office_metadata(path: str, full_path: str, kind: RenderKind, engine: str) -> dict:
+    file_stat = await asyncio.to_thread(os.stat, full_path)
+    extension = os.path.splitext(full_path)[1]
     is_sheet = engine == "sheet-reader"
     provenance = (
-        f"Rendered from {ext} with the built-in sheet reader"
+        f"Rendered from {extension} with the built-in sheet reader"
         if is_sheet
-        else f"Converted from {ext} with LibreOffice"
+        else f"Converted from {extension} with LibreOffice"
     )
     return {
         "path": path,
-        "mtime": int(st.st_mtime),
-        "size": st.st_size,
+        "mtime": int(file_stat.st_mtime),
+        "size": file_stat.st_size,
         "kind": kind.value,
         "engine": engine,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -418,214 +337,156 @@ def _office_meta(path: str, full_path: str, kind: RenderKind, engine: str) -> di
     }
 
 
-def _collect_output(out_dir: str, stem: str, target: str) -> tuple[str, dict[str, bytes]]:
-    """Gather what a conversion wrote out.
-
-    Args:
-        out_dir: The folder the conversion wrote to.
-        stem: The file name without its ending.
-        target: The output format.
-
-    Returns:
-        The main page and every other file next to it.
-    """
+def _read_libreoffice_output(output_folder: str, stem: str, target: str) -> _LibreOfficeOutput:
     if target == "pdf":
-        with open(os.path.join(out_dir, f"{stem}.pdf"), "rb") as fh:
-            return "", {cache.OFFICE_PDF_ASSET: fh.read()}
-    main_html = os.path.join(out_dir, f"{stem}.html")
-    with open(main_html, "r", encoding="utf-8") as fh:
-        html = fh.read()
+        with open(os.path.join(output_folder, f"{stem}.pdf"), "rb") as file_handle:
+            return _LibreOfficeOutput(html="", assets={cache.OFFICE_PDF_ASSET: file_handle.read()})
+    main_html_path = os.path.join(output_folder, f"{stem}.html")
+    with open(main_html_path, "r", encoding="utf-8") as file_handle:
+        html_text = file_handle.read()
     assets: dict[str, bytes] = {}
-    for name in sorted(os.listdir(out_dir)):
-        if name in (stem + ".html", "profile"):
+    for filename in sorted(os.listdir(output_folder)):
+        if filename in (f"{stem}.html", "profile"):
             continue
-        full = os.path.join(out_dir, name)
-        if os.path.isfile(full):
-            with open(full, "rb") as fh:
-                assets[name] = fh.read()
-    return html, assets
+        asset_path = os.path.join(output_folder, filename)
+        if os.path.isfile(asset_path):
+            with open(asset_path, "rb") as file_handle:
+                assets[filename] = file_handle.read()
+    return _LibreOfficeOutput(html=html_text, assets=assets)
 
 
-async def _soffice_convert(full_path: str, timeout: float, target: str = "html") -> tuple[str, dict[str, bytes]]:
-    """Turn an Office file into a saved preview.
-
-    The helper program is stopped if it takes too long or the job is cancelled.
-
-    Args:
-        full_path: Where the file is on disk.
-        timeout: How long the helper may run before the conversion fails.
-        target: The output format.
-
-    Returns:
-        The page and every other file made with it.
-
-    Raises:
-        _ConversionTimeout: If the helper program takes too long.
-        _ConversionError: If the helper program makes no page.
-    """
-    out_dir = os.path.join(paths.scratch_dir(_SCRATCH_NAME), f"render_{os.urandom(4).hex()}")
+async def _convert_with_libreoffice(
+    full_path: str, timeout: float, target: str = "html"
+) -> _LibreOfficeOutput:
+    output_folder = os.path.join(
+        paths.scratch_dir(_SCRATCH_FOLDER_NAME),
+        f"render_{os.urandom(_SCRATCH_ID_BYTES).hex()}",
+    )
     stem = os.path.splitext(os.path.basename(full_path))[0]
-    main_output = os.path.join(out_dir, f"{stem}.{target}")
-    await asyncio.to_thread(os.makedirs, out_dir, exist_ok=True)
-    proc = await asyncio.create_subprocess_exec(
-        *soffice_cmd(out_dir, target, full_path),
+    main_output_path = os.path.join(output_folder, f"{stem}.{target}")
+    await asyncio.to_thread(os.makedirs, output_folder, exist_ok=True)
+    process = await asyncio.create_subprocess_exec(
+        *soffice_cmd(output_folder, target, full_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         try:
-            _out, err = await asyncio.wait_for(proc.communicate(), timeout)
+            _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise _ConversionTimeout("soffice timed out") from None
+            process.kill()
+            await process.wait()
+            raise _ConversionTimeoutError("soffice timed out") from None
         except asyncio.CancelledError:
-            proc.kill()
+            process.kill()
             try:
-                await proc.wait()
+                await process.wait()
             finally:
                 raise
-        stderr_tail = err.decode("utf-8", "replace").strip()[-200:]
-        if proc.returncode != 0 or not await asyncio.to_thread(os.path.exists, main_output):
-            raise _ConversionError(f"LibreOffice failed: {stderr_tail or 'no output file produced'}")
-        return await asyncio.to_thread(_collect_output, out_dir, stem, target)
+        stderr_tail = stderr.decode("utf-8", "replace").strip()[-_MAX_ERROR_LENGTH:]
+        if process.returncode != 0 or not await asyncio.to_thread(os.path.exists, main_output_path):
+            raise _ConversionError(
+                f"LibreOffice failed: {stderr_tail or 'no output file produced'}"
+            )
+        return await asyncio.to_thread(_read_libreoffice_output, output_folder, stem, target)
     finally:
-        await asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, output_folder, ignore_errors=True)
 
 
-async def _sheet_tables(path: str, full_path: str, kind: RenderKind) -> tuple[str, dict[str, bytes] | None, dict]:
-    """Turn a spreadsheet into tables.
-
-    Args:
-        path: A path inside the resources folder.
-        full_path: Where the file is on disk.
-        kind: What sort of spreadsheet this is.
-
-    Returns:
-        The page, no extra files, and the facts to save.
-
-    Raises:
-        _ConversionError: If the spreadsheet cannot be read.
-    """
+async def _convert_spreadsheet(
+    path: str, full_path: str, kind: RenderKind
+) -> _ConvertedSpreadsheet:
     try:
-        if kind is RenderKind.XLSX:
-            sheets = await xlsx_sheets(full_path)
-        else:
-            sheets = await xls_sheets(full_path)
-        fragment, counts = await _sheets_fragment(sheets)
-    except Exception as exc:
-        raise _ConversionError(f"Sheet read failed: {exc}") from exc
-    meta = await asyncio.to_thread(_office_meta, path, full_path, kind, "sheet-reader")
-    meta.update(counts)
-    return fragment, None, meta
+        sheets = await xlsx_sheets(full_path) if kind is RenderKind.XLSX else await xls_sheets(full_path)
+        fragment = await _build_spreadsheet_fragment(sheets)
+    except Exception as error:
+        raise _ConversionError(f"Sheet read failed: {error}") from error
+    metadata = await _build_office_metadata(path, full_path, kind, "sheet-reader")
+    metadata.update({"row_count": fragment.row_count, "column_count": fragment.column_count})
+    return _ConvertedSpreadsheet(html=fragment.html, metadata=metadata)
 
 
-def _cell(value: SheetCell | None) -> str:
-    return "" if value is None else str(value)
+def _format_cell_value(cell_value: SheetCell | None) -> str:
+    return "" if cell_value is None else str(cell_value)
 
 
-def _sheets_fragment_sync(sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]) -> tuple[str, dict]:
+def _build_spreadsheet_fragment_sync(
+    sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]
+) -> _SpreadsheetFragment:
     sections: list[str] = []
     total_rows = 0
-    first_cols: int | None = None
+    first_column_count: int | None = None
     for title, rows in sheets:
-        rows = [row for row in rows if any(v is not None for v in row)]
-        if not rows:
+        non_empty_rows = [row for row in rows if any(cell_value is not None for cell_value in row)]
+        if not non_empty_rows:
             continue
-        if first_cols is None:
-            first_cols = len(rows[0])
-        header, data = rows[0], rows[1:]
-        total_rows += len(data)
-        table = table_html([_cell(c) for c in header], [[_cell(c) for c in row] for row in data])
-        sections.append(f'<section class="sheet"><h3 class="sheet-title">{_html.escape(title)}</h3>{table}</section>')
+        if first_column_count is None:
+            first_column_count = len(non_empty_rows[0])
+        header_row, data_rows = non_empty_rows[0], non_empty_rows[1:]
+        total_rows += len(data_rows)
+        table = table_html(
+            [_format_cell_value(cell) for cell in header_row],
+            [[_format_cell_value(cell) for cell in row] for row in data_rows],
+        )
+        sections.append(
+            f'<section class="sheet"><h3 class="sheet-title">{html.escape(title)}</h3>{table}</section>'
+        )
     if not sections:
         raise _ConversionError("Sheet read failed: workbook has no rows")
-    return "".join(sections), {"row_count": total_rows, "column_count": first_cols}
+    return _SpreadsheetFragment(
+        html="".join(sections),
+        row_count=total_rows,
+        column_count=first_column_count,
+    )
 
 
-async def _sheets_fragment(sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]) -> tuple[str, dict]:
-    """Build the HTML for every sheet of a spreadsheet.
-
-    The first row of a sheet is its header. Empty sheets are left out.
-
-    Args:
-        sheets: The name and rows of each sheet.
-
-    Returns:
-        The HTML and how many rows and columns it holds.
-
-    Raises:
-        _ConversionError: If no sheet has any rows.
-    """
-    return await asyncio.to_thread(_sheets_fragment_sync, sheets)
+async def _build_spreadsheet_fragment(
+    sheets: list[tuple[str, list[tuple[SheetCell | None, ...]]]]
+) -> _SpreadsheetFragment:
+    return await asyncio.to_thread(_build_spreadsheet_fragment_sync, sheets)
 
 
-_ABS_URL = re.compile(r"^[a-z][a-z0-9+.-]*:")
-# The only link types kept in a saved page. Every other one is dropped.
-_ALLOWED_URL_SCHEMES = ("http", "https", "mailto", "ftp")
-_URL_ATTRS = ("href", "src", "xlink:href")
-
-
-def _url_scheme_allowed(value: str) -> bool:
-    """Check that a link is safe to keep.
-
-    Links with no type of their own are always fine. A link that names its
-    type must name one of the allowed ones.
-
-    Args:
-        value: The link to check.
-
-    Returns:
-        True when the link is safe to keep.
-    """
-    cleaned = re.sub(r"^[\x00-\x20]+", "", value)
+def _is_allowed_url_scheme(url_value: str) -> bool:
+    cleaned = _LEADING_CONTROL_OR_SPACE_PATTERN.sub("", url_value)
     if cleaned.startswith(("//", "/")):
         return True
-    head, sep, _rest = cleaned.partition(":")
-    return not sep or head.lower() in _ALLOWED_URL_SCHEMES
+    scheme, separator, _rest = cleaned.partition(":")
+    return not separator or scheme.lower() in _ALLOWED_URL_SCHEMES
 
 
-def _reduce_office_html_sync(html_text: str, key: str, assets: dict[str, bytes]) -> str:
+def _sanitize_office_html_sync(html_text: str, key: str, assets: dict[str, bytes]) -> str:
     soup = BeautifulSoup(html_text, "html.parser")
-    for tag in soup.find_all(["script", "object", "embed", "iframe"]):
-        tag.decompose()
-    head = soup.find("head")
-    if head is not None:
-        head.decompose()
-    for tag in soup.find_all(["style", "link"]):
-        tag.decompose()
+    for tag in soup.find_all(_REMOVED_HTML_TAGS):
+        if tag.parent is not None:
+            tag.decompose()
     for tag in soup.find_all(True):
         if tag.has_attr("style"):
             del tag["style"]
-        for attr in list(tag.attrs):
-            value = tag.attrs[attr]
-            if attr.lower().startswith("on") or (
-                attr in _URL_ATTRS and isinstance(value, str) and not _url_scheme_allowed(value)
-            ):
-                del tag[attr]
-    for tag in soup.find_all("img"):
-        src = tag.get("src")
-        if src and not _ABS_URL.match(src) and not src.startswith(("//", "/")):
-            name = os.path.basename(src.split("?")[0])
-            if name in assets:
-                tag["src"] = f"/view/doc/{key}/{name}"
+        for attribute_name in list(tag.attrs):
+            attribute_value = tag.attrs[attribute_name]
+            is_event_handler = attribute_name.lower().startswith("on")
+            is_unsafe_url = (
+                attribute_name in _URL_ATTRIBUTES
+                and isinstance(attribute_value, str)
+                and not _is_allowed_url_scheme(attribute_value)
+            )
+            if is_event_handler or is_unsafe_url:
+                del tag[attribute_name]
+    for image_tag in soup.find_all("img"):
+        source = image_tag.get("src")
+        if (
+            isinstance(source, str)
+            and source
+            and not _ABSOLUTE_URL_PATTERN.match(source)
+            and not source.startswith(("//", "/"))
+        ):
+            asset_name = os.path.basename(source.split("?")[0])
+            if asset_name in assets:
+                image_tag["src"] = f"/view/doc/{key}/{asset_name}"
     body = soup.body
     content = body.decode_contents() if body is not None else soup.decode_contents()
     return f'<div class="md-doc">{content}</div>'
 
 
-async def _reduce_office_html(html_text: str, key: str, assets: dict[str, bytes]) -> str:
-    """Clean up converted HTML so it is safe to show.
-
-    Anything that can run code or load its own styles is taken out. Links to
-    the file's own images are pointed at the saved copies.
-
-    Args:
-        html_text: The HTML the conversion made.
-        key: The name the file is saved under.
-        assets: The other files made with the page.
-
-    Returns:
-        The cleaned up HTML.
-    """
-    return await asyncio.to_thread(_reduce_office_html_sync, html_text, key, assets)
+async def _sanitize_office_html(html_text: str, key: str, assets: dict[str, bytes]) -> str:
+    return await asyncio.to_thread(_sanitize_office_html_sync, html_text, key, assets)

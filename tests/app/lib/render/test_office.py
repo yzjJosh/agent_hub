@@ -5,6 +5,7 @@ import os
 import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import override
 
 import pytest
@@ -17,6 +18,7 @@ FIX = Path(__file__).parent / "fixtures" / "office"
 
 _DOC_KEY = "k" * 64
 _SETTLE_SHORT = 0.05
+_DEFAULT_TIMEOUT = 90.0
 _FAST_TIMEOUT = 0.1
 _WAIT_LIMIT_S = 5
 
@@ -41,7 +43,15 @@ async def _await_outcome(key: str) -> None:
     raise AssertionError("conversion did not reach a durable outcome")
 
 
-async def _convert(key: str, path: str, full_path: str, timeout: float = 90.0) -> None:
+async def _read_cached_doc(key: str) -> tuple[str, dict]:
+    """Read a cached doc or fail the test when missing."""
+    cached = await cache_module.read_doc(key)
+    if cached is None:
+        raise AssertionError(f"expected cached doc for {key}")
+    return cached
+
+
+async def _convert(key: str, path: str, full_path: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
     """Start a conversion and wait for its durable outcome."""
     await office.start_office_conversion(path, key, full_path, timeout=timeout)
     await _await_outcome(key)
@@ -50,14 +60,14 @@ async def _convert(key: str, path: str, full_path: str, timeout: float = 90.0) -
 async def _converted_doc(monkeypatch: pytest.MonkeyPatch, html: str, assets: dict[str, bytes]) -> str:
     """Convert a document whose LibreOffice step gives back html, and return the saved page."""
 
-    async def fake_exec(*args: str, **_kwargs: asyncio.subprocess.PIPE) -> _StubSofficeProc:
+    async def fake_exec(*args: str, **_kwargs: int) -> _StubSofficeProc:
         out_dir = args[args.index("--outdir") + 1]
         stem = os.path.splitext(os.path.basename(args[-1]))[0]
         return _StubSofficeProc(out_dir, stem, html, assets)
 
     monkeypatch.setattr("app.lib.render.office.asyncio.create_subprocess_exec", fake_exec)
     await _convert(_DOC_KEY, "a.docx", str(FIX / "sample.docx"))
-    doc, _meta = await cache_module.read_doc(_DOC_KEY)
+    doc, _meta = await _read_cached_doc(_DOC_KEY)
     return doc
 
 
@@ -66,13 +76,13 @@ async def test_presentation_converts_to_cached_pdf(_office_env: Path, monkeypatc
     pdf = b"%PDF-1.7\nslide"
     targets: list[str] = []
 
-    async def fake_convert(_full_path: str, _timeout: float, target: str = "html") -> tuple[str, dict[str, bytes]]:
+    async def fake_convert(_full_path: str, _timeout: float, target: str = "html") -> SimpleNamespace:
         targets.append(target)
-        return "", {cache_module.OFFICE_PDF_ASSET: pdf}
+        return SimpleNamespace(html="", assets={cache_module.OFFICE_PDF_ASSET: pdf})
 
-    monkeypatch.setattr(office, "_soffice_convert", fake_convert)
+    monkeypatch.setattr(office, "_convert_with_libreoffice", fake_convert)
     await _convert(_DOC_KEY, "deck.pptx", str(FIX / "sample.pptx"))
-    doc, meta = await cache_module.read_doc(_DOC_KEY)
+    doc, meta = await _read_cached_doc(_DOC_KEY)
     assert targets == ["pdf"]
     assert doc == ""
     assert meta["mode"] == "frame"
@@ -136,7 +146,7 @@ def test_start_dedup_joins_live(_office_env: Path, monkeypatch: pytest.MonkeyPat
         spawned.append(_key)
         await hold.wait()
 
-    monkeypatch.setattr(office, "_conversion", slow)
+    monkeypatch.setattr(office, "_convert_office_file", slow)
     key = cache_module.key_for("a", 1)
 
     async def run() -> None:
@@ -159,7 +169,7 @@ def test_start_returns_immediately(_office_env: Path, monkeypatch: pytest.Monkey
         started.append(_key)
         await asyncio.Event().wait()  # never finishes on its own
 
-    monkeypatch.setattr(office, "_conversion", running)
+    monkeypatch.setattr(office, "_convert_office_file", running)
     key = "b" * 64
 
     async def run() -> None:
@@ -181,7 +191,7 @@ def test_concurrent_callers_start_one_conversion(_office_env: Path, monkeypatch:
         spawned.append(_key)
         await gate.wait()
 
-    monkeypatch.setattr(office, "_conversion", slow)
+    monkeypatch.setattr(office, "_convert_office_file", slow)
     key = "c" * 64
 
     async def run() -> None:
@@ -201,7 +211,7 @@ def test_claimant_failure_wakes_waiter(_office_env: Path, monkeypatch: pytest.Mo
     attempts = {"n": 0}
     monkeypatch.setattr(office, "classify", _flaky_classify(attempts, None))
     spawned: list[str] = []
-    monkeypatch.setattr(office, "_conversion", _recording_stub(spawned))
+    monkeypatch.setattr(office, "_convert_office_file", _recording_stub(spawned))
     key = "d" * 64
 
     async def run() -> tuple:
@@ -223,7 +233,7 @@ def test_two_woken_waiters_serialize_to_one_claimant(_office_env: Path, monkeypa
     attempts = {"n": 0}
     monkeypatch.setattr(office, "classify", _flaky_classify(attempts, hold, held))
     spawned: list[str] = []
-    monkeypatch.setattr(office, "_conversion", _recording_stub(spawned))
+    monkeypatch.setattr(office, "_convert_office_file", _recording_stub(spawned))
     key = "e" * 64
 
     async def run() -> list:
@@ -255,7 +265,7 @@ def test_waiter_gives_up_when_registration_is_slow(_office_env: Path, monkeypatc
         return RenderKind.OFFICE_DOC
 
     monkeypatch.setattr(office, "classify", stuck_classify)
-    monkeypatch.setattr(office, "_TIMEOUT", _FAST_TIMEOUT)
+    monkeypatch.setattr(office, "_CONVERSION_TIMEOUT_SECONDS", _FAST_TIMEOUT)
     key = "f" * 64
 
     async def run() -> None:
@@ -279,7 +289,7 @@ def test_failed_conversion_ends_completed_with_bounded_marker(_office_env: Path,
     async def boom(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         raise RuntimeError(reason)
 
-    monkeypatch.setattr(office, "_conversion", boom)
+    monkeypatch.setattr(office, "_convert_office_file", boom)
     key = "g" * 64
 
     async def run() -> None:
@@ -301,7 +311,7 @@ async def test_conversion_writes_no_task_rows_or_run_folders(_office_env: Path,
     async def stub(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.sleep(_SETTLE_SHORT)
 
-    monkeypatch.setattr(office, "_conversion", stub)
+    monkeypatch.setattr(office, "_convert_office_file", stub)
     key = "h" * 64
     await office.start_office_conversion("a.docx", key, str(FIX / "sample.docx"))
     await asyncio.wait_for(_conversion_task(key), _WAIT_LIMIT_S)
@@ -317,7 +327,7 @@ async def test_ensure_waits_for_a_live_conversion(_office_env: Path, monkeypatch
         await release.wait()
         await cache_module.write_doc(_key, "<div class='md-doc'>late</div>", None, {})
 
-    monkeypatch.setattr(office, "_conversion", late)
+    monkeypatch.setattr(office, "_convert_office_file", late)
     key = "i" * 64
 
     await office.start_office_conversion("a.docx", key, str(FIX / "sample.docx"))
@@ -405,41 +415,33 @@ async def test_converted_page_keeps_safe_url_schemes(
     assert f'href="{href}"' in reduced
 
 
-async def test_marked_key_never_starts_from_thumb(_office_env: Path) -> None:
+async def test_marked_key_never_starts_from_thumb(_office_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key = "j" * 64
     await cache_module.mark_failed(key, "convert", "Conversion cancelled")
     started: list[str] = []
 
-    async def fake_start(_path: str, key2: str, _full: str) -> None:
+    async def fake_start(_path: str, key2: str, _full: str, _timeout: float = _DEFAULT_TIMEOUT) -> None:
         started.append(key2)
 
-    monkey_start = office.start_office_conversion
-    office.start_office_conversion = fake_start  # type: ignore[method-assign]
-    try:
-        status = await office.ensure_doc_for_thumb(
-            RenderKind.OFFICE_DOC, key, "a.docx", str(FIX / "sample.docx")
-        )
-    finally:
-        office.start_office_conversion = monkey_start
+    monkeypatch.setattr(office, "start_office_conversion", fake_start)
+    status = await office.ensure_doc_for_thumb(
+        RenderKind.OFFICE_DOC, key, "a.docx", str(FIX / "sample.docx")
+    )
     assert status == "failed"
     assert started == []
     assert await cache_module.convert_failed_reason(key) == "Conversion cancelled"  # the reason is kept
 
 
-async def test_ensure_fresh_starts_and_reports(_office_env: Path) -> None:
+async def test_ensure_fresh_starts_and_reports(_office_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key = "m" * 64
-    real_start = office.start_office_conversion
 
-    async def fake_start(_path: str, key2: str, _full: str) -> None:
+    async def fake_start(_path: str, key2: str, _full: str, _timeout: float = _DEFAULT_TIMEOUT) -> None:
         await cache_module.write_doc(key2, "<div class=\"md-doc\">ok</div>", None, {})
 
-    office.start_office_conversion = fake_start  # type: ignore[method-assign]
-    try:
-        status = await office.ensure_doc_for_thumb(
-            RenderKind.OFFICE_DOC, key, "a.docx", str(FIX / "sample.docx")
-        )
-    finally:
-        office.start_office_conversion = real_start
+    monkeypatch.setattr(office, "start_office_conversion", fake_start)
+    status = await office.ensure_doc_for_thumb(
+        RenderKind.OFFICE_DOC, key, "a.docx", str(FIX / "sample.docx")
+    )
     assert status == "published"
 
 
@@ -451,8 +453,8 @@ async def test_ensure_doc_kind_builds_and_publishes(_office_env: Path) -> None:
 
     status = await office.ensure_doc_for_thumb(RenderKind.MARKDOWN, key, "note.md", str(md))
     assert status == "published"
-    doc, _meta = await cache_module.read_doc(key)
-    assert doc is not None and "Hello" in doc
+    doc, _meta = await _read_cached_doc(key)
+    assert "Hello" in doc
     assert await cache_module.convert_failed_reason(key) is None  # no failure mark written
 
 
@@ -464,7 +466,7 @@ async def test_ensure_doc_kind_html_is_sandboxed_frame(_office_env: Path) -> Non
 
     status = await office.ensure_doc_for_thumb(RenderKind.HTML, key, "page.html", str(html))
     assert status == "published"
-    doc, meta = await cache_module.read_doc(key)
+    doc, meta = await _read_cached_doc(key)
     assert doc == '<iframe class="html-frame" src="/dav/page.html?ephemeral=1" sandbox="allow-same-origin"></iframe>'
     assert meta["mode"] == "frame"
 
@@ -477,7 +479,7 @@ async def test_ensure_doc_kind_html_frame_url_encoded(_office_env: Path) -> None
 
     status = await office.ensure_doc_for_thumb(RenderKind.HTML, key, "my page.html", str(html))
     assert status == "published"
-    doc, _meta = await cache_module.read_doc(key)
+    doc, _meta = await _read_cached_doc(key)
     assert doc == '<iframe class="html-frame" src="/dav/my%20page.html?ephemeral=1" sandbox="allow-same-origin"></iframe>'
 
 
@@ -511,25 +513,16 @@ async def test_sheet_read_timeout_message(_office_env: Path, monkeypatch: pytest
 
 async def test_retry_force_reconvert_deletes_cached_entry(_office_env: Path,
                                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    thumbs = pytest.importorskip("app.lib.render.thumbs")
     key = "n" * 64
     await cache_module.write_doc(key, "<div class=\"md-doc\">old</div>", {"a.png": b"x"}, {"path": "a"})
     assert os.path.exists(os.path.join(cache_module.render_root(), key, "a.png"))
 
-    queued: list[tuple] = []
-
-    def record(key2: str, kind: RenderKind, path: str) -> bool:
-        queued.append((key2, kind, path))
-        return False
-
-    monkeypatch.setattr(thumbs, "start_thumbnail_job", record)
-
     async def stub(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.sleep(_SETTLE_SHORT)
 
-    monkeypatch.setattr(office, "_conversion", stub)
-    await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
-    assert queued and queued[0][0] == key  # the thumbnail was queued again
+    monkeypatch.setattr(office, "_convert_office_file", stub)
+    was_restarted = await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
+    assert was_restarted is True
     assert not os.path.isdir(os.path.join(cache_module.render_root(), key))
     assert await cache_module.convert_failed_reason(key) is None
 
@@ -543,9 +536,10 @@ async def test_retry_joins_in_flight_and_deletes_nothing(_office_env: Path,
     async def running(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(office, "_conversion", running)
+    monkeypatch.setattr(office, "_convert_office_file", running)
     await office.start_office_conversion("a.docx", key, str(FIX / "sample.docx"))
-    await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
+    was_restarted = await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
+    assert was_restarted is False
     assert await cache_module.read_doc(key) == ("doc", {})  # nothing deleted
 
 
@@ -610,7 +604,7 @@ def test_soffice_kills_child_on_cancel(_office_env: Path, monkeypatch: pytest.Mo
     key = "p" * 64
     child_spawned = asyncio.Event()
 
-    async def fake_exec(*_args: str, **_kwargs: asyncio.subprocess.PIPE) -> _FakeProc:
+    async def fake_exec(*_args: str, **_kwargs: int) -> _FakeProc:
         child_spawned.set()
         return proc
 
@@ -642,7 +636,7 @@ async def test_sheet_tables_fragment(_office_env: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(office, "classify", as_xlsx)
     key = "f" * 64
     await _convert(key, "a.xlsx", str(FIX / "sample.docx"))
-    fragment, meta = await cache_module.read_doc(key)
+    fragment, meta = await _read_cached_doc(key)
     assert fragment.count('<table class="csv-table">') == 2
     assert '<h3 class="sheet-title">Alpha</h3>' in fragment
     assert fragment.count(' class="csv-extra"') == 2  # rows 9 and 10 of the first sheet
@@ -658,7 +652,7 @@ async def test_live_soffice_converts_presentation_to_pdf(_office_env: Path, tmp_
     full = str(tmp_path / "sample.pptx")
     shutil.copy(FIX / "sample.pptx", full)
     await _convert(key, "sample.pptx", full)
-    doc, meta = await cache_module.read_doc(key)
+    doc, meta = await _read_cached_doc(key)
     pdf_path = os.path.join(cache_module.render_root(), key, cache_module.OFFICE_PDF_ASSET)
     with open(pdf_path, "rb") as fh:
         assert fh.read(5) == b"%PDF-"
@@ -676,7 +670,7 @@ async def test_live_soffice_convert_docx_with_embedded_image(
     full = str(tmp_path / "sample.docx")
     shutil.copy(FIX / "sample.docx", full)
     await _convert(key, "sample.docx", full)
-    doc, _meta = await cache_module.read_doc(key)
+    doc, _meta = await _read_cached_doc(key)
     assert '<div class="md-doc">' in doc
     saved = os.listdir(os.path.join(cache_module.render_root(), key))
     assert any(name.endswith(".png") for name in saved), "soffice must emit the embedded image"

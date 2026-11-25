@@ -8,7 +8,7 @@ import os
 from starlette.responses import JSONResponse, Response
 
 from app.console.errors import error_response
-from app.lib.render import cache, office
+from app.lib.render import cache, office, thumbs
 from app.lib.render.classify import classify
 from app.lib.render.descriptor import (OFFICE_KINDS, build_descriptor,
                                        converting_descriptor, get_resource_path, resolve_view)
@@ -67,6 +67,8 @@ async def retry_view_impl(path: str) -> Response:
     resource_path = get_resource_path(full, path)
     stat = await asyncio.to_thread(os.stat, full)
     key = cache.key_for(resource_path, int(stat.st_mtime))
-    await office.retry_office_conversion(resource_path, key, full)
+    was_restarted = await office.retry_office_conversion(resource_path, key, full)
+    if was_restarted:
+        thumbs.start_thumbnail_job(key, kind, resource_path)
     return JSONResponse(converting_descriptor(resource_path, os.path.basename(resource_path),
                                               stat.st_size, int(stat.st_mtime), kind))
