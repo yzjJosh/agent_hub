@@ -67,8 +67,7 @@ async def retry_view_impl(path: str) -> Response:
     resource_path = get_resource_path(full, path)
     stat = await asyncio.to_thread(os.stat, full)
     key = cache.key_for(resource_path, int(stat.st_mtime))
-    was_restarted = await office.retry_office_conversion(resource_path, key, full)
-    if was_restarted:
+    if await office.retry_office_conversion(resource_path, key, full):
         thumbs.start_thumbnail_job(key, kind, resource_path)
     return JSONResponse(converting_descriptor(resource_path, os.path.basename(resource_path),
                                               stat.st_size, int(stat.st_mtime), kind))

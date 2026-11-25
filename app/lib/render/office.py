@@ -79,11 +79,11 @@ class _ActiveConversion:
     def __init__(self, key: str, task: asyncio.Task[None]) -> None:
         self.key = key
         self.task = task
-        self.done = asyncio.Event()
+        self.done_event = asyncio.Event()
         task.add_done_callback(self._on_done)
 
     def _on_done(self, _task: asyncio.Task[None]) -> None:
-        self.done.set()
+        self.done_event.set()
         if _ACTIVE_CONVERSIONS.get(self.key) is self:
             _ACTIVE_CONVERSIONS.pop(self.key, None)
 
@@ -209,7 +209,7 @@ async def _delete_cached_conversion_state(key: str) -> None:
 
 
 async def ensure_doc_for_thumb(kind: RenderKind, key: str, path: str, full_path: str) -> str:
-    """Ensure a file has a cached HTML document ready for thumbnail capture.
+    """Make sure a file has a cached preview ready for thumbnail capture.
 
     Args:
         kind: Classified kind of the file.
@@ -218,7 +218,7 @@ async def ensure_doc_for_thumb(kind: RenderKind, key: str, path: str, full_path:
         full_path: Absolute path to the file on disk.
 
     Returns:
-        published when the cached document is ready, or failed when it is not.
+        published when the cached preview is ready, or failed when it is not.
     """
     if kind in _OFFICE_KINDS:
         return await _ensure_office_document(key, path, full_path)
@@ -230,14 +230,14 @@ async def _ensure_office_document(key: str, path: str, full_path: str) -> str:
         return "published"
     active_conversion = _get_active_conversion(key)
     if active_conversion is not None:
-        await active_conversion.done.wait()
+        await active_conversion.done_event.wait()
         return "published" if await cache.read_doc(key) is not None else "failed"
     if await cache.convert_failed_reason(key) is not None:
         return "failed"
     await start_office_conversion(path, key, full_path)
     active_conversion = _get_active_conversion(key)
     if active_conversion is not None:
-        await active_conversion.done.wait()
+        await active_conversion.done_event.wait()
     return "published" if await cache.read_doc(key) is not None else "failed"
 
 

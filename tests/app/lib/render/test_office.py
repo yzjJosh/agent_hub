@@ -521,8 +521,7 @@ async def test_retry_force_reconvert_deletes_cached_entry(_office_env: Path,
         await asyncio.sleep(_SETTLE_SHORT)
 
     monkeypatch.setattr(office, "_convert_office_file", stub)
-    was_restarted = await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
-    assert was_restarted is True
+    assert await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx")) is True
     assert not os.path.isdir(os.path.join(cache_module.render_root(), key))
     assert await cache_module.convert_failed_reason(key) is None
 
@@ -538,8 +537,7 @@ async def test_retry_joins_in_flight_and_deletes_nothing(_office_env: Path,
 
     monkeypatch.setattr(office, "_convert_office_file", running)
     await office.start_office_conversion("a.docx", key, str(FIX / "sample.docx"))
-    was_restarted = await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx"))
-    assert was_restarted is False
+    assert await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx")) is False
     assert await cache_module.read_doc(key) == ("doc", {})  # nothing deleted
 
 
