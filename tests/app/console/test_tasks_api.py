@@ -163,7 +163,7 @@ async def test_tools_roster_and_stats(api_client: httpx.AsyncClient) -> None:
     assert body["generated_at"].endswith("+00:00")
     assert "generated_at_local" in body
     by_name = {tool["name"]: tool for tool in body["tools"]}
-    tracked = {name for name, cls in registered_tools().items() if cls.tracked is True}
+    tracked = {name for name, tool_type in registered_tools().items() if tool_type.tracked is True}
     assert set(by_name) == tracked
     brave_stats = by_name["brave_search"]
     assert brave_stats["description"] == tool_class("brave_search").summary
@@ -182,7 +182,7 @@ async def test_tools_roster_and_stats(api_client: httpx.AsyncClient) -> None:
 
 async def test_not_exposed_tools_absent_from_roster(api_client: httpx.AsyncClient) -> None:
     """The list holds the 16 tracked tools and leaves out untracked tools."""
-    tracked = {name for name, cls in registered_tools().items() if cls.tracked is True}
+    tracked = {name for name, tool_type in registered_tools().items() if tool_type.tracked is True}
     assert len(tracked) == 16
     names = {tool["name"] for tool in (await api_client.get("/api/tools")).json()["tools"]}
     assert names == tracked

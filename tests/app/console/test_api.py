@@ -27,7 +27,7 @@ def test_api_py_carries_no_tool_description_map() -> None:
         for file_name in ("api.py", "tasks_api.py")
     )
     assert "_TOOL_DESCRIPTIONS" not in combined_source
-    assert all(cls.description not in combined_source for cls in registered_tools().values())
+    assert all(tool_type.description not in combined_source for tool_type in registered_tools().values())
 
 
 async def test_unknown_api_path_returns_json_404(api_client: httpx.AsyncClient) -> None:

@@ -129,9 +129,9 @@ def _is_valid_cursor(cursor: str) -> bool:
     return bool(separator and left and right)
 
 
-def _measure_run_files(data_dir: str, run_dir: str) -> _RunFileSizes:
-    log_path = os.path.join(data_dir, run_dir, _LOG_FILE)
-    result_path = os.path.join(data_dir, run_dir, _RESULT_FILE)
+def _measure_run_files(data_directory: str, run_directory: str) -> _RunFileSizes:
+    log_path = os.path.join(data_directory, run_directory, _LOG_FILE)
+    result_path = os.path.join(data_directory, run_directory, _RESULT_FILE)
     try:
         log_bytes = os.path.getsize(log_path)
     except OSError:
@@ -209,7 +209,7 @@ async def _read_forward_run_window(
     return await _run_with_task_file(task_id, file_name, missing_code, missing_message, _build_forward_response)
 
 
-def _handle_cancel_worker_done(worker: asyncio.Task[None]) -> None:
+def _finalize_cancel_worker(worker: asyncio.Task[None]) -> None:
     _PENDING_CANCELS.discard(worker)
     if not worker.cancelled():
         exception = worker.exception()
@@ -224,7 +224,7 @@ def _handle_cancel_worker_done(worker: asyncio.Task[None]) -> None:
 def _start_cancel_worker(task_id: str) -> None:
     worker = asyncio.create_task(task_manager.cancel(task_id), name=f"cancel-{task_id}")
     _PENDING_CANCELS.add(worker)
-    worker.add_done_callback(_handle_cancel_worker_done)
+    worker.add_done_callback(_finalize_cancel_worker)
 
 
 def _build_fingerprint(
@@ -256,7 +256,11 @@ async def list_tools(_request: Request) -> JSONResponse:
     Returns:
         The tool list and current timestamps.
     """
-    roster = {tool_name: cls.summary for tool_name, cls in registered_tools().items() if cls.tracked is True}
+    roster = {
+        tool_name: tool_type.summary
+        for tool_name, tool_type in registered_tools().items()
+        if tool_type.tracked is True
+    }
     stats_by_tool = {row["tool_name"]: row for row in await store_module.tool_stats()}
     timestamps = build_generated_timestamps()
     tools = [
@@ -291,14 +295,14 @@ async def list_tool_tasks(request: Request) -> JSONResponse:
     if cursor is not None and not _is_valid_cursor(cursor):
         return error_response(400, "bad_param", "cursor must be '<started_at>|<task_id>'.")
     tool_name = request.path_params["tool"]
-    cls = tool_class(tool_name)
-    if cls is None:
+    tool_type = tool_class(tool_name)
+    if tool_type is None:
         return error_response(404, "not_found", f"Unknown tool '{tool_name}'.")
     views, next_cursor = await store_module.keyset_tasks_for_tool(tool_name, limit, cursor)
     timestamps = build_generated_timestamps()
     return JSONResponse(
         {
-            "description": cls.summary,
+            "description": tool_type.summary,
             "tasks": [_serialize_task(view) for view in views],
             "next_cursor": next_cursor,
             **_format_generated_timestamps(timestamps),

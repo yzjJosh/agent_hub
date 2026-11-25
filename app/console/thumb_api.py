@@ -56,22 +56,20 @@ async def get_thumbnail(request: Request) -> Response:
     resolved = await _resolve_resource_query(request, is_directory=False)
     if isinstance(resolved, Response):
         return resolved
-    rel = resolved.relative_path
-    full = resolved.full_path
-    st = await asyncio.to_thread(os.stat, full)
-    key = cache.key_for(rel, int(st.st_mtime))
+    stat_result = await asyncio.to_thread(os.stat, resolved.full_path)
+    key = cache.key_for(resolved.relative_path, int(stat_result.st_mtime))
     thumb_path = os.path.join(cache.render_root(), key, "thumb.png")
     if await asyncio.to_thread(os.path.exists, thumb_path):
         return FileResponse(thumb_path, media_type="image/png")
-    kind = await classify(full)
+    kind = await classify(resolved.full_path)
     status = await cache.thumb_status(key)
     if status == "pending":
-        thumbs.start_thumbnail_job(key, kind, rel)
+        thumbs.start_thumbnail_job(key, kind, resolved.relative_path)
     # A document whose page is published again is worth one more try, so a
     # stale failure mark is re-queued. Media is not retried on every poll.
     elif status == "failed" and thumb_engine(kind) == "doc" and await cache.read_doc(key) is not None:
-        thumbs.start_thumbnail_job(key, kind, rel)
-    return error_response(409, "not_ready", f"No thumbnail yet for '{rel}'.")
+        thumbs.start_thumbnail_job(key, kind, resolved.relative_path)
+    return error_response(409, "not_ready", f"No thumbnail yet for '{resolved.relative_path}'.")
 
 
 async def queue_directory_thumbnails(request: Request) -> Response:

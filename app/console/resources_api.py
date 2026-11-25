@@ -134,11 +134,11 @@ def _describe_directory_entry(base_path: str, entry: os.DirEntry[str]) -> dict |
     return item
 
 
-def _scan_directory(root_dir: str, relative_path: str) -> _DirectoryScan | None:
-    target_path = resolve_path_sync(root_dir, relative_path)
+def _scan_directory(resources_root: str, relative_path: str) -> _DirectoryScan | None:
+    target_path = resolve_path_sync(resources_root, relative_path)
     if target_path is None or not os.path.isdir(target_path):
         return None
-    base_path = os.path.realpath(root_dir)
+    base_path = os.path.realpath(resources_root)
     entries: list[dict] = []
     with os.scandir(target_path) as scanner:
         for entry in scanner:
@@ -152,8 +152,8 @@ def _scan_directory(root_dir: str, relative_path: str) -> _DirectoryScan | None:
     return _DirectoryScan(normalized_path=normalized_path, entries=entries)
 
 
-async def _build_directory_listing(root_dir: str, relative_path: str) -> dict | None:
-    scan_result = await asyncio.to_thread(_scan_directory, root_dir, relative_path)
+async def _build_directory_listing(resources_root: str, relative_path: str) -> dict | None:
+    scan_result = await asyncio.to_thread(_scan_directory, resources_root, relative_path)
     if scan_result is None:
         return None
     entries = list(scan_result.entries)
@@ -202,13 +202,10 @@ def _visit_search_entry(
     state: _SearchState,
     parent: _SearchDirectory,
     entry: os.DirEntry[str],
-) -> bool:
-    if state.visited_count >= state.node_cap:
-        state.is_truncated = True
-        return False
+) -> None:
     child_path = entry.name if parent.relative_path == "" else f"{parent.relative_path}/{entry.name}"
     if resolve_path_sync(state.base_path, child_path) is None:
-        return True
+        return
     state.visited_count += 1
     if state.needle in child_path.lower():
         if len(state.matches) < state.limit:
@@ -219,17 +216,16 @@ def _visit_search_entry(
             state.is_truncated = True
     if entry.is_dir():
         state.queue.append(_SearchDirectory(child_path, [*parent.ancestor_names, entry.name]))
-    return True
 
 
 def _search_resource_tree(
-    root_dir: str,
+    resources_root: str,
     query: str,
     limit: int,
     node_cap: int = _SEARCH_NODE_CAP,
 ) -> _ResourceSearchResult:
     state = _SearchState(
-        base_path=os.path.realpath(root_dir),
+        base_path=os.path.realpath(resources_root),
         needle=query.lower(),
         limit=limit,
         node_cap=node_cap,
@@ -251,8 +247,10 @@ def _search_resource_tree(
         if entries is None:
             continue
         for entry in entries:
-            if not _visit_search_entry(state, current, entry):
+            if state.visited_count >= state.node_cap:
+                state.is_truncated = True
                 break
+            _visit_search_entry(state, current, entry)
     return _ResourceSearchResult(matches=state.matches, is_truncated=state.is_truncated)
 
 
@@ -274,10 +272,10 @@ async def list_resources(request: Request) -> Response:
     """
     raw_path = request.query_params.get("path")
     relative_path = (raw_path or "").strip("/")
-    root_dir = resources_dir()
-    if "\x00" in relative_path or await resolve_path(root_dir, relative_path) is None:
+    resources_root = resources_dir()
+    if "\x00" in relative_path or await resolve_path(resources_root, relative_path) is None:
         return error_response(400, "bad_param", f"Invalid path: '{raw_path}'.")
-    listing = await _build_directory_listing(root_dir, relative_path)
+    listing = await _build_directory_listing(resources_root, relative_path)
     if listing is None:
         return error_response(404, "not_found", f"No such directory: '{relative_path or '/'}'.")
     return JSONResponse(listing)
