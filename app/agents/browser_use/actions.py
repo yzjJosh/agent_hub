@@ -18,7 +18,7 @@ from app.lib.shared.format import html_tree_to_markdown
 from app.lib.shared.paths import resolve_path
 from app.lib.tool.base import Param, Tool, ToolResult
 
-_NETWORK_IDLE_TIMEOUT_MS = 2000
+_NETWORK_IDLE_TIMEOUT_MILLISECONDS = 2000
 _CLICK_SETTLE_DELAY_SECONDS = 2.0
 _DEFAULT_CAPTCHA_MAX_STEPS = 5
 _DEFAULT_WAIT_SECONDS = 2.0
@@ -134,32 +134,18 @@ async def _run_snapshot_action(
     tab: str,
     action: Callable[[PageSnapshot], Awaitable[bool]],
     *,
-    fixed_delay: float | None = None,
+    fixed_delay_seconds: float | None = None,
 ) -> bool:
     """Capture a page snapshot, run an action on it, and wait for the page to settle."""
-    snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
+    snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MILLISECONDS, verbose=True)
     if snapshot is None:
         raise RuntimeError("no snapshot available for tab")
-    succeeded = await action(snapshot)
-    if fixed_delay is None:
-        await manager.wait_for_load(tab, "networkidle", timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
+    has_succeeded = await action(snapshot)
+    if fixed_delay_seconds is None:
+        await manager.wait_for_load(tab, "networkidle", timeout=_NETWORK_IDLE_TIMEOUT_MILLISECONDS, verbose=True)
     else:
-        await asyncio.sleep(fixed_delay)
-    return succeeded
-
-
-def _build_click_action(x: float, y: float) -> Callable[[BrowserManager, str], Awaitable[bool]]:
-    """Build an action that clicks a screen position on an open tab."""
-
-    async def click_tab(manager: BrowserManager, tab: str) -> bool:
-        return await _run_snapshot_action(
-            manager,
-            tab,
-            lambda snapshot: snapshot.click_at_relative(x, y, verbose=True),
-            fixed_delay=_CLICK_SETTLE_DELAY_SECONDS,
-        )
-
-    return click_tab
+        await asyncio.sleep(fixed_delay_seconds)
+    return has_succeeded
 
 
 def _build_scroll_action(
@@ -188,8 +174,9 @@ class _ActionTool(Tool):
     is_tracked: ClassVar[bool] = True
     result_render_type: ClassVar[str] = "text"
 
-    def __init__(self, session: BrowserSession) -> None:
+    def __init__(self, session: BrowserSession, resources_directory: str = "") -> None:
         self._session = session
+        self._resources_directory = resources_directory
 
     async def _run_action(
         self,
@@ -236,6 +223,23 @@ class _ActionTool(Tool):
             capture_dom=capture_dom,
         )
 
+    async def _run_on_snapshot(
+        self,
+        action: Callable[[PageSnapshot], Awaitable[bool]],
+        target_id: str | None,
+        *,
+        fixed_delay_seconds: float | None = None,
+        should_monitor_download: bool = False,
+    ) -> ToolResult:
+        """Capture a snapshot of an open tab, run an action on it, and wait for it to settle."""
+        return await self._run_on_open_tab(
+            lambda manager, tab: _run_snapshot_action(
+                manager, tab, action, fixed_delay_seconds=fixed_delay_seconds
+            ),
+            target_id,
+            should_monitor_download=should_monitor_download,
+        )
+
     def _format_step_result(self, result: TransactionResult) -> ToolResult:
         """Format the tool result of one transaction without the time line."""
         return _build_tool_result(result)
@@ -276,7 +280,11 @@ class _ClickTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        return await self._run_on_open_tab(_build_click_action(params["x"], params["y"]), params["target_id"])
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.click_at_relative(params["x"], params["y"], verbose=True),
+            params["target_id"],
+            fixed_delay_seconds=_CLICK_SETTLE_DELAY_SECONDS,
+        )
 
 
 class _UploadResourcesTool(_ActionTool):
@@ -295,10 +303,6 @@ class _UploadResourcesTool(_ActionTool):
         ),
         _TARGET_ID_PARAM,
     )
-
-    def __init__(self, session: BrowserSession, resources_directory: str) -> None:
-        super().__init__(session)
-        self._resources_directory = resources_directory
 
     @override
     async def call(self, params: dict) -> ToolResult:
@@ -328,15 +332,10 @@ class _MoveMouseTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        x = params["x"]
-        y = params["y"]
-
-        async def move_mouse(manager: BrowserManager, tab: str) -> bool:
-            return await _run_snapshot_action(
-                manager, tab, lambda snapshot: snapshot.move_mouse_to_relative(x, y, verbose=True)
-            )
-
-        return await self._run_on_open_tab(move_mouse, params["target_id"])
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.move_mouse_to_relative(params["x"], params["y"], verbose=True),
+            params["target_id"],
+        )
 
 
 class _TypeTextTool(_ActionTool):
@@ -354,17 +353,13 @@ class _TypeTextTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        x = params["x"]
-        y = params["y"]
-        text = params["text"]
-        submit = params["submit"]
-
-        async def type_text(manager: BrowserManager, tab: str) -> bool:
-            return await _run_snapshot_action(
-                manager, tab, lambda snapshot: snapshot.type_text_at_relative(x, y, text, submit=submit, verbose=True)
-            )
-
-        return await self._run_on_open_tab(type_text, params["target_id"])
+        should_submit = params["submit"]
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.type_text_at_relative(
+                params["x"], params["y"], params["text"], submit=should_submit, verbose=True
+            ),
+            params["target_id"],
+        )
 
 
 class _ReplaceInputTextTool(_ActionTool):
@@ -387,19 +382,12 @@ class _ReplaceInputTextTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        x = params["x"]
-        y = params["y"]
-        old_text = params["old_text"]
-        new_text = params["new_text"]
-
-        async def replace_text(manager: BrowserManager, tab: str) -> bool:
-            return await _run_snapshot_action(
-                manager,
-                tab,
-                lambda snapshot: snapshot.replace_input_text_at_relative(x, y, old_text, new_text, verbose=True),
-            )
-
-        return await self._run_on_open_tab(replace_text, params["target_id"])
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.replace_input_text_at_relative(
+                params["x"], params["y"], params["old_text"], params["new_text"], verbose=True
+            ),
+            params["target_id"],
+        )
 
 
 class _ScrollTool(_ActionTool):
@@ -460,12 +448,10 @@ class _PressKeyTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        key = params["key"]
-
-        async def press_key(manager: BrowserManager, tab: str) -> bool:
-            return await _run_snapshot_action(manager, tab, lambda snapshot: snapshot.press_key(key, verbose=True))
-
-        return await self._run_on_open_tab(press_key, params["target_id"])
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.press_key(params["key"], verbose=True),
+            params["target_id"],
+        )
 
 
 class _GoBackTool(_ActionTool):
@@ -476,10 +462,7 @@ class _GoBackTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        async def go_back(manager: BrowserManager, tab: str) -> bool:
-            return await manager.go_back(tab, verbose=True)
-
-        return await self._run_on_open_tab(go_back, params["target_id"])
+        return await self._run_on_open_tab(lambda manager, tab: manager.go_back(tab, verbose=True), params["target_id"])
 
 
 class _GoForwardTool(_ActionTool):
@@ -492,10 +475,9 @@ class _GoForwardTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        async def go_forward(manager: BrowserManager, tab: str) -> bool:
-            return await manager.go_forward(tab, verbose=True)
-
-        return await self._run_on_open_tab(go_forward, params["target_id"])
+        return await self._run_on_open_tab(
+            lambda manager, tab: manager.go_forward(tab, verbose=True), params["target_id"]
+        )
 
 
 class _ClosePageTool(_ActionTool):
@@ -506,10 +488,9 @@ class _ClosePageTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        async def close_page(manager: BrowserManager, tab: str) -> bool:
-            return await manager.close_page(tab, verbose=True)
-
-        return await self._run_on_open_tab(close_page, params["target_id"])
+        return await self._run_on_open_tab(
+            lambda manager, tab: manager.close_page(tab, verbose=True), params["target_id"]
+        )
 
 
 class _SolveCaptchaTool(_ActionTool):
@@ -525,14 +506,10 @@ class _SolveCaptchaTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        max_steps = params["max_steps"]
-
-        async def solve_captcha(manager: BrowserManager, tab: str) -> bool:
-            return await _run_snapshot_action(
-                manager, tab, lambda snapshot: snapshot.solve_captcha(max_steps, verbose=True)
-            )
-
-        return await self._run_on_open_tab(solve_captcha, params["target_id"])
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.solve_captcha(params["max_steps"], verbose=True),
+            params["target_id"],
+        )
 
 
 class _WaitTool(_ActionTool):
@@ -566,15 +543,12 @@ class _DownloadClickTool(_ActionTool):
     summary: ClassVar[str] = "Click a point on a tab's screen that starts a download"
     params: ClassVar[tuple[Param, ...]] = (*_COORDINATE_PARAMS, _TARGET_ID_PARAM)
 
-    def __init__(self, session: BrowserSession, resources_directory: str) -> None:
-        super().__init__(session)
-        self._resources_directory = resources_directory
-
     @override
     async def call(self, params: dict) -> ToolResult:
-        return await self._run_on_open_tab(
-            _build_click_action(params["x"], params["y"]),
+        return await self._run_on_snapshot(
+            lambda snapshot: snapshot.click_at_relative(params["x"], params["y"], verbose=True),
             params["target_id"],
+            fixed_delay_seconds=_CLICK_SETTLE_DELAY_SECONDS,
             should_monitor_download=True,
         )
 
@@ -623,7 +597,7 @@ class _DumpPageTool(_ActionTool):
         async def capture_page_dom(manager: BrowserManager, tab: str) -> bool:
             nonlocal captured_dump
             started_at = datetime.now(UTC)
-            snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MS, verbose=True)
+            snapshot = await manager.capture_snapshot(tab, timeout=_NETWORK_IDLE_TIMEOUT_MILLISECONDS, verbose=True)
             if snapshot is None:
                 raise RuntimeError("no snapshot available for tab")
             tree = await snapshot.filtered_tree(verbose=True)
@@ -689,24 +663,7 @@ def build_action_tools(session: BrowserSession, resources_directory: str) -> tup
     Returns:
         Ordered tuple of browser action tools.
     """
-    return (
-        _OpenUrlTool(session),
-        _ClickTool(session),
-        _UploadResourcesTool(session, resources_directory),
-        _MoveMouseTool(session),
-        _TypeTextTool(session),
-        _ReplaceInputTextTool(session),
-        _ScrollTool(session),
-        _PressKeyTool(session),
-        _GoBackTool(session),
-        _GoForwardTool(session),
-        _ClosePageTool(session),
-        _SolveCaptchaTool(session),
-        _WaitTool(session),
-        _DownloadClickTool(session, resources_directory),
-        _RefreshTool(session),
-        _DumpPageTool(session),
-    )
+    return tuple(tool_class(session, resources_directory) for tool_class in _ACTION_TOOL_CLASSES)
 
 
 __all__ = [

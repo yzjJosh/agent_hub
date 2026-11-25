@@ -36,7 +36,7 @@ class _DumpHeader:
 
 
 def _has_image_part(output: str | list | None) -> bool:
-    """Return whether a tool output carries at least one image part."""
+    """Return whether a tool output contains at least one image part."""
     return isinstance(output, list) and any(
         isinstance(part, dict) and part.get("type") == "input_image" for part in output
     )
@@ -52,7 +52,7 @@ def _is_action_output(item: dict, tool_names_by_call_id: dict[str, str]) -> bool
 
 
 def _is_action_screenshot(item: dict, tool_names_by_call_id: dict[str, str]) -> bool:
-    """Return whether an input item is a browser action output carrying a screenshot."""
+    """Return whether an input item is a browser action output with a screenshot."""
     return _is_action_output(item, tool_names_by_call_id) and _has_image_part(item.get("output"))
 
 

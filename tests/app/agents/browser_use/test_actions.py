@@ -27,7 +27,7 @@ from tests.app.agents.browser_use.conftest import (
 _HALF = 0.5
 _TENTH = 0.1
 _THIRD = 0.3
-_NETWORK_IDLE_TIMEOUT_MS = 2000
+_NETWORK_IDLE_TIMEOUT_MILLISECONDS = 2000
 _FIXED_YEAR = 2026
 
 _OPEN_TAB_TOOL_NAMES = tuple(name for name in STANDARD_ACTION_TOOL_NAMES if name != "open_url")
@@ -104,11 +104,11 @@ def _build_snapshot_flow(
 ) -> dict[str, list[tuple]]:
     """Build the expected call record for a snapshot-based action on a tab."""
     record = {
-        "capture_snapshot": [(tab, _NETWORK_IDLE_TIMEOUT_MS, True)],
+        "capture_snapshot": [(tab, _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
         method: [call],
     }
     if waits_for_load:
-        record["wait_for_load"] = [(tab, "networkidle", _NETWORK_IDLE_TIMEOUT_MS, True)]
+        record["wait_for_load"] = [(tab, "networkidle", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)]
     return record
 
 
@@ -135,7 +135,7 @@ _EXPECTED_RECORD: dict[str, dict[str, list[tuple]]] = {
         "navigate": [("tab1", "https://example.com", None, None, True)],
     },
     "dump_page": {
-        "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
+        "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
         "filtered_tree": [("tab1", True)],
     },
 }
@@ -356,10 +356,10 @@ class TestActionTools:
         manager = FakeActionManager()
         assert await action(manager, "tab1") is True
         assert manager.recorded == {
-            "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MS, True)],
+            "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
             "move_mouse_to_relative": [("tab1", _THIRD, _HALF, True)],
             "scroll_by_relative": [("tab1", -_HALF, 1.0, True)],
-            "wait_for_load": [("tab1", "networkidle", _NETWORK_IDLE_TIMEOUT_MS, True)],
+            "wait_for_load": [("tab1", "networkidle", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
         }
         assert manager.order == ["capture_snapshot", "move_mouse_to_relative", "scroll_by_relative", "wait_for_load"]
 
@@ -384,7 +384,7 @@ class TestActionTools:
         result = await _run_tool(find_tool("scroll", _build_tools(session)), params)
         assert "status: failed, action failed: could not move the mouse to the scroll anchor" in result.text
         assert manager.recorded == {
-            "capture_snapshot": [("only", _NETWORK_IDLE_TIMEOUT_MS, True)],
+            "capture_snapshot": [("only", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
             "move_mouse_to_relative": [("only", _THIRD, _HALF, True)],
         }
 

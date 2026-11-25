@@ -34,7 +34,7 @@ from tests.app.agents.browser_use.conftest import (
 )
 from tests.app.conftest import skip_if_no_chrome
 
-_LIVE_TIMEOUT_S = 600
+_LIVE_TIMEOUT_SECONDS = 600
 _EXPECTED_MAX_TURNS = 180
 _EXPECTED_WRAP_UP_TURNS_REMAINING = 10
 _STAGE_ONE_MAX_TURNS = _EXPECTED_MAX_TURNS - _EXPECTED_WRAP_UP_TURNS_REMAINING
@@ -323,7 +323,7 @@ class TestRunBrowserUse:
 @skip_if_no_chrome
 @pytest.mark.live
 class TestLiveRunner:
-    @pytest.mark.timeout(_LIVE_TIMEOUT_S)
+    @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     async def test_upload_resource_from_page(self, tmp_path: Path, test_server_url: str) -> None:
         """The model uploads a resource file that the test server receives."""
         downloads_dir = tmp_path / "downloads"
@@ -348,7 +348,7 @@ class TestLiveRunner:
         assert response.status_code == 200
         assert response.content == content
 
-    @pytest.mark.timeout(_LIVE_TIMEOUT_S)
+    @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     async def test_open_page_and_report_heading(self, tmp_path: Path, test_server_url: str) -> None:
         downloads_dir = tmp_path / "downloads"
         resources_dir = tmp_path / "resources"
@@ -363,7 +363,7 @@ class TestLiveRunner:
         assert "example domain" in result.summary.lower()
         assert result.files == ()
 
-    @pytest.mark.timeout(_LIVE_TIMEOUT_S)
+    @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     async def test_dump_page_and_report_offscreen_text(self, tmp_path: Path, test_server_url: str) -> None:
         """The model reports text from the end of a long page."""
         downloads_dir = tmp_path / "downloads"
@@ -384,7 +384,7 @@ class TestLiveRunner:
         assert result.files == ()
         assert list(resources_dir.iterdir()) == []
 
-    @pytest.mark.timeout(_LIVE_TIMEOUT_S)
+    @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     async def test_download_file_from_page(self, tmp_path: Path, test_server_url: str) -> None:
         downloads_dir = tmp_path / "downloads"
         resources_dir = tmp_path / "resources"

@@ -533,13 +533,13 @@ class FakeSession:
                     )
                 tab = open_tabs[0] if open_tabs else None
         try:
-            ok = await action(manager, tab)
+            has_succeeded = await action(manager, tab)
             self.dom_captures.append(capture_dom() if capture_dom is not None else None)
-        except Exception as exc:
+        except Exception as error:
             return TransactionResult(
-                TransactionStatus.FAILED, f"action failed: {exc}", _build_manager_snapshot(manager), ()
+                TransactionStatus.FAILED, f"action failed: {error}", _build_manager_snapshot(manager), ()
             )
-        if not ok:
+        if not has_succeeded:
             return TransactionResult(TransactionStatus.FAILED, "action failed", _build_manager_snapshot(manager), ())
         return TransactionResult(TransactionStatus.SUCCESS, "", _build_manager_snapshot(manager), ())
 
