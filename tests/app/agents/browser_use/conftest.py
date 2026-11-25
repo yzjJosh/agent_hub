@@ -1,11 +1,15 @@
 """Shared fixtures for browser use tests."""
 
+from __future__ import annotations
+
 import asyncio
+import json
 import sys
 from collections.abc import Awaitable, AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image
@@ -19,7 +23,9 @@ from app.agents.browser_use.checkpoint_store import (
     DomCapture,
     TabCapture,
 )
-from app.agents.browser_use.models import TransactionStatus
+from app.agents.browser_use.models import Snapshot, TabSnapshot, TransactionResult, TransactionStatus
+from app.agents.browser_use.session import Action
+from app.lib.tool.base import Tool
 from tests.app.conftest import store_infra
 
 _CANVAS_SIZE = 256
@@ -261,3 +267,322 @@ def publish_checkpoint(dom_time: CaptureInterval, image_time: CaptureInterval) -
         return await archive.publish(reservation, "dump_page", TransactionStatus.SUCCESS, (tab,))
 
     return publish
+
+
+STANDARD_ACTION_TOOL_NAMES: tuple[str, ...] = (
+    "open_url",
+    "click",
+    "move_mouse",
+    "type_text",
+    "replace_input_text",
+    "scroll",
+    "press_key",
+    "go_back",
+    "go_forward",
+    "close_page",
+    "solve_captcha",
+    "wait",
+    "download_click",
+    "refresh",
+    "dump_page",
+)
+
+COMPLETED_OUTPUT_RAW = json.dumps({"status": "completed", "summary": "done"})
+
+_LLM_BACKEND_VARS = (
+    "REASON_THINKING_BACKEND_URL",
+    "REASON_THINKING_MODEL",
+    "REASON_THINKING_API_KEY",
+    "REASON_BACKEND_URL",
+    "REASON_MODEL",
+    "REASON_API_KEY",
+)
+
+_DEFAULT_TABS = {
+    "tab1": TabSnapshot("tab1", "/tmp/dl/txn_1/01.jpg", '1. tab1 — "Shop" — https://shop.example — image 1'),
+    "tab2": TabSnapshot("tab2", None, "2. tab2 — no screenshot"),
+}
+
+
+def build_default_snapshot() -> Snapshot:
+    """Build a canned two-tab snapshot."""
+    return Snapshot(tabs=dict(_DEFAULT_TABS))
+
+
+def build_success_transaction(message: str = "") -> TransactionResult:
+    """Build a successful transaction result with the default snapshot."""
+    return TransactionResult(TransactionStatus.SUCCESS, message, build_default_snapshot(), ())
+
+
+def _build_manager_snapshot(manager: FakeActionManager) -> Snapshot:
+    """Build one canned tab line per open tab on the action manager."""
+    tabs: dict[str, TabSnapshot] = {}
+    for index, target_id in enumerate(manager.list_tab_ids(), start=1):
+        tabs[target_id] = TabSnapshot(target_id, None, f"{index}. {target_id} — 'T' — https://x — image {index}")
+    return Snapshot(tabs=tabs)
+
+
+class FakeActionSnapshot:
+    """Recording stand-in for the page snapshot called by action closures."""
+
+    def __init__(self, manager: FakeActionManager, target_id: str, move_fails: bool = False) -> None:
+        self._manager = manager
+        self._target_id = target_id
+        self._move_fails = move_fails
+        self.title: str = "Page title"
+        self.url: str = "https://example.com"
+
+    def _record(self, method: str, args: tuple) -> None:
+        self._manager.recorded.setdefault(method, []).append((self._target_id, *args))
+        self._manager.order.append(method)
+
+    async def click_at_relative(self, x: float, y: float, verbose: bool = False) -> bool:
+        self._record("click_at_relative", (x, y, verbose))
+        return True
+
+    async def upload_with_chooser_relative(
+        self, x: float, y: float, file_paths: list[str], verbose: bool = False
+    ) -> bool:
+        self._record("upload_with_chooser_relative", (x, y, file_paths, verbose))
+        return True
+
+    async def type_text_at_relative(
+        self, x: float, y: float, text: str, submit: bool = False, verbose: bool = False
+    ) -> bool:
+        self._record("type_text_at_relative", (x, y, text, submit, verbose))
+        return True
+
+    async def replace_input_text_at_relative(
+        self, x: float, y: float, old_text: str, new_text: str, verbose: bool = False
+    ) -> bool:
+        self._record("replace_input_text_at_relative", (x, y, old_text, new_text, verbose))
+        return True
+
+    async def move_mouse_to_relative(self, x_ratio: float, y_ratio: float, verbose: bool = False) -> bool:
+        self._record("move_mouse_to_relative", (x_ratio, y_ratio, verbose))
+        return not self._move_fails
+
+    async def scroll_by_relative(self, dx: float, dy: float, verbose: bool = False) -> bool:
+        self._record("scroll_by_relative", (dx, dy, verbose))
+        return True
+
+    async def press_key(self, key: str, verbose: bool = False) -> bool:
+        self._record("press_key", (key, verbose))
+        return True
+
+    async def solve_captcha(self, max_steps: int, verbose: bool = False) -> bool:
+        self._record("solve_captcha", (max_steps, verbose))
+        return True
+
+    async def filtered_tree(self, verbose: bool = False) -> dict | None:
+        self._record("filtered_tree", (verbose,))
+        if self._manager.no_tree:
+            return None
+        return {"role": "web", "children": [{"role": "heading", "name": "Page title"}]}
+
+
+class FakeActionManager:
+    """Recording stand-in for the browser manager called by action closures."""
+
+    def __init__(
+        self,
+        tab_ids: tuple[str, ...] = (),
+        no_snapshot: bool = False,
+        move_fails: bool = False,
+        no_tree: bool = False,
+    ) -> None:
+        self.recorded: dict[str, list[tuple]] = {}
+        self.order: list[str] = []
+        self._page_seq = 0
+        self._tab_ids: list[str] = list(tab_ids)
+        self._no_snapshot = no_snapshot
+        self._move_fails = move_fails
+        self.no_tree = no_tree
+
+    def list_tab_ids(self) -> list[str]:
+        return list(self._tab_ids)
+
+    def add_tab(self, target_id: str) -> None:
+        self._tab_ids.append(target_id)
+
+    def _record(self, method: str, args: tuple) -> None:
+        self.recorded.setdefault(method, []).append(args)
+        self.order.append(method)
+
+    async def open_page(self, verbose: bool = False) -> str:
+        self._record("open_page", (verbose,))
+        self._page_seq += 1
+        return f"new{self._page_seq}"
+
+    async def navigate(
+        self,
+        target_id: str,
+        url: str,
+        wait_until: str | None = None,
+        timeout: int | None = None,
+        verbose: bool = False,
+    ) -> bool:
+        self._record("navigate", (target_id, url, wait_until, timeout, verbose))
+        return True
+
+    def get_url(self, target_id: str, verbose: bool = False) -> str:
+        self._record("get_url", (target_id, verbose))
+        return "https://example.com"
+
+    async def capture_snapshot(
+        self, target_id: str, timeout: int | None = None, verbose: bool = False
+    ) -> FakeActionSnapshot | None:
+        self._record("capture_snapshot", (target_id, timeout, verbose))
+        if self._no_snapshot:
+            return None
+        return FakeActionSnapshot(self, target_id, move_fails=self._move_fails)
+
+    async def wait_for_load(
+        self,
+        target_id: str,
+        state: str | None = None,
+        timeout: int | None = None,
+        verbose: bool = False,
+    ) -> bool:
+        self._record("wait_for_load", (target_id, state, timeout, verbose))
+        return True
+
+    async def go_back(
+        self,
+        target_id: str,
+        wait_until: str | None = None,
+        timeout: int | None = None,
+        verbose: bool = False,
+    ) -> bool:
+        self._record("go_back", (target_id, wait_until, timeout, verbose))
+        return True
+
+    async def go_forward(
+        self,
+        target_id: str,
+        wait_until: str | None = None,
+        timeout: int | None = None,
+        verbose: bool = False,
+    ) -> bool:
+        self._record("go_forward", (target_id, wait_until, timeout, verbose))
+        return True
+
+    async def close_page(self, target_id: str, verbose: bool = False) -> bool:
+        self._record("close_page", (target_id, verbose))
+        return True
+
+
+class FakeSession:
+    """Scripted browser session that records every transaction it receives."""
+
+    def __init__(
+        self,
+        results: list[TransactionResult],
+        downloads: list[str] | None = None,
+        manager: FakeActionManager | None = None,
+    ) -> None:
+        self._results = results
+        self._downloads = list(downloads or [])
+        self._manager = manager
+        self.opened: int = 0
+        self.closed: int = 0
+        self.transactions: list[tuple[Action, str | None, bool, bool]] = []
+        self.source_actions: list[str] = []
+        self.dom_captures: list[TabCapture | None] = []
+        self.checkpoint_store: CheckpointStore | None = None
+        self.open_error: Exception | None = None
+        self.close_error: Exception | None = None
+
+    async def open(self) -> None:
+        self.opened += 1
+        if self.open_error is not None:
+            raise self.open_error
+
+    async def close(self) -> None:
+        self.closed += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+    async def transact(
+        self,
+        action: Action,
+        target_id: str | None,
+        *,
+        new_tab: bool = False,
+        monitor_download: bool = False,
+        source_action: str = "action",
+        capture_dom: Callable[[], TabCapture | None] | None = None,
+    ) -> TransactionResult:
+        self.transactions.append((action, target_id, monitor_download, new_tab))
+        self.source_actions.append(source_action)
+        if self._manager is None:
+            return self._results.pop(0)
+        manager = self._manager
+        tab = (target_id or "").strip()
+        if not tab:
+            if new_tab:
+                tab = None
+            else:
+                open_tabs = manager.list_tab_ids()
+                if len(open_tabs) > 1:
+                    return TransactionResult(
+                        TransactionStatus.FAILED,
+                        f"action failed: {len(open_tabs)} tabs are open, give the target id of the one to act on",
+                        _build_manager_snapshot(manager),
+                        (),
+                    )
+                tab = open_tabs[0] if open_tabs else None
+        try:
+            ok = await action(manager, tab)
+            self.dom_captures.append(capture_dom() if capture_dom is not None else None)
+        except Exception as exc:
+            return TransactionResult(
+                TransactionStatus.FAILED, f"action failed: {exc}", _build_manager_snapshot(manager), ()
+            )
+        if not ok:
+            return TransactionResult(TransactionStatus.FAILED, "action failed", _build_manager_snapshot(manager), ())
+        return TransactionResult(TransactionStatus.SUCCESS, "", _build_manager_snapshot(manager), ())
+
+    async def get_downloaded_files(self) -> list[str]:
+        return list(self._downloads)
+
+
+def find_tool(name: str, tools: tuple[Tool, ...]) -> Tool:
+    """Return the tool with the given name from a tuple of tools."""
+    return next(tool for tool in tools if tool.name == name)
+
+
+def clear_llm_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear all environment variables for the thinking and plain LLM backends."""
+    for name in _LLM_BACKEND_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def set_thinking_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure the thinking backend URL for tests and clear the plain backend."""
+    clear_llm_backends(monkeypatch)
+    monkeypatch.setenv("REASON_THINKING_BACKEND_URL", "http://think.test/v1")
+
+
+def build_mock_stream(
+    history: list[dict],
+    error: Exception | None,
+    *,
+    final_output: str | None = None,
+    turns: int = 0,
+    new_items: list[dict] | None = None,
+) -> MagicMock:
+    """Build a mock streamed runner response for turn-limit and overflow tests."""
+    async def events() -> AsyncIterator:
+        if error is not None:
+            raise error
+        for event in ():
+            yield event
+
+    return MagicMock(
+        stream_events=events,
+        raw_responses=[MagicMock() for _ in range(turns)],
+        new_items=history if new_items is None else new_items,
+        to_input_list=lambda: list(history),
+        final_output=final_output,
+    )
