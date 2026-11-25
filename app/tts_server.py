@@ -74,7 +74,7 @@ async def _create_speech(request: Request) -> Response:
         return _error(400, f"Unsupported response_format: {fmt!r}")
 
     task = await tts_tool.run({"text": text, "format": fmt})
-    result = await tts_tool.result_text(task)
+    result = await tts_tool.read_result_text(task)
     resource_path = _parse_resource_path(result)
     if resource_path is None:
         print(f"[tts_server] tts tool failed: {result}", file=sys.stderr)

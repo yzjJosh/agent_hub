@@ -55,7 +55,7 @@ from app.lib.agent.wire_converter import install_wire_converter, should_always_r
 from app.lib.db.store import agent_store
 from app.lib.shared import config
 from app.lib.task.task_manager import AsyncTask, ImmediateTask, Task, TaskStatus, task_manager
-from app.lib.tool.base import Param, ParamValue, Tool, ToolResult, param_signature
+from app.lib.tool.base import Param, ParamValue, Tool, ToolResult, build_param_signature
 from app.lib.tool.truncation import (
     DEFAULT_TOOL_OUTPUT_LEN_LIMIT,
     MAX_CHAR_DESCRIPTION,
@@ -304,8 +304,8 @@ class Agent[T]:
             return self.inner_tool.description
 
         @property
-        def tracked(self) -> bool:
-            return self.inner_tool.tracked
+        def is_tracked(self) -> bool:
+            return self.inner_tool.is_tracked
 
         def _resolve_max_char_limit(self, params: dict) -> int | None:
             if self._added_max_char is None:
@@ -394,13 +394,13 @@ class Agent[T]:
         task: Task[ToolResult],
     ) -> _ToolCallOutcome:
         if isinstance(task, AsyncTask):
-            if adapter.tracked:
+            if adapter.is_tracked:
                 return _ToolCallOutcome(task_id=str(task.id), status=task.status.value)
             return _EMPTY_TOOL_CALL_OUTCOME
         if isinstance(task, ImmediateTask):
             if task.has_stored_run:
                 return _ToolCallOutcome(task_id=str(task.id), status=TaskStatus.COMPLETED.value)
-            if adapter.tracked and task.status is TaskStatus.FAILED:
+            if adapter.is_tracked and task.status is TaskStatus.FAILED:
                 return _ToolCallOutcome(task_id=None, status=_REJECTED_STATUS)
         return _EMPTY_TOOL_CALL_OUTCOME
 
@@ -413,7 +413,7 @@ class Agent[T]:
         names = [param.name for param in wire_params]
         signature = inspect.Signature(
             [inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_ONLY, annotation=ToolContext)]
-            + list(param_signature(wire_params).parameters.values()),
+            + list(build_param_signature(wire_params).parameters.values()),
             return_annotation=str | list[ToolOutputText | ToolOutputImage | ToolOutputFileContent],
         )
 
@@ -422,7 +422,7 @@ class Agent[T]:
         ) -> str | list[ToolOutputText | ToolOutputImage | ToolOutputFileContent]:
             params = dict(zip(names, args))
             task = await adapter.run(params)
-            result_text = await adapter.inner_tool.result_text(task)
+            result_text = await adapter.inner_tool.read_result_text(task)
             outcome = self._extract_tool_call_outcome(adapter, task)
             tool_calls[ctx.tool_call_id] = outcome
             return await adapter.format_tool_output(

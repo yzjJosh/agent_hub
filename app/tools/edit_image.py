@@ -94,7 +94,7 @@ class _EditImageTool(Tool):
         return ToolResult(text=saved_file_message("image", os.path.join(resources_dir(), rel)), files=(rel,))
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         references = params.get("reference_images") or []
         payload = json.dumps(
             {

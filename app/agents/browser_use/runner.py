@@ -388,7 +388,7 @@ def _scroll_action(dx: float, dy: float, x: float | None, y: float | None) -> Ac
 class _ActionTool(Tool):
     """One browser action bound to the session and the cap signal."""
 
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     result_render_type: ClassVar[str] = "text"
 
     def __init__(self, session: BrowserSession, cap_reached: asyncio.Event) -> None:

@@ -137,14 +137,14 @@ class TestSearchParams:
         """The airlines param is absent by default."""
         airlines = next(p for p in google_flights_tool.params if p.name == "airlines")
 
-        assert airlines.required is False
+        assert airlines.is_required is False
         assert airlines.default is None
 
     def test_depart_date_param_is_required(self) -> None:
         """The depart date param is required and of date kind."""
         depart_date = next(p for p in google_flights_tool.params if p.name == "depart_date")
 
-        assert depart_date.required is True
+        assert depart_date.is_required is True
         assert depart_date.kind == "date"
 
 

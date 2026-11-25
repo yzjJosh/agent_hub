@@ -69,7 +69,7 @@ class TestGenerateVideoShape:
             "aspect_ratio",
             "upscale",
         ]
-        assert params["prompt"].required
+        assert params["prompt"].is_required
         assert params["prompt"].kind == "longtext"
         assert params["first_frame"].default is None
         assert params["first_frame"].kind == "resource"
@@ -249,9 +249,9 @@ class TestSuccessAndCache:
         point_resources_at(tmp_path, monkeypatch)
         write_reference_image(tmp_path)
 
-        base = await generate_video_tool.cache_key({"prompt": "a wave"})
-        upscaled = await generate_video_tool.cache_key({"prompt": "a wave", "upscale": True})
-        framed = await generate_video_tool.cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
+        base = await generate_video_tool.build_cache_key({"prompt": "a wave"})
+        upscaled = await generate_video_tool.build_cache_key({"prompt": "a wave", "upscale": True})
+        framed = await generate_video_tool.build_cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
 
         assert base != upscaled
         assert base != framed
@@ -261,9 +261,9 @@ class TestSuccessAndCache:
         write_reference_image(tmp_path)
         (tmp_path / "upload" / "other.png").write_bytes(b"different frame")
 
-        first = await generate_video_tool.cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
+        first = await generate_video_tool.build_cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
         (tmp_path / "upload" / "ref.png").write_bytes(b"changed frame")
-        changed = await generate_video_tool.cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
+        changed = await generate_video_tool.build_cache_key({"prompt": "a wave", "first_frame": "upload/ref.png"})
 
         assert first != changed
 

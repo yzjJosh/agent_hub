@@ -259,7 +259,7 @@ async def list_tools(_request: Request) -> JSONResponse:
     roster = {
         tool_name: tool_type.summary
         for tool_name, tool_type in registered_tools().items()
-        if tool_type.tracked is True
+        if tool_type.is_tracked is True
     }
     stats_by_tool = {row["tool_name"]: row for row in await store_module.tool_stats()}
     timestamps = build_generated_timestamps()

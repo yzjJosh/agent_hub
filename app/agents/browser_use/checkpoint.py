@@ -105,7 +105,7 @@ class CheckpointTool(Tool):
     """Read saved browser observations from one run."""
 
     name: ClassVar[str] = "checkpoint"
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     staleness: ClassVar[timedelta | None] = None
     result_render_type: ClassVar[str] = "markdown"
     description: ClassVar[str] = (

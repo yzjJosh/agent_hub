@@ -229,7 +229,7 @@ class SearchEvidence(Tool):
 
     name: ClassVar[str] = "search_evidence"
     staleness: ClassVar[timedelta | None] = None
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     result_render_type: ClassVar[str] = "markdown"
     description: ClassVar[str] = (
         "Search the evidence already gathered in this run. "

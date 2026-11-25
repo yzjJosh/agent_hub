@@ -59,7 +59,7 @@ class _ResearchTool(Tool):
         return ToolResult(text=result.report)
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         payload = json.dumps([params["goal"]], ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

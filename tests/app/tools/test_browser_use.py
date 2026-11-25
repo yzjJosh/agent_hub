@@ -42,7 +42,7 @@ class TestBrowserUseShape:
 
     def test_single_required_prompt_param(self) -> None:
         assert [p.name for p in browser_use_tool.params] == ["prompt"]
-        assert browser_use_tool.params[0].required
+        assert browser_use_tool.params[0].is_required
         assert browser_use_tool.params[0].type is str
         assert browser_use_tool.params[0].kind == "longtext"
         assert browser_use_tool.params[0].description

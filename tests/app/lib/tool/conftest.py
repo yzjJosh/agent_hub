@@ -29,7 +29,7 @@ async def run_text(tool: Tool, /, *args: ParamValue, **kwargs: ParamValue) -> st
     declared order.
     """
     params = dict(zip((p.name for p in tool.params), args), **kwargs)
-    return await tool.result_text(await tool.run(params))
+    return await tool.read_result_text(await tool.run(params))
 
 
 async def assert_rejected_task(task: Task, expected: str) -> None:

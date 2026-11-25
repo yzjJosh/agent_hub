@@ -112,7 +112,7 @@ class _GenerateVideoTool(Tool):
         return ToolResult(text=saved_file_message("video", os.path.join(resources_dir(), rel)), files=(rel,))
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         payload = json.dumps(
             {
                 "prompt": params["prompt"],

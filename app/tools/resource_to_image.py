@@ -124,7 +124,7 @@ async def _resolve_thumb(path: str) -> tuple[RenderKind, str, str]:
 
 class _ResourceToImageTool(Tool):
     name: ClassVar[str] = "resource_to_image"
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     description: ClassVar[str] = (
         "Return the preview thumbnail image URL for an existing resource. "
         "The original file is not affected."

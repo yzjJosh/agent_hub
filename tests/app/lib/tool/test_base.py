@@ -88,7 +88,7 @@ class _CachedTool(Tool):
         return ToolResult(text=f"value-{params['query']}")
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         return f"k:{params['query']}"
 
 
@@ -110,7 +110,7 @@ async def test_resource_interest_is_recorded_on_cache_hits(
     other.write_text("other")
     tool = _ResourceInputTool()
     first = await tool.run({"query": "input.txt", "files": ["other.txt"]})
-    assert await tool.result_text(first) == "value-input.txt"
+    assert await tool.read_result_text(first) == "value-input.txt"
     await wait_terminal(tool_infra, str(first.id))
     os.removexattr(path, "user.agent.last_access")
     os.removexattr(other, "user.agent.last_access")
@@ -168,7 +168,7 @@ class _LongCachedTool(Tool):
         return ToolResult(text="x" * LONG_LEN)
 
     @override
-    async def cache_key(self, _params: dict) -> str:
+    async def build_cache_key(self, _params: dict) -> str:
         return "k"
 
 
@@ -178,7 +178,7 @@ class _CachedFailingTool(Tool):
     params: ClassVar[tuple[Param, ...]] = ()
 
     @override
-    async def cache_key(self, _params: dict) -> str:
+    async def build_cache_key(self, _params: dict) -> str:
         return "k"
 
     @override
@@ -375,28 +375,28 @@ class TestResultText:
 
     async def test_result_body_verbatim(self) -> None:
         task = task_manager.create_completed_task(ToolResult(text="hello"))
-        assert await _EchoTool().result_text(task) == "hello"
+        assert await _EchoTool().read_result_text(task) == "hello"
 
     async def test_message_error_becomes_its_own_text(self) -> None:
         task = task_manager.create_completed_task(error=ToolMessageError("Error: bad input."))
-        assert await _EchoTool().result_text(task) == "Error: bad input."
+        assert await _EchoTool().read_result_text(task) == "Error: bad input."
 
     async def test_other_error_becomes_the_failure_message(self) -> None:
         task = task_manager.create_completed_task(error=RuntimeError("boom"))
-        assert await _EchoTool().result_text(task) == "Tool 'echo' failed: boom"
+        assert await _EchoTool().read_result_text(task) == "Tool 'echo' failed: boom"
 
     async def test_finished_async_run_returns_its_body(self) -> None:
         async def _runner() -> ToolResult:
             await asyncio.sleep(SLOW)
             return ToolResult(text="late")
         task = await task_manager.create_task(_runner)
-        assert await _EchoTool().result_text(task) == "late"
+        assert await _EchoTool().read_result_text(task) == "late"
 
     async def test_failed_async_run_becomes_the_failure_message(self) -> None:
         async def _failing() -> ToolResult:
             raise RuntimeError("boom")
         task = await task_manager.create_task(_failing)
-        assert await _EchoTool().result_text(task) == "Tool 'echo' failed: boom"
+        assert await _EchoTool().read_result_text(task) == "Tool 'echo' failed: boom"
 
     async def test_cancelled_run_names_its_task(self) -> None:
         async def _slow() -> ToolResult:
@@ -404,7 +404,7 @@ class TestResultText:
             return ToolResult(text="late")
         task = await task_manager.create_task(_slow)
         await task.cancel()
-        assert await _EchoTool().result_text(task) == f"Task {task.id} was cancelled."
+        assert await _EchoTool().read_result_text(task) == f"Task {task.id} was cancelled."
 
     async def test_cancelled_caller_does_not_stop_the_run(self) -> None:
         """A cancelled waiter no longer cancels the run. The run keeps going."""
@@ -412,7 +412,7 @@ class TestResultText:
             await asyncio.sleep(SLOW)
             return ToolResult(text="late")
         task = await task_manager.create_task(_slow)
-        waiter = asyncio.create_task(_EchoTool().result_text(task))
+        waiter = asyncio.create_task(_EchoTool().read_result_text(task))
         await task.wait_started()
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -540,7 +540,7 @@ class TestNesting:
 
 class _DescProbe(Tool):
     name: ClassVar[str] = "desc_probe"
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     params: ClassVar[tuple[Param, ...]] = ()
     description: ClassVar[str] = "A base description."
 
@@ -1132,7 +1132,7 @@ class _CachedRenderTool(Tool):
         return ToolResult(text=f"v-{params['query']}", render_type="markdown")
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         return f"kr:{params['query']}"
 
 

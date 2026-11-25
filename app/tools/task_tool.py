@@ -128,7 +128,7 @@ async def _cancel(task_id: str, record: TaskRecord) -> str:
 
 class _TaskTool(Tool):
     name: ClassVar[str] = "task"
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     description: ClassVar[str] = (
         "Query or control a stateful tool run.\n"
         "\n"

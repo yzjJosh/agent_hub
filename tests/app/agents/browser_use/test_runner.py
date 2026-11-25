@@ -702,7 +702,7 @@ class TestActionTools:
     async def test_tool_is_tracked_and_renders_text(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
         session = FakeSession([])
         tool = _tool(name, await _wired_tools(monkeypatch, session))
-        assert tool.tracked is True
+        assert tool.is_tracked is True
         assert tool.result_render_type == "text"
 
     @pytest.mark.parametrize("name", _TOOL_NAMES)

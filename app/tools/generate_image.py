@@ -70,7 +70,7 @@ class _GenerateImageTool(Tool):
         return ToolResult(text=saved_file_message("image", os.path.join(resources_dir(), rel)), files=(rel,))
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         payload: dict = {
             "prompt": params["prompt"],
             "aspect_ratio": params.get("aspect_ratio", "16:9"),

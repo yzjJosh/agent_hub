@@ -42,7 +42,7 @@ def _instructions() -> str:
 
 class _SendOrReceiveFileTool(Tool):
     name: ClassVar[str] = "send_or_receive_file"
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     description: ClassVar[str] = (
         "Get instructions for transferring files with this server's WebDAV "
         "endpoint at /dav. Use when you need to upload a file for a follow-up "

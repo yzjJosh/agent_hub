@@ -103,7 +103,7 @@ class _ReadMediaOrDocTool(Tool):
         )
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         resource_path: str = params["resource_path"]
         target = await resolve_path(resources_dir(), resource_path)
         file_hash = resource_path

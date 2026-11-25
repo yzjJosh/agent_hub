@@ -61,7 +61,7 @@ class TestPromptParamDocs:
     def test_prompt_param_exists_optional_longtext(self) -> None:
         """The prompt param is present, optional, defaults to '', and is longtext."""
         p = next(p for p in read_media_or_doc_tool.params if p.name == "prompt")
-        assert not p.required
+        assert not p.is_required
         assert p.default == ""
         assert p.kind == "longtext"
 

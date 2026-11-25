@@ -65,7 +65,7 @@ class TestGenerateImageShape:
             "aspect_ratio",
             "upscale",
         ]
-        assert params["prompt"].required
+        assert params["prompt"].is_required
         assert params["prompt"].kind == "longtext"
         assert params["aspect_ratio"].default == "16:9"
         assert params["aspect_ratio"].enum == ("16:9", "9:16", "4:3", "3:4", "1:1")
@@ -162,14 +162,14 @@ class TestUpscaleAndSuccess:
         assert_saved_image(tmp_path, "generate_image_*.png", result, _PNG_BYTES)
 
     async def test_cache_key_changes_with_upscale(self) -> None:
-        base = await generate_image_tool.cache_key({"prompt": "a cat"})
-        upscaled = await generate_image_tool.cache_key({"prompt": "a cat", "upscale": True})
+        base = await generate_image_tool.build_cache_key({"prompt": "a cat"})
+        upscaled = await generate_image_tool.build_cache_key({"prompt": "a cat", "upscale": True})
 
         assert base != upscaled
 
     async def test_cache_key_carries_pipeline_discriminator(self) -> None:
         """The t2i key differs from the old recipe's key for the same params."""
-        key = await generate_image_tool.cache_key(
+        key = await generate_image_tool.build_cache_key(
             {"prompt": "a cat", "aspect_ratio": "16:9", "upscale": True}
         )
         old_payload = json.dumps(

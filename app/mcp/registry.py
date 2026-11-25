@@ -12,7 +12,7 @@ from fastmcp.tools import FunctionTool
 
 from app.lib.shared.paths import resources_dir
 from app.lib.task import TaskStatus
-from app.lib.tool.base import Contract, Param, ParamValue, Tool, param_signature
+from app.lib.tool.base import Contract, Param, ParamValue, Tool, build_param_signature
 from app.lib.tool.truncation import (
     DEFAULT_TOOL_OUTPUT_LEN_LIMIT,
     MAX_CHAR_DESCRIPTION,
@@ -80,13 +80,13 @@ async def _invoke_tool(inner: Tool, params: dict) -> str:
     await task.wait_started()
     if inner.is_slow and task.status == TaskStatus.RUNNING:
         return _ACK_MESSAGE.format(task_id=task_id)
-    text = await inner.result_text(task)
+    text = await inner.read_result_text(task)
     return truncate(text, {"max_char": max_char}, task_id)
 
 
 def _synthesized_signature(tool: Tool) -> inspect.Signature:
     """The call signature for a tool's params."""
-    return param_signature(_wire_params(tool))
+    return build_param_signature(_wire_params(tool))
 
 
 def _annotations(tool: Tool) -> dict:
@@ -103,7 +103,7 @@ def _register_tool(mcp: FastMCP, instance: Tool) -> None:
     Raises:
         AttributeError: If the tool is missing something it must declare.
     """
-    contract: Contract = instance.contract()
+    contract: Contract = instance.build_contract()
     name = contract.name
     description = instance.dynamic_description
     params = _wire_params(instance)

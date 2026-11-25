@@ -122,8 +122,8 @@ def _param_json(p: Param) -> dict:
         "name": p.name,
         "type": _scalar_type(p),
         "item_type": _item_type(p),
-        "required": p.required,
-        "default": None if p.required else p.default,
+        "required": p.is_required,
+        "default": None if p.is_required else p.default,
         "enum": list(p.enum) if p.enum is not None else None,
         "kind": p.kind,
         "min": p.min,
@@ -146,7 +146,7 @@ def _exposed_tool_or_error(tool: str) -> type[Tool] | JSONResponse:
     cls = tool_class(tool)
     if cls is None:
         return _unknown_tool(tool)
-    if not cls.tracked:
+    if not cls.is_tracked:
         return error_response(403, "not_exposed", f"Tool '{tool}' is not exposed in the console.")
     return cls
 

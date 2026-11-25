@@ -105,7 +105,7 @@ class _FakeFailingRunTool(Tool):
 class _FakeUntrackedBase(Tool):
     """Shared base for untracked fake tools, which never persist a run row."""
 
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     params: ClassVar[tuple[Param, ...]] = ()
 
 
@@ -154,7 +154,7 @@ class _FakeCachedTool(Tool):
     params: ClassVar[tuple[Param, ...]] = (Param("q", str, description="The query string."),)
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         return f"key:{params['q']}"
 
     @override
@@ -203,7 +203,7 @@ class _FakeOuterTool(Tool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        await self._inner.result_text(await self._inner.run({"q": params["q"]}))
+        await self._inner.read_result_text(await self._inner.run({"q": params["q"]}))
         return ToolResult(text="outer done: " + params["q"])
 
 
@@ -746,7 +746,7 @@ async def test_served_schema_carries_declared_minimums(
 # --- the served schema ---
 
 
-@pytest.mark.parametrize("name", sorted(n for n, cls in registered_tools().items() if cls.tracked))
+@pytest.mark.parametrize("name", sorted(n for n, cls in registered_tools().items() if cls.is_tracked))
 async def test_served_schema_never_has_double_backtick(api_client: httpx.AsyncClient, name: str) -> None:
     """No served description carries a double backtick."""
     r = await api_client.get(f"/api/tools/{name}/schema")

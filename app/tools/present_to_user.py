@@ -149,7 +149,7 @@ async def _thumb_jobs(presented: list[str]) -> list[tuple[str, RenderKind, str]]
 
 class _PresentToUserTool(Tool):
     name: ClassVar[str] = "present_to_user"
-    tracked: ClassVar[bool] = False
+    is_tracked: ClassVar[bool] = False
     description: ClassVar[str] = (
         "Present files and/or text content to the user via this server's /view "
         "surface. Use to deliver a result or artifact to the user."

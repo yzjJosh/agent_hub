@@ -258,7 +258,7 @@ class CollectEvidence(Tool):
 
     name: ClassVar[str] = "collect_evidence"
     staleness: ClassVar[timedelta | None] = None
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     result_render_type: ClassVar[str] = "markdown"
     description: ClassVar[str] = (
         "Run up to three collectors in parallel, one per task, and add the evidence they find "

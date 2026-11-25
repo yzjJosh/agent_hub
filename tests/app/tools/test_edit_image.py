@@ -95,9 +95,9 @@ class TestEditImageShape:
     def test_params(self) -> None:
         params = {p.name: p for p in edit_image_tool.params}
         assert [p.name for p in edit_image_tool.params] == ["image", "prompt", "reference_images"]
-        assert params["image"].required
+        assert params["image"].is_required
         assert params["image"].kind == "resource"
-        assert params["prompt"].required
+        assert params["prompt"].is_required
         assert params["prompt"].kind == "longtext"
         assert params["reference_images"].default is None
         assert params["reference_images"].kind == "resource_list"
@@ -167,9 +167,9 @@ class TestEditRun:
         point_resources_at(tmp_path, monkeypatch)
         write_reference_image(tmp_path)
 
-        first = await edit_image_tool.cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
+        first = await edit_image_tool.build_cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
         (tmp_path / "upload" / "ref.png").write_bytes(b"changed image")
-        changed = await edit_image_tool.cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
+        changed = await edit_image_tool.build_cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
 
         assert first != changed
 
@@ -178,7 +178,7 @@ class TestEditRun:
         point_resources_at(tmp_path, monkeypatch)
         write_reference_image(tmp_path)
 
-        key = await edit_image_tool.cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
+        key = await edit_image_tool.build_cache_key({"image": "upload/ref.png", "prompt": "make it blue"})
         old_payload = json.dumps(
             {
                 "prompt": "make it blue",
@@ -280,11 +280,11 @@ class TestReferences:
         write_reference_image(tmp_path)
         (tmp_path / "upload" / "ref_0.png").write_bytes(b"reference")
 
-        first = await edit_image_tool.cache_key(
+        first = await edit_image_tool.build_cache_key(
             {"image": "upload/ref.png", "prompt": "make it blue", "reference_images": ["upload/ref_0.png"]}
         )
         (tmp_path / "upload" / "ref_0.png").write_bytes(b"changed reference")
-        changed = await edit_image_tool.cache_key(
+        changed = await edit_image_tool.build_cache_key(
             {"image": "upload/ref.png", "prompt": "make it blue", "reference_images": ["upload/ref_0.png"]}
         )
 

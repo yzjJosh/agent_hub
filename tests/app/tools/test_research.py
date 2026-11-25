@@ -38,7 +38,7 @@ class TestResearchShape:
 
     def test_single_required_goal_param(self) -> None:
         assert [p.name for p in research_tool.params] == ["goal"]
-        assert research_tool.params[0].required
+        assert research_tool.params[0].is_required
         assert research_tool.params[0].type is str
         assert research_tool.params[0].description
         assert research_tool.params[0].kind == "longtext"
@@ -73,13 +73,13 @@ class TestCacheKey:
     """The cache key follows the goal."""
 
     async def test_cache_key_deterministic(self) -> None:
-        first = await research_tool.cache_key({"goal": "the goal"})
-        second = await research_tool.cache_key({"goal": "the goal"})
+        first = await research_tool.build_cache_key({"goal": "the goal"})
+        second = await research_tool.build_cache_key({"goal": "the goal"})
         assert first == second
 
     async def test_cache_key_distinct_per_goal(self) -> None:
-        first = await research_tool.cache_key({"goal": "the goal"})
-        second = await research_tool.cache_key({"goal": "another goal"})
+        first = await research_tool.build_cache_key({"goal": "the goal"})
+        second = await research_tool.build_cache_key({"goal": "another goal"})
         assert first != second
 
 

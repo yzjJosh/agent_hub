@@ -945,7 +945,7 @@ class _RednoteResearchTool(Tool):
         return ToolResult(text=text, render_type=render_type)
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         payload = json.dumps(
             [params["query"], params.get("count", 5), params.get("raw_notes", False)],
             ensure_ascii=False,

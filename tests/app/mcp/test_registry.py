@@ -23,7 +23,7 @@ from app.lib.tool.base import (
     Tool,
     ToolMessageError,
     ToolResult,
-    param_signature,
+    build_param_signature,
 )
 from app.lib.tool.truncation import (
     DEFAULT_TOOL_OUTPUT_LEN_LIMIT,
@@ -159,8 +159,8 @@ def _assert_closure_lockstep(name: str, sig: inspect.Signature, cls: type[Tool])
         expected_type = Literal[tuple(p.enum)] if p.enum else p.type
         assert sp.annotation == expected_type, f"{name}.{p.name}"
         assert sp.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD, f"{name}.{p.name}"
-        assert (sp.default is inspect.Parameter.empty) == p.required, f"{name}.{p.name}"
-        if not p.required:
+        assert (sp.default is inspect.Parameter.empty) == p.is_required, f"{name}.{p.name}"
+        if not p.is_required:
             assert sp.default == p.default, f"{name}.{p.name}"
     if cls.is_result_long:
         sp = sig.parameters["max_char"]
@@ -191,7 +191,7 @@ def test_validation_stub_signature_matches_tool_params(name: str) -> None:
     max_char the closure strips before the run.
     """
     cls = tool_class(name)
-    assert inspect.signature(cls.validation_stub()) == param_signature(cls.params), name
+    assert inspect.signature(cls.build_validation_stub()) == build_param_signature(cls.params), name
 
 
 # --- invariant 2b: served-schema differential (read the wire) ---
@@ -369,7 +369,7 @@ def _consecutive_bullets(units: list[str], start: int) -> list[str]:
 
 def _clause_i_default(p: Param, scope: str) -> bool:
     """Whether the scope spells out the param's own plain default value."""
-    if p.required or p.default is None:
+    if p.is_required or p.default is None:
         return False
     if isinstance(p.default, (list, dict, tuple, set)):
         return False
@@ -518,7 +518,7 @@ def _is_pinned_value(p: Param, value: str) -> bool:
         return v in ("true", "false")
     if p.enum is not None:
         return v in {str(e).casefold() for e in p.enum}
-    return (not p.required) and str(p.default).casefold() == v
+    return (not p.is_required) and str(p.default).casefold() == v
 
 
 def _clause_v_pinned_assignment(p: Param, scope: str) -> bool:
@@ -690,7 +690,7 @@ def _clause_pg_default(p: Param, scope: str) -> bool:
     The default must show up as a whole word, and the word default must be
     somewhere in the scope too.
     """
-    if p.required or p.default is None:
+    if p.is_required or p.default is None:
         return False
     if isinstance(p.default, (list, dict, tuple, set)):
         return False
@@ -899,7 +899,7 @@ def _none_tolerant_default_findings(cls: type[Tool]) -> list[str]:
     for p in cls.params:
         if type(None) not in get_args(p.annotation):
             continue
-        if not p.required and p.default is not None:
+        if not p.is_required and p.default is not None:
             findings.append(f"{p.name}: {p.annotation} with default {p.default!r}")
     return findings
 
@@ -989,7 +989,7 @@ async def test_contract_is_complete_and_consistent(name: str) -> None:
     every param. Its served schema stands on its own.
     """
     cls = tool_class(name)
-    contract = cls().contract()
+    contract = cls().build_contract()
     assert isinstance(contract.params, tuple), name
     assert contract.description, name
     assert contract.summary, name

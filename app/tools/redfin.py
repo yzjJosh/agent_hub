@@ -129,7 +129,7 @@ class _RedfinSearchTool(Tool):
             raise RuntimeError(f"Redfin search failed: {exc}")
 
     @override
-    async def cache_key(self, params: dict) -> str:
+    async def build_cache_key(self, params: dict) -> str:
         payload = json.dumps(
             {
                 "location": params["location"],

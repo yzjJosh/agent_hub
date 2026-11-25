@@ -779,7 +779,7 @@ class TestRunTimeout:
 class _BlockTool(Tool):
     name: ClassVar[str] = "search_web"
     description: ClassVar[str] = "Search the web."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (Param(name="query", type=str, description="The query."),)
 
     @override
@@ -796,7 +796,7 @@ class _AsyncTool(Tool):
     name: ClassVar[str] = "gen_media"
     is_slow: ClassVar[bool] = True
     description: ClassVar[str] = "Generate media."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (Param(name="prompt", type=str, description="The prompt."),)
 
     @override
@@ -807,7 +807,7 @@ class _AsyncTool(Tool):
 class _BigTool(Tool):
     name: ClassVar[str] = "big"
     description: ClassVar[str] = "Return a long string."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     is_result_long: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (
         Param(name="query", type=str, description="The query."),
@@ -825,7 +825,7 @@ class _BigIdOnlyTool(_BigTool):
 class _FailTool(Tool):
     name: ClassVar[str] = "boom"
     description: ClassVar[str] = "Always fail."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (Param(name="query", type=str, description="The query."),)
 
     @override
@@ -836,7 +836,7 @@ class _FailTool(Tool):
 class _StopTool(Tool):
     name: ClassVar[str] = "stopper"
     description: ClassVar[str] = "Stop while running."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (Param(name="query", type=str, description="The query."),)
 
     @override
@@ -847,7 +847,7 @@ class _StopTool(Tool):
 class _BoundedTool(Tool):
     name: ClassVar[str] = "bounded"
     description: ClassVar[str] = "Take a small number."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (
         Param(name="count", type=int, description="How many.", min=1, max=10),
     )
@@ -860,7 +860,7 @@ class _BoundedTool(Tool):
 class _ToolTierRejectTool(Tool):
     name: ClassVar[str] = "tool_rejector"
     description: ClassVar[str] = "Reject a large number before it runs."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (
         Param(name="count", type=int, description="How many."),
     )
@@ -875,12 +875,12 @@ class _ToolTierRejectTool(Tool):
 class _CachedTool(Tool):
     name: ClassVar[str] = "cached_search"
     description: ClassVar[str] = "Search and reuse a stored answer."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     staleness: ClassVar[timedelta | None] = timedelta(hours=24)
     params: ClassVar[tuple[Param, ...]] = (Param(name="query", type=str, description="The query."),)
 
     @override
-    async def cache_key(self, params: dict) -> str | None:
+    async def build_cache_key(self, params: dict) -> str | None:
         return str(params["query"])
 
     @override
@@ -891,7 +891,7 @@ class _CachedTool(Tool):
 class _MediaTool(Tool):
     name: ClassVar[str] = "media"
     description: ClassVar[str] = "Return text plus the files the test names."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     files: ClassVar[tuple[str, ...] | None] = None
     params: ClassVar[tuple[Param, ...]] = (Param(name="query", type=str, description="The query."),)
 
@@ -1325,7 +1325,7 @@ class TestToolResultsById(_ToolCallDriver):
 
     class _UntrackedEcho(Tool):
         name: ClassVar[str] = "untracked_echo"
-        tracked: ClassVar[bool] = False
+        is_tracked: ClassVar[bool] = False
         description: ClassVar[str] = "Echo without tracking."
         summary: ClassVar[str] = "test"
         params: ClassVar[tuple[Param, ...]] = (Param("query", str, description="The query."),)
@@ -1464,7 +1464,7 @@ class TestUntrackedToolInLoop:
 
     class _UntrackedEchoTool(Tool):
         name: ClassVar[str] = "fake_untracked"
-        tracked: ClassVar[bool] = False
+        is_tracked: ClassVar[bool] = False
         description: ClassVar[str] = "An untracked tool."
         summary: ClassVar[str] = "test"
         params: ClassVar[tuple[Param, ...]] = (
@@ -1826,7 +1826,7 @@ class TestMilestoneLog:
 class _LiveBlock(Tool):
     name: ClassVar[str] = "note"
     description: ClassVar[str] = "Return a short note."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     params: ClassVar[tuple[Param, ...]] = (Param(name="text", type=str, description="Text to note."),)
 
     @override
@@ -2003,7 +2003,7 @@ def _failing_stub(
 class _CountedTool(Tool):
     name: ClassVar[str] = "counted_note"
     description: ClassVar[str] = "Record one note call."
-    tracked: ClassVar[bool] = True
+    is_tracked: ClassVar[bool] = True
     calls: ClassVar[int] = 0
     params: ClassVar[tuple[Param, ...]] = (Param(name="text", type=str, description="Text to note."),)
 
