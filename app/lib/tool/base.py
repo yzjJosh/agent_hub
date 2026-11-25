@@ -358,16 +358,16 @@ def build_param_signature(params: tuple[Param, ...]) -> inspect.Signature:
     return inspect.Signature(parameters, return_annotation=str)
 
 
-def _build_validation_adapter(tool_cls: type[Tool]) -> pydantic.TypeAdapter[dict]:
+def _get_validation_adapter(tool_class: type[Tool]) -> pydantic.TypeAdapter[dict]:
     """Return the cached validator for a tool class."""
-    adapter = _validation_adapters.get(tool_cls)
+    adapter = _validation_adapters.get(tool_class)
     if adapter is None:
-        adapter = pydantic.TypeAdapter(tool_cls.build_validation_stub())
-        _validation_adapters[tool_cls] = adapter
+        adapter = pydantic.TypeAdapter(tool_class.build_validation_stub())
+        _validation_adapters[tool_class] = adapter
     return adapter
 
 
-def _build_numeric_adapter(numeric_type: type) -> pydantic.TypeAdapter[int | float]:
+def _get_numeric_adapter(numeric_type: type) -> pydantic.TypeAdapter[int | float]:
     """Return the cached validator for a numeric type."""
     adapter = _numeric_adapters.get(numeric_type)
     if adapter is None:
@@ -380,13 +380,13 @@ def _extract_numeric_type(annotation: _ParamType) -> type | None:
     """Return int or float when a parameter annotation accepts numbers, or None."""
     if annotation in (int, float) and isinstance(annotation, type):
         return annotation
-    for type_arg in get_args(annotation):
-        if type_arg in (int, float) and isinstance(type_arg, type):
-            return type_arg
+    for type_argument in get_args(annotation):
+        if type_argument in (int, float) and isinstance(type_argument, type):
+            return type_argument
     return None
 
 
-def _build_tool_view(params: tuple[Param, ...], values: dict) -> dict:
+def _drop_nullable_none_values(params: tuple[Param, ...], values: dict) -> dict:
     """Drop None entries for parameters whose declared type allows None."""
     nullable_names = {
         param.name for param in params if type(None) in get_args(param.type)
@@ -413,7 +413,7 @@ def _find_bound_violation(param: Param, value: ParamValue) -> str | None:
     if numeric_type is None:
         return None
     try:
-        numeric_value = _build_numeric_adapter(numeric_type).validate_python(value)
+        numeric_value = _get_numeric_adapter(numeric_type).validate_python(value)
     except pydantic.ValidationError:
         return None
     if param.min is not None and not (numeric_value >= param.min):
@@ -472,14 +472,14 @@ class Tool(abc.ABC):
             A function accepting the tool's declared parameters and returning them as a dict.
         """
 
-        def _stub(**kwargs: ParamValue) -> dict:
+        def _collect_params(**kwargs: ParamValue) -> dict:
             return dict(kwargs)
 
-        _stub.__signature__ = build_param_signature(cls.params)  # type: ignore[attr-defined]
-        _stub.__annotations__ = {
+        _collect_params.__signature__ = build_param_signature(cls.params)  # type: ignore[attr-defined]
+        _collect_params.__annotations__ = {
             param.name: param.annotation for param in cls.params
         } | {"return": str}
-        return _stub
+        return _collect_params
 
     def validate_params(self, params: dict) -> str | None:
         """Check call arguments against this tool's declared parameters.
@@ -490,9 +490,9 @@ class Tool(abc.ABC):
         Returns:
             The error text for the first problem, or None when all arguments are valid.
         """
-        validation_input = _build_tool_view(self.params, params)
+        validation_input = _drop_nullable_none_values(self.params, params)
         try:
-            _build_validation_adapter(type(self)).validate_python(validation_input)
+            _get_validation_adapter(type(self)).validate_python(validation_input)
         except pydantic.ValidationError as error:
             return _format_validation_error(error)
         for param in self.params:
@@ -549,19 +549,16 @@ class Tool(abc.ABC):
             await self._record_resource_inputs(completed_params)
         except OSError as error:
             return _build_error_task(_format_failure_message(self.name, error))
-        cache_key = await self._resolve_cache_key(completed_params)
-        if cache_key is not None and self.staleness is not None:
-            cached_task = await self._read_stored_result(
-                cache_key, _format_cache_cutoff(self.staleness)
-            )
-            if cached_task is not None:
-                return cached_task
+        cache_key: str | None = None
+        if self.staleness is not None:
+            cache_key = await self.build_cache_key(completed_params)
+            if cache_key is not None:
+                cached_task = await self._read_stored_result(
+                    cache_key, _format_cache_cutoff(self.staleness)
+                )
+                if cached_task is not None:
+                    return cached_task
         return await self._start_task(completed_params, cache_key)
-
-    async def _resolve_cache_key(self, completed_params: dict) -> str | None:
-        if self.staleness is None:
-            return None
-        return await self.build_cache_key(completed_params)
 
     async def _execute_call(
         self, completed_params: dict, task_id: uuid.UUID, run_path: str
