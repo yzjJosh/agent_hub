@@ -16,9 +16,9 @@ from typing import TypeAlias
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as nn_functional
 from scipy.ndimage import label as label_connected_regions
 from torch import no_grad, set_num_threads
+from torch.nn.functional import interpolate
 from transformers import (
     CLIPModel,
     CLIPProcessor,
@@ -48,7 +48,7 @@ warnings.filterwarnings("ignore", category=UserWarning, message="TypedStorage is
 _CaptchaImage: TypeAlias = bytes | str | PathLike[str]
 _CaptchaImageInput: TypeAlias = _CaptchaImage | Sequence[_CaptchaImage]
 
-_TORCH_NUM_THREADS = 5
+_TORCH_THREAD_COUNT = 5
 _YOLO_CONFIDENCE_THRESHOLD = 0.2
 _YOLO_IOU_THRESHOLD = 0.3
 _MIN_AREA_RATIO = 0.005
@@ -77,8 +77,6 @@ class DetectionResult:
 
 @dataclass(frozen=True)
 class _PreparedInputs:
-    """Prepared tile bytes, decoded images, and click points."""
-
     tile_bytes: list[bytes]
     tile_images: list[cv2.typing.MatLike] | None
     click_coordinates: list[tuple[int, int]]
@@ -86,16 +84,12 @@ class _PreparedInputs:
 
 @dataclass(frozen=True)
 class _ClipClassificationPrompt:
-    """Challenge label paired with its tile classification prompt."""
-
     label: str
     prompt: str
 
 
 @dataclass(frozen=True)
 class _ClipTaskConfig:
-    """Score threshold and region prompt for a challenge label."""
-
     threshold: float
     segmentation_prompt: str
 
@@ -193,43 +187,19 @@ class _DetectionModels:
     """Loaded vision models shared across detector runs."""
 
     def __init__(self) -> None:
-        """Load every vision model from the configured models folder."""
-        set_num_threads(_TORCH_NUM_THREADS)
-        self.models_path = Path(get_models_dir())
-        self.yolo_model = self._load_yolo_model()
-        self.clip_model = self._load_clip_model()
-        self.clip_processor = self._load_clip_processor()
-        self.segmentation_model = self._load_segmentation_model()
-        self.segmentation_processor = self._load_segmentation_processor()
+        set_num_threads(_TORCH_THREAD_COUNT)
+        models_path = Path(get_models_dir())
+        self.yolo_model = YOLO(models_path / _YOLO_MODEL_FILENAME)
+        self.clip_model = CLIPModel.from_pretrained(_CLIP_MODEL_NAME, cache_dir=models_path)
+        self.clip_processor = CLIPProcessor.from_pretrained(_CLIP_MODEL_NAME, cache_dir=models_path, use_fast=True)
+        self.segmentation_model = CLIPSegForImageSegmentation.from_pretrained(
+            _CLIPSEG_MODEL_NAME, cache_dir=models_path
+        )
+        self.segmentation_processor = CLIPSegProcessor.from_pretrained(
+            _CLIPSEG_MODEL_NAME, cache_dir=models_path, use_fast=True
+        )
 
-    def _load_yolo_model(self) -> YOLO:
-        """Load the object segmentation model."""
-        return YOLO(self.models_path / _YOLO_MODEL_FILENAME)
-
-    def _load_clip_model(self) -> CLIPModel:
-        """Load the tile classification model."""
-        return CLIPModel.from_pretrained(_CLIP_MODEL_NAME, cache_dir=self.models_path)
-
-    def _load_clip_processor(self) -> CLIPProcessor:
-        """Load the tile classification preprocessor."""
-        return CLIPProcessor.from_pretrained(_CLIP_MODEL_NAME, cache_dir=self.models_path, use_fast=True)
-
-    def _load_segmentation_model(self) -> CLIPSegForImageSegmentation:
-        """Load the region segmentation model."""
-        return CLIPSegForImageSegmentation.from_pretrained(_CLIPSEG_MODEL_NAME, cache_dir=self.models_path)
-
-    def _load_segmentation_processor(self) -> CLIPSegProcessor:
-        """Load the region segmentation preprocessor."""
-        return CLIPSegProcessor.from_pretrained(_CLIPSEG_MODEL_NAME, cache_dir=self.models_path, use_fast=True)
-
-    def load_if_needed(self) -> None:
-        """Load any missing model and check that all models are ready."""
-        if not self.yolo_model:
-            self.yolo_model = self._load_yolo_model()
-        if not self.segmentation_model:
-            self.segmentation_model = self._load_segmentation_model()
-        if not self.clip_model:
-            self.clip_model = self._load_clip_model()
+    def check_loaded(self) -> None:
         if not self.yolo_model:
             raise ValueError("YOLO detector model was not loaded")
         if not self.segmentation_model:
@@ -266,7 +236,6 @@ class Detector:
 
     @classmethod
     def _get_models(cls) -> _DetectionModels:
-        """Return the shared vision models, loading them on first use."""
         if cls._models is None:
             cls._models = _DetectionModels()
         return cls._models
@@ -322,9 +291,9 @@ class Detector:
             for something unknown, or when the pictures cannot be used.
         """
         models = self._get_models()
-        models.load_if_needed()
+        models.check_loaded()
 
-        split_image = "square" in prompt if is_split_image is None else is_split_image
+        is_split_grid = "square" in prompt if is_split_image is None else is_split_image
         task_label = split_prompt_message(prompt)
 
         if task_label not in self._challenge_alias:
@@ -335,11 +304,11 @@ class Detector:
             return DetectionResult([], [])
         task_label = self._challenge_alias[task_label]
 
-        prepared = self._prepare_image_inputs(images, split_image)
+        prepared = self._prepare_image_inputs(images, is_split_grid)
         if prepared is None:
             return DetectionResult([], [])
 
-        tile_coordinates = self._fill_missing_coordinates(prepared, split_image)
+        tile_coordinates = self._fill_missing_coordinates(prepared, is_split_grid)
         tile_matches = self._run_detection(prepared, task_label, models)
 
         click_coordinates = self._build_jittered_coordinates(tile_matches, tile_coordinates)
@@ -349,7 +318,6 @@ class Detector:
         return DetectionResult(tile_matches=tile_matches, click_coordinates=click_coordinates)
 
     def _prepare_single_image(self, image: _CaptchaImage, is_split_image: bool) -> _PreparedInputs:
-        """Cut one captcha image into tile bytes, decoded images, and click points."""
         single_image: bytes | Path = Path(image) if isinstance(image, (PathLike, str)) else image
         tile_bytes, click_coordinates = handle_single_image(single_image, is_split_image)
         if len(tile_bytes) > 1:
@@ -361,20 +329,18 @@ class Detector:
         images: _CaptchaImageInput,
         is_split_image: bool,
     ) -> _PreparedInputs | None:
-        """Turn one picture or a sequence of tile pictures into tile bytes and images."""
         if isinstance(images, (bytes, str, PathLike)):
             return self._prepare_single_image(images, is_split_image)
 
-        tile_inputs: Sequence[_CaptchaImage] = images
-        if not isinstance(tile_inputs, Sequence):
+        if not isinstance(images, Sequence) or isinstance(images, (bytes, bytearray, memoryview)):
             return None
 
-        if len(tile_inputs) == 1:
-            return self._prepare_single_image(tile_inputs[0], is_split_image)
+        if len(images) == 1:
+            return self._prepare_single_image(images[0], is_split_image)
 
         tile_bytes = [
             Path(image).read_bytes() if isinstance(image, (PathLike, str)) else image
-            for image in tile_inputs
+            for image in images
         ]
         if len(tile_bytes) not in _VALID_TILE_COUNTS:
             print(
@@ -390,7 +356,6 @@ class Detector:
         prepared: _PreparedInputs,
         is_split_image: bool,
     ) -> list[tuple[int, int]]:
-        """Estimate tile click centers when input tiles have no screen coordinates."""
         if len(prepared.tile_bytes) <= 1 or any(prepared.click_coordinates):
             return prepared.click_coordinates
 
@@ -408,11 +373,10 @@ class Detector:
         task_label: str,
         models: _DetectionModels,
     ) -> list[bool]:
-        """Run the matching detector backend for the challenge label."""
         if len(prepared.tile_bytes) <= 1 or prepared.tile_images is None:
             return []
 
-        if self._yolo_detector.supports_label(task_label):
+        if self._yolo_detector.can_detect_label(task_label):
             grid_image = create_image_grid(prepared.tile_images)
             return self._yolo_detector.detect_tiles(grid_image, len(prepared.tile_bytes), task_label, models)
         return self._clip_detector.detect_tiles(prepared.tile_images, task_label, models)
@@ -422,7 +386,6 @@ class Detector:
         tile_matches: list[bool],
         coordinates: list[tuple[int, int]],
     ) -> list[tuple[int, int]]:
-        """Add random pixel offsets to the click point of every matched tile."""
         jittered_coordinates: list[tuple[int, int]] = []
         for index, is_match in enumerate(tile_matches):
             if is_match:
@@ -464,8 +427,7 @@ class _YoloDetector:
         "traffic light": ("traffic light",),
     }
 
-    def supports_label(self, task_label: str) -> bool:
-        """Return whether this detector handles the given challenge label."""
+    def can_detect_label(self, task_label: str) -> bool:
         return task_label in self._yolo_alias
 
     def detect_tiles(
@@ -491,8 +453,7 @@ class _YoloDetector:
         )
         results = outputs[0]
 
-        for detection_index in range(len(results)):
-            result = results[detection_index]
+        for result in results:  # type: ignore[attr-defined]
             if not result:
                 raise ValueError("YOLO prediction result is empty")
             class_index = int(result.boxes.cls[0])
@@ -513,7 +474,7 @@ class _YoloDetector:
                 box_start = (box_coordinates[0], box_coordinates[1])
                 box_end = (box_coordinates[2], box_coordinates[3])
                 tiles_in_box = get_tiles_in_bounding_box(image, tile_count, box_start, box_end)
-                tile_matches = [matched or in_box for matched, in_box in zip(tile_matches, tiles_in_box)]
+                tile_matches = [is_matched or is_in_box for is_matched, is_in_box in zip(tile_matches, tiles_in_box)]
 
         return tile_matches
 
@@ -527,7 +488,6 @@ class _ClipDetector:
         task_label: str,
         models: _DetectionModels,
     ) -> list[bool]:
-        """Classify each individual tile against the challenge prompt set."""
         inputs = models.clip_processor(
             text=_CLIP_TEXT_PROMPTS,
             images=images,
@@ -577,9 +537,8 @@ class _ClipDetector:
         target_height: int,
         target_width: int,
     ) -> torch.Tensor:
-        """Resize a binary region mask to match the source image dimensions."""
         return (
-            nn_functional.interpolate(
+            interpolate(
                 mask.unsqueeze(0).unsqueeze(0),
                 size=(target_height, target_width),
                 mode="bilinear",
@@ -596,7 +555,6 @@ class _ClipDetector:
         tile_count: int,
         models: _DetectionModels,
     ) -> list[bool]:
-        """Mark every tile covered by segmented target regions in a split image."""
         tile_matches = [False for _ in range(tile_count)]
         task_config = _CLIP_TASK_CONFIGS[task_label]
         threshold = task_config.threshold - _CLIP_THRESHOLD_MARGIN

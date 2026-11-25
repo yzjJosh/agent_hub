@@ -115,7 +115,7 @@ class SyncChallenger(BaseChallenger):
         while not detected:
             if self._verbose:
                 print("[recognizer] running detector...", flush=True)
-            detection: DetectionResult = self.detector.detect(prompt, img_data, is_split_image=area_captcha)
+            detection = self.detector.detect(prompt, img_data, is_split_image=area_captcha)
             if detection.tile_matches:
                 click_coordinates = detection.click_coordinates
                 detected = True
@@ -300,7 +300,6 @@ class _SyncBrowserOps(BrowserOps):
 
 
 if TYPE_CHECKING:
-    from ...components.detector import DetectionResult
     from .._types import (
         PatchrightElementHandle,
         PatchrightFrameLocator,
