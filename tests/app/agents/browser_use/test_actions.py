@@ -14,7 +14,7 @@ import pytest
 from app.agents.browser_use import actions as actions_module
 from app.agents.browser_use.models import TransactionResult, TransactionStatus
 from app.agents.browser_use.session import Action
-from app.lib.tool.base import Tool, ToolResult
+from app.lib.tool.base import Tool, ToolMessageError, ToolResult
 from tests.app.agents.browser_use.conftest import (
     STANDARD_ACTION_TOOL_NAMES,
     FakeActionManager,
@@ -27,6 +27,9 @@ from tests.app.agents.browser_use.conftest import (
 _HALF = 0.5
 _TENTH = 0.1
 _THIRD = 0.3
+_TENTH_POSITION = 100
+_THIRD_POSITION = 300
+_HALF_POSITION = 500
 _NETWORK_IDLE_TIMEOUT_MILLISECONDS = 2000
 _FIXED_YEAR = 2026
 
@@ -82,10 +85,16 @@ class FrozenDatetime(datetime):
 
 _PARAMS: dict[str, dict] = {
     "open_url": {"target_id": "tab1", "url": "https://a.example"},
-    "click": {"target_id": "tab1", "x": 0.2, "y": 0.4},
-    "move_mouse": {"target_id": "tab1", "x": 0.3, "y": 0.6},
-    "type_text": {"target_id": "tab1", "x": _TENTH, "y": _THIRD, "text": "hello"},
-    "replace_input_text": {"target_id": "tab1", "x": _TENTH, "y": _THIRD, "old_text": "helo", "new_text": "hello"},
+    "click": {"target_id": "tab1", "x": 200, "y": 400},
+    "move_mouse": {"target_id": "tab1", "x": 300, "y": 600},
+    "type_text": {"target_id": "tab1", "x": _TENTH_POSITION, "y": _THIRD_POSITION, "text": "hello"},
+    "replace_input_text": {
+        "target_id": "tab1",
+        "x": _TENTH_POSITION,
+        "y": _THIRD_POSITION,
+        "old_text": "helo",
+        "new_text": "hello",
+    },
     "scroll": {"target_id": "tab1", "dx": -_HALF, "dy": 1.0},
     "press_key": {"target_id": "tab1", "key": "Enter"},
     "go_back": {"target_id": "tab1"},
@@ -93,7 +102,7 @@ _PARAMS: dict[str, dict] = {
     "close_page": {"target_id": "tab1"},
     "solve_captcha": {"target_id": "tab1"},
     "wait": {"target_id": "tab1", "seconds": 0.0},
-    "download_click": {"target_id": "tab1", "x": 0.7, "y": 0.9},
+    "download_click": {"target_id": "tab1", "x": 700, "y": 900},
     "refresh": {"target_id": "tab1"},
     "dump_page": {"target_id": "tab1"},
 }
@@ -174,6 +183,27 @@ _EXPECTED_ORDER: dict[str, list[str]] = {
 }
 
 
+_POSITION_TOOL_OTHER_PARAMS: dict[str, dict] = {
+    "click": {},
+    "upload_resources": {"resource_paths": ["upload/photo.jpg"]},
+    "move_mouse": {},
+    "type_text": {"text": "hello"},
+    "replace_input_text": {"old_text": "helo", "new_text": "hello"},
+    "scroll": {"dx": -_HALF, "dy": 1.0},
+    "download_click": {},
+}
+
+_POSITION_TOOL_BROWSER_METHOD: dict[str, str] = {
+    "click": "click_at_relative",
+    "upload_resources": "upload_with_chooser_relative",
+    "move_mouse": "move_mouse_to_relative",
+    "type_text": "type_text_at_relative",
+    "replace_input_text": "replace_input_text_at_relative",
+    "scroll": "move_mouse_to_relative",
+    "download_click": "click_at_relative",
+}
+
+
 def _build_tools(session: FakeSession, resources_directory: str = "/tmp/res") -> tuple[Tool, ...]:
     """Build action tools bound to a fake session."""
     return actions_module.build_action_tools(session, resources_directory)
@@ -243,8 +273,8 @@ class TestActionTools:
         result = await _run_tool(
             tool,
             {
-                "x": _TENTH,
-                "y": _THIRD,
+                "x": _TENTH_POSITION,
+                "y": _THIRD_POSITION,
                 "resource_paths": ["upload/photo.jpg", "upload/notes.txt"],
                 "target_id": "tab1",
             },
@@ -266,7 +296,7 @@ class TestActionTools:
 
         result = await _run_tool(
             tool,
-            {"x": _TENTH, "y": _THIRD, "resource_paths": paths, "target_id": "tab1"},
+            {"x": _TENTH_POSITION, "y": _THIRD_POSITION, "resource_paths": paths, "target_id": "tab1"},
         )
 
         assert "status: failed" in result.text
@@ -351,7 +381,7 @@ class TestActionTools:
         anchor_y = next(param for param in tool.params if param.name == "y")
         assert anchor_x.default is None
         assert anchor_y.default is None
-        params = dict(_PARAMS["scroll"], x=_THIRD, y=_HALF)
+        params = dict(_PARAMS["scroll"], x=_THIRD_POSITION, y=_HALF_POSITION)
         action = await _run_plain_action(session, tool, params)
         manager = FakeActionManager()
         assert await action(manager, "tab1") is True
@@ -371,7 +401,7 @@ class TestActionTools:
         manager = FakeActionManager(tab_ids=("only",))
         session = FakeSession([], manager=manager)
         params = {key: value for key, value in _PARAMS["scroll"].items() if key != "target_id"}
-        params[given] = _THIRD
+        params[given] = _THIRD_POSITION
         result = await _run_tool(find_tool("scroll", _build_tools(session)), params)
         assert "status: failed, action failed: x and y must be given together" in result.text
         assert manager.recorded == {}
@@ -380,7 +410,7 @@ class TestActionTools:
         manager = FakeActionManager(tab_ids=("only",), move_fails=True)
         session = FakeSession([], manager=manager)
         params = {key: value for key, value in _PARAMS["scroll"].items() if key != "target_id"}
-        params.update(x=_THIRD, y=_HALF)
+        params.update(x=_THIRD_POSITION, y=_HALF_POSITION)
         result = await _run_tool(find_tool("scroll", _build_tools(session)), params)
         assert "status: failed, action failed: could not move the mouse to the scroll anchor" in result.text
         assert manager.recorded == {
@@ -398,6 +428,64 @@ class TestActionTools:
         assert anchor_y.default is None
         assert "Give it with y" in anchor_x.description
         assert "Give it with x" in anchor_y.description
+
+    @pytest.mark.parametrize("name", _POSITION_TOOL_OTHER_PARAMS)
+    @pytest.mark.parametrize(
+        "position_x,position_y,fraction_x,fraction_y",
+        [
+            pytest.param(785, 215, 0.785, 0.215, id="whole_numbers"),
+            pytest.param(785.5, 40.25, 0.7855, 0.04025, id="decimals"),
+            pytest.param(0, 0, 0.0, 0.0, id="top_left"),
+            pytest.param(1000, 1000, 1.0, 1.0, id="bottom_right"),
+        ],
+    )
+    async def test_position_reaches_the_browser_as_a_fraction_of_the_screen(
+        self,
+        name: str,
+        position_x: float,
+        position_y: float,
+        fraction_x: float,
+        fraction_y: float,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A 0 to 1000 position reaches the browser as the same point on the 0 to 1 scale."""
+        upload = tmp_path / "upload" / "photo.jpg"
+        upload.parent.mkdir()
+        upload.write_bytes(b"photo")
+        monkeypatch.setattr(actions_module.asyncio, "sleep", AsyncMock())
+        manager = FakeActionManager(tab_ids=("tab1",))
+        tool = find_tool(name, _build_tools(FakeSession([], manager=manager), str(tmp_path)))
+        params = dict(_POSITION_TOOL_OTHER_PARAMS[name], target_id="tab1", x=position_x, y=position_y)
+
+        result = await _run_tool(tool, params)
+
+        assert "status: success" in result.text
+        browser_call = manager.recorded[_POSITION_TOOL_BROWSER_METHOD[name]][0]
+        assert browser_call[:3] == ("tab1", fraction_x, fraction_y)
+
+    @pytest.mark.parametrize("name", _POSITION_TOOL_OTHER_PARAMS)
+    @pytest.mark.parametrize("axis", ["x", "y"])
+    @pytest.mark.parametrize(
+        "position,message",
+        [
+            pytest.param(-1, "Input should be greater than or equal to 0.", id="below_zero"),
+            pytest.param(1000.5, "Input should be less than or equal to 1000.", id="above_1000"),
+        ],
+    )
+    async def test_position_outside_0_to_1000_is_rejected(
+        self, name: str, axis: str, position: float, message: str
+    ) -> None:
+        """A position outside 0 to 1000 fails before any browser action runs."""
+        session = FakeSession([build_success_transaction()])
+        tool = find_tool(name, _build_tools(session))
+        params = dict(_POSITION_TOOL_OTHER_PARAMS[name], target_id="tab1", x=_HALF_POSITION, y=_HALF_POSITION)
+        params[axis] = position
+
+        with pytest.raises(ToolMessageError, match=re.escape(f"Error: {axis}: {message}")):
+            await _run_tool(tool, params)
+
+        assert session.transactions == []
 
     @pytest.mark.parametrize("target", [pytest.param(None, id="no_target"), pytest.param("", id="blank_target")])
     async def test_open_url_without_a_tab_opens_a_new_page(self, target: str | None) -> None:

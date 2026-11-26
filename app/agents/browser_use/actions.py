@@ -23,6 +23,7 @@ _CLICK_SETTLE_DELAY_SECONDS = 2.0
 _DEFAULT_CAPTCHA_MAX_STEPS = 5
 _DEFAULT_WAIT_SECONDS = 2.0
 _NO_OPEN_TAB_ERROR = "no tab is open, open one with open_url first"
+_SCREEN_POSITION_SCALE = 1000
 
 _TARGET_ID_DESCRIPTION = (
     "The tab to act on. When given, the action runs on that tab and fails if no such tab exists. "
@@ -36,8 +37,20 @@ _OPEN_URL_TARGET_ID_DESCRIPTION = (
 )
 
 _COORDINATE_PARAMS: tuple[Param, ...] = (
-    Param("x", float, min=0, max=1, description="Position across the screen, 0 at the left, 1 at the right."),
-    Param("y", float, min=0, max=1, description="Position down the screen, 0 at the top, 1 at the bottom."),
+    Param(
+        "x",
+        float,
+        min=0,
+        max=_SCREEN_POSITION_SCALE,
+        description="Position across the screen, 0 at the left, 1000 at the right.",
+    ),
+    Param(
+        "y",
+        float,
+        min=0,
+        max=_SCREEN_POSITION_SCALE,
+        description="Position down the screen, 0 at the top, 1000 at the bottom.",
+    ),
 )
 
 _TARGET_ID_PARAM = Param("target_id", str | None, None, description=_TARGET_ID_DESCRIPTION)
@@ -56,6 +69,11 @@ class _ObservationMarkers:
 
 
 OBSERVATION_MARKERS = _ObservationMarkers()
+
+
+def _convert_position_to_fraction(position: float) -> float:
+    """Turn a screen position on the 0 to 1000 scale into a fraction of the screen."""
+    return position / _SCREEN_POSITION_SCALE
 
 
 def _require_open_tab(tab: str | None) -> str:
@@ -159,7 +177,9 @@ def _build_scroll_action(
 
         async def apply_scroll(snapshot: PageSnapshot) -> bool:
             if x is not None and y is not None:
-                if not await snapshot.move_mouse_to_relative(x, y, verbose=True):
+                if not await snapshot.move_mouse_to_relative(
+                    _convert_position_to_fraction(x), _convert_position_to_fraction(y), verbose=True
+                ):
                     raise RuntimeError("could not move the mouse to the scroll anchor")
             return await snapshot.scroll_by_relative(dx, dy, verbose=True)
 
@@ -281,7 +301,9 @@ class _ClickTool(_ActionTool):
     @override
     async def call(self, params: dict) -> ToolResult:
         return await self._run_on_snapshot(
-            lambda snapshot: snapshot.click_at_relative(params["x"], params["y"], verbose=True),
+            lambda snapshot: snapshot.click_at_relative(
+                _convert_position_to_fraction(params["x"]), _convert_position_to_fraction(params["y"]), verbose=True
+            ),
             params["target_id"],
             fixed_delay_seconds=_CLICK_SETTLE_DELAY_SECONDS,
         )
@@ -306,8 +328,8 @@ class _UploadResourcesTool(_ActionTool):
 
     @override
     async def call(self, params: dict) -> ToolResult:
-        x = params["x"]
-        y = params["y"]
+        x = _convert_position_to_fraction(params["x"])
+        y = _convert_position_to_fraction(params["y"])
         resource_paths = params["resource_paths"]
 
         async def upload_files(manager: BrowserManager, tab: str) -> bool:
@@ -333,7 +355,9 @@ class _MoveMouseTool(_ActionTool):
     @override
     async def call(self, params: dict) -> ToolResult:
         return await self._run_on_snapshot(
-            lambda snapshot: snapshot.move_mouse_to_relative(params["x"], params["y"], verbose=True),
+            lambda snapshot: snapshot.move_mouse_to_relative(
+                _convert_position_to_fraction(params["x"]), _convert_position_to_fraction(params["y"]), verbose=True
+            ),
             params["target_id"],
         )
 
@@ -356,7 +380,11 @@ class _TypeTextTool(_ActionTool):
         should_submit = params["submit"]
         return await self._run_on_snapshot(
             lambda snapshot: snapshot.type_text_at_relative(
-                params["x"], params["y"], params["text"], submit=should_submit, verbose=True
+                _convert_position_to_fraction(params["x"]),
+                _convert_position_to_fraction(params["y"]),
+                params["text"],
+                submit=should_submit,
+                verbose=True,
             ),
             params["target_id"],
         )
@@ -384,7 +412,11 @@ class _ReplaceInputTextTool(_ActionTool):
     async def call(self, params: dict) -> ToolResult:
         return await self._run_on_snapshot(
             lambda snapshot: snapshot.replace_input_text_at_relative(
-                params["x"], params["y"], params["old_text"], params["new_text"], verbose=True
+                _convert_position_to_fraction(params["x"]),
+                _convert_position_to_fraction(params["y"]),
+                params["old_text"],
+                params["new_text"],
+                verbose=True,
             ),
             params["target_id"],
         )
@@ -413,16 +445,16 @@ class _ScrollTool(_ActionTool):
             float | None,
             None,
             min=0,
-            max=1,
-            description="The point on the screen the scroll is applied at, as a fraction of the width. Give it with y.",
+            max=_SCREEN_POSITION_SCALE,
+            description="The point on the screen the scroll is applied at, 0 at the left, 1000 at the right. Give it with y.",
         ),
         Param(
             "y",
             float | None,
             None,
             min=0,
-            max=1,
-            description="The point on the screen the scroll is applied at, as a fraction of the height. Give it with x.",
+            max=_SCREEN_POSITION_SCALE,
+            description="The point on the screen the scroll is applied at, 0 at the top, 1000 at the bottom. Give it with x.",
         ),
         _TARGET_ID_PARAM,
     )
@@ -546,7 +578,9 @@ class _DownloadClickTool(_ActionTool):
     @override
     async def call(self, params: dict) -> ToolResult:
         return await self._run_on_snapshot(
-            lambda snapshot: snapshot.click_at_relative(params["x"], params["y"], verbose=True),
+            lambda snapshot: snapshot.click_at_relative(
+                _convert_position_to_fraction(params["x"]), _convert_position_to_fraction(params["y"]), verbose=True
+            ),
             params["target_id"],
             fixed_delay_seconds=_CLICK_SETTLE_DELAY_SECONDS,
             should_monitor_download=True,
