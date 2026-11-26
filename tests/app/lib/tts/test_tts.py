@@ -25,6 +25,7 @@ from tests.app.lib.tts.conftest import (
     create_failing_speech_handler,
     create_ffmpeg_subprocess_mock,
     create_speech_http_recorder,
+    patch_speech_http_client,
 )
 
 _ENGLISH_VOICE = MOCK_TTS_ENV["LOCAL_TTS_VOICE_EN"]
@@ -39,7 +40,7 @@ async def _run_preprocessing(text: str) -> str:
     recorder = create_speech_http_recorder()
     with (
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch("asyncio.create_subprocess_exec", side_effect=create_ffmpeg_subprocess_mock()),
     ):
         await generate_tts(text, is_verbose=True)
@@ -61,7 +62,7 @@ def split_test_mocks() -> Iterator[_SpeechTestMocks]:
     recorder = create_speech_http_recorder()
     with (
         patch("app.lib.tts.tts.reason") as mock_reason,
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch(
             "asyncio.create_subprocess_exec",
             side_effect=create_ffmpeg_subprocess_mock(),
@@ -254,7 +255,7 @@ async def test_http_client_calls_speech_endpoint_with_redirects(url: str) -> Non
     recorder = create_speech_http_recorder()
     with (
         patch("app.lib.tts.tts.reason", return_value=("Hello world.", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV | {"LOCAL_TTS_URL": url}, clear=False),
     ):
         output_path = await generate_tts("Hello world.")
@@ -272,7 +273,7 @@ async def test_model_left_out_when_not_set(model: str | None) -> None:
 
     with (
         patch("app.lib.tts.tts.reason", return_value=("Hello world.", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, environment, clear=False),
     ):
         if model is None:
@@ -387,7 +388,7 @@ async def test_api_transport_error_raises_tts_error(tmp_path: Path) -> None:
     recorder = create_speech_http_recorder(_raise_connect_error)
     with (
         patch("app.lib.tts.tts.reason", return_value=("Test text", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
     ):
         with pytest.raises(TtsError, match="Error calling TTS API: API connection failed"):
@@ -406,7 +407,7 @@ async def test_api_timeout_error_raises_tts_error(tmp_path: Path) -> None:
     recorder = create_speech_http_recorder(_raise_timeout)
     with (
         patch("app.lib.tts.tts.reason", return_value=("Test text", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
     ):
         with pytest.raises(TtsError, match=r"^Error calling TTS API: request timed out$"):
@@ -441,7 +442,7 @@ async def test_api_http_error_includes_status_and_body(
     )
     with (
         patch("app.lib.tts.tts.reason", return_value=("Test text", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
     ):
         with pytest.raises(TtsError, match=f"^{re.escape(expected)}$"):
@@ -458,7 +459,7 @@ async def test_empty_audio_response_raises_tts_error(tmp_path: Path) -> None:
     )
     with (
         patch("app.lib.tts.tts.reason", return_value=("Test text", 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
     ):
         with pytest.raises(TtsError, match=r"^TTS API returned empty file$"):
@@ -483,7 +484,7 @@ async def test_multi_segment_api_error_cleans_up_segments(
 
     with (
         patch("app.lib.tts.tts.reason", return_value=(LONG_SPLIT_TEXT, 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
     ):
         with pytest.raises(
@@ -505,7 +506,7 @@ async def test_ffmpeg_concat_failure_raises_tts_error_and_cleans_up(
 
     with (
         patch("app.lib.tts.tts.reason", return_value=(LONG_SPLIT_TEXT, 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
         patch(
             "asyncio.create_subprocess_exec",
             side_effect=create_ffmpeg_subprocess_mock(return_code=1, stderr="muxing failed"),

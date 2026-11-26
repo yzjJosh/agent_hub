@@ -17,6 +17,7 @@ from tests.app.lib.tts.conftest import (
     MOCK_TTS_ENV,
     create_failing_speech_handler,
     create_speech_http_recorder,
+    patch_speech_http_client,
 )
 
 _ERROR_BODY = b'{"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required"}]}'
@@ -154,7 +155,7 @@ async def test_server_error_fails_the_call(
     with (
         patch.dict(os.environ, MOCK_TTS_ENV, clear=False),
         patch("app.lib.tts.tts.reason", return_value=(text, 0)),
-        patch("app.lib.tts.tts.httpx.AsyncClient", side_effect=recorder.create_client),
+        patch_speech_http_client(recorder),
     ):
         result = await run_text(tts_tool, text)
 

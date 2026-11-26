@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import httpx
 
@@ -22,8 +24,6 @@ MOCK_TTS_ENV = {
 FAKE_AUDIO_BYTES = b"fake_audio_data"
 
 LONG_SPLIT_TEXT = "This is a very long text that will be split into multiple segments. " * 20
-
-_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class SpeechHttpRecorder:
             )
             return self._handler(request)
 
-        return _REAL_ASYNC_CLIENT(
+        return httpx.AsyncClient(
             transport=httpx.MockTransport(_record_and_handle_request),
             follow_redirects=follow_redirects,
             timeout=timeout,
@@ -92,6 +92,16 @@ def create_speech_http_recorder(
             lambda _request: httpx.Response(200, content=FAKE_AUDIO_BYTES)
         )
     return SpeechHttpRecorder(handler)
+
+
+@contextmanager
+def patch_speech_http_client(recorder: SpeechHttpRecorder) -> Iterator[None]:
+    """Route speech requests through recorder without affecting other clients."""
+    speech_http_proxy = SimpleNamespace(
+        **(vars(httpx) | {"AsyncClient": recorder.create_client})
+    )
+    with patch("app.lib.tts.tts.httpx", speech_http_proxy):
+        yield
 
 
 def create_failing_speech_handler(
