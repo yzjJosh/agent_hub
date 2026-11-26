@@ -26,7 +26,9 @@ from app.lib.task import logcapture
 from app.mcp.registry import mcp
 from app.resources.resources import create_dav_app
 from app.tts_server import create_openai_tts_app
-from app.viewer.pages import view_doc, view_doc_asset, view_file, view_presentation
+from app.viewer.doc_page import view_doc, view_doc_asset
+from app.viewer.file_page import view_file
+from app.viewer.presentation_page import view_presentation
 from app.viewer.result_page import view_result_page
 
 __all__ = ["build_app", "mcp"]

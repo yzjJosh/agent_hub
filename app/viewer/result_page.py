@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse, Response
 from app.lib.render import result_feed as rf
 from app.lib.render.classify import RenderKind
 from app.lib.render.detect import TEXT_FAMILY_KINDS
-from app.viewer.pages import view_file
+from app.viewer.file_page import view_file
 from app.viewer.view_chrome import delegate_miss, esc, fmt_size, page, theme_btn, top_bar
 
 __all__ = ["view_result_page"]
