@@ -23,7 +23,7 @@ from app.console.windows import (
     parse_max_bytes,
     parse_offset,
 )
-from app.lib.db.store import TaskView
+from app.lib.db.store import StoreFingerprint, TaskPage, TaskView, ToolStats
 from app.lib.shared.timefmt import GeneratedTimestamps, build_generated_timestamps, iso_to_local
 from app.lib.task import TaskStatus, task_manager
 from app.mcp.registry import registered_tools, tool_class
@@ -40,14 +40,15 @@ __all__ = [
     "list_tools",
 ]
 
-_EMPTY_TOOL_STATS = {
-    "running": 0,
-    "completed": 0,
-    "failed": 0,
-    "cancelled": 0,
-    "last_activity": None,
-    "running_since": None,
-}
+_EMPTY_TOOL_STATS = ToolStats(
+    tool_name="",
+    running=0,
+    completed=0,
+    failed=0,
+    cancelled=0,
+    last_activity=None,
+    running_since=None,
+)
 _TASK_PAGE_DEFAULT_LIMIT = 200
 _TASK_PAGE_MAX_LIMIT = 500
 _LOG_FILE = "log"
@@ -105,15 +106,15 @@ def _format_generated_timestamps(timestamps: GeneratedTimestamps) -> dict[str, s
     }
 
 
-def _format_tool_stats(stats: dict) -> dict:
+def _format_tool_stats(stats: ToolStats) -> dict:
     return {
-        "running": stats["running"],
-        "completed": stats["completed"],
-        "failed": stats["failed"],
-        "cancelled": stats["cancelled"],
-        "last_activity": stats["last_activity"],
-        "last_activity_local": iso_to_local(stats["last_activity"]),
-        "running_since": stats["running_since"],
+        "running": stats.running,
+        "completed": stats.completed,
+        "failed": stats.failed,
+        "cancelled": stats.cancelled,
+        "last_activity": stats.last_activity,
+        "last_activity_local": iso_to_local(stats.last_activity),
+        "running_since": stats.running_since,
     }
 
 
@@ -227,19 +228,17 @@ def _start_cancel_worker(task_id: str) -> None:
     worker.add_done_callback(_finalize_cancel_worker)
 
 
-def _build_fingerprint(
-    max_started: str | None,
-    max_ended: str | None,
-    running_count: int,
-    max_presented: str | None,
-) -> str:
-    return f"{max_started or ''}|{max_ended or ''}|{running_count}|{max_presented or ''}"
+def _build_fingerprint(snapshot: StoreFingerprint) -> str:
+    return (
+        f"{snapshot.latest_started_at or ''}|{snapshot.latest_ended_at or ''}"
+        f"|{snapshot.running_count}|{snapshot.latest_presented_at or ''}"
+    )
 
 
 async def _build_stats_block(running_total: int) -> dict:
     roster = set(registered_tools())
-    stats_by_tool = {row["tool_name"]: row for row in await store_module.tool_stats()}
-    total_count = await store_module.total_count()
+    stats_by_tool = {stats.tool_name: stats for stats in await store_module.list_tool_stats()}
+    total_count = await store_module.count_tasks()
     tools = {
         tool_name: _format_tool_stats(stats_by_tool.get(tool_name, _EMPTY_TOOL_STATS))
         for tool_name in roster
@@ -261,7 +260,7 @@ async def list_tools(_request: Request) -> JSONResponse:
         for tool_name, tool_type in registered_tools().items()
         if tool_type.is_tracked is True
     }
-    stats_by_tool = {row["tool_name"]: row for row in await store_module.tool_stats()}
+    stats_by_tool = {stats.tool_name: stats for stats in await store_module.list_tool_stats()}
     timestamps = build_generated_timestamps()
     tools = [
         {
@@ -298,13 +297,13 @@ async def list_tool_tasks(request: Request) -> JSONResponse:
     tool_type = tool_class(tool_name)
     if tool_type is None:
         return error_response(404, "not_found", f"Unknown tool '{tool_name}'.")
-    views, next_cursor = await store_module.keyset_tasks_for_tool(tool_name, limit, cursor)
+    page: TaskPage = await store_module.list_tool_tasks(tool_name, limit, cursor)
     timestamps = build_generated_timestamps()
     return JSONResponse(
         {
             "description": tool_type.summary,
-            "tasks": [_serialize_task(view) for view in views],
-            "next_cursor": next_cursor,
+            "tasks": [_serialize_task(view) for view in page.tasks],
+            "next_cursor": page.next_cursor,
             **_format_generated_timestamps(timestamps),
         }
     )
@@ -320,12 +319,12 @@ async def get_task_detail(request: Request) -> JSONResponse:
         The task detail payload, or an error reply.
     """
     task_id = request.path_params["task_id"]
-    view = await store_module.task_view(task_id)
+    view = await store_module.get_task_view(task_id)
     if view is None:
-        view = await store_module.task_view_by_prefix(task_id)
+        view = await store_module.find_task_view_by_prefix(task_id)
     if view is None:
         return error_response(404, "not_found", f"No task found with id '{task_id}'.")
-    subtasks = [_serialize_task(child) for child in await store_module.subtask_views(view.task_id)]
+    subtasks = [_serialize_task(child) for child in await store_module.list_subtask_views(view.task_id)]
     ancestors = [
         {
             "task_id": ancestor.task_id,
@@ -333,7 +332,7 @@ async def get_task_detail(request: Request) -> JSONResponse:
             "agent_name": ancestor.agent_name,
             "status": ancestor.status,
         }
-        for ancestor in await store_module.ancestor_views(view.task_id)
+        for ancestor in await store_module.list_ancestor_views(view.task_id)
     ]
     file_sizes = await asyncio.to_thread(_measure_run_files, store_module.task_store.data_dir, view.run_dir)
     result_files = await result_files_for(store_module.task_store.data_dir, view.run_dir)
@@ -499,13 +498,13 @@ async def get_changes(request: Request) -> Response:
     if (previous_fingerprint is None) != (previous_generated_at is None):
         previous_fingerprint = None
         previous_generated_at = None
-    max_started, max_ended, running_count, max_presented = await store_module.fingerprint()
-    fingerprint = _build_fingerprint(max_started, max_ended, running_count, max_presented)
+    snapshot = await store_module.get_store_fingerprint()
+    fingerprint = _build_fingerprint(snapshot)
     if previous_fingerprint is not None and previous_fingerprint == fingerprint:
         return Response(status_code=304)
-    running = await store_module.running_views()
-    started = await store_module.started_since_views(previous_generated_at) if previous_generated_at else []
-    finished = await store_module.finished_since_views(previous_generated_at) if previous_generated_at else []
+    running = await store_module.list_running_views()
+    started = await store_module.list_started_since_views(previous_generated_at) if previous_generated_at else []
+    finished = await store_module.list_finished_since_views(previous_generated_at) if previous_generated_at else []
     timestamps = build_generated_timestamps()
     return JSONResponse(
         {
@@ -514,6 +513,6 @@ async def get_changes(request: Request) -> Response:
             "running": [_serialize_task(view) for view in running],
             "started": [_serialize_task(view) for view in started],
             "finished": [_serialize_task(view) for view in finished],
-            "stats": await _build_stats_block(running_count),
+            "stats": await _build_stats_block(snapshot.running_count),
         }
     )

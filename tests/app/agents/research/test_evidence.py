@@ -299,6 +299,6 @@ class TestSearchEvidence:
             task = await tool.run({"query": "q"})
             await wait_terminal(store_module.task_store, str(task.id))
         assert mock_search.await_count == 1
-        view = await store_module.task_view(str(task.id))
+        view = await store_module.get_task_view(str(task.id))
         assert view is not None and view.render_type == "markdown"
         await store.close()

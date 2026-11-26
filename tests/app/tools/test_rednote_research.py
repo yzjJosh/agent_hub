@@ -529,7 +529,7 @@ class TestResearch:
         await wait_terminal(tool_infra, str(task.id))
         body = await run_text(task_tool, action="result", task_id=str(task.id))
         assert isinstance(json.loads(body), list)
-        view = await store_module.task_view(str(task.id))
+        view = await store_module.get_task_view(str(task.id))
         assert view is not None and view.render_type == "json"
 
 

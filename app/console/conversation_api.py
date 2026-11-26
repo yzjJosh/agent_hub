@@ -25,7 +25,7 @@ _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 async def _agent_conversation_file(task_id: str) -> tuple[str, str] | Response:
     """Resolve the conversation file path for an agent task."""
-    view = await store_module.task_view(task_id)
+    view = await store_module.get_task_view(task_id)
     if view is None:
         return error_response(404, "not_found", f"No task found with id '{task_id}'.")
     if view.agent_name is None:
@@ -142,7 +142,7 @@ async def stream_conversation(request: Request) -> Response:
         )
 
     async def _stop() -> bool:
-        view = await store_module.task_view(_tid)
+        view = await store_module.get_task_view(_tid)
         return view is None or view.status != "running"
 
     async def _lines() -> AsyncGenerator[str, None]:

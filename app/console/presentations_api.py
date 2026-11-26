@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse, Response
 
 import app.lib.db.store as store_module
 from app.console.errors import error_response
-from app.lib.db.store import Presentation, store_is_open
+from app.lib.db.store import Presentation, is_store_open
 from app.lib.render import cache
 from app.lib.render.classify import classify, kind_label
 from app.lib.shared.paths import resolve_path_sync, resources_dir
@@ -98,7 +98,7 @@ async def list_presentations(_request: Request) -> Response:
     Returns:
         The presentations list and current timestamps, or an error reply.
     """
-    if not store_is_open():
+    if not is_store_open():
         return error_response(503, "internal", "Record store is not open.")
     presentations = await store_module.presentation_store.list_newest()
     resources_root = resources_dir()

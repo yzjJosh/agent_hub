@@ -69,7 +69,7 @@ async def _view_context(task_id: str, params: dict) -> tuple[RenderKind | None, 
     kind, line_offset, err = _parse_view_params(params)
     if err is not None:
         return err
-    view = await store_module.task_view(task_id)
+    view = await store_module.get_task_view(task_id)
     if view is None:
         return error_response(404, "not_found", f"No task found with id '{task_id}'.")
     declared = RenderKind(view.render_type) if view.render_type is not None else None

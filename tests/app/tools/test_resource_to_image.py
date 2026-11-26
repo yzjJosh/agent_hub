@@ -288,9 +288,9 @@ class TestUntracked:
         result = await run_text(resource_to_image_tool, "upload/pic.png")
 
         assert result.startswith("Preview thumbnail URL for upload/pic.png:")
-        stats = await store_module.tool_stats()
-        assert [s for s in stats if s["tool_name"] == "resource_to_image"] == []
-        assert await store_module.total_count() == 0
+        stats = await store_module.list_tool_stats()
+        assert [s for s in stats if s.tool_name == "resource_to_image"] == []
+        assert await store_module.count_tasks() == 0
         runs = os.path.join(store_module.tool_store.data_dir, "runs")
         assert (os.listdir(runs) if os.path.isdir(runs) else []) == []
 

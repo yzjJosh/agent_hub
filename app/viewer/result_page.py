@@ -122,7 +122,7 @@ async def view_result_page(request: Request) -> Response:
         The page, or a message when the result is gone.
     """
     task_id = request.path_params["task_id"]
-    view = await store_module.task_view(task_id)
+    view = await store_module.get_task_view(task_id)
     if view is None:
         return await delegate_miss(request, f"result/{task_id}", _result_expired_page(), view_file)
     run_dir = os.path.join(store_module.task_store.data_dir, view.run_dir)

@@ -776,6 +776,10 @@ class TaskRecordStore(Protocol):
     """Public interface of the task record store exposed by test fixtures."""
 
     @property
+    def db_path(self) -> str:
+        ...
+
+    @property
     def data_dir(self) -> str:
         ...
 
@@ -858,12 +862,7 @@ async def task_store(tmp_path: Path) -> AsyncIterator[TaskRecordStore]:
 
 async def store_infra(tmp_path: Path) -> AsyncIterator[None]:
     """Point the process-wide stores at a throwaway database for the test."""
-    previous_db_path = os.path.join(store_module.task_store.data_dir, "records.db")
-    previous_task = store_module.task_store
-    previous_tool = store_module.tool_store
-    previous_presentation = store_module.presentation_store
-    previous_agent = store_module.agent_store
-    previous_context_error = store_module.context_error_store
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(tmp_path / "records.db"))
     await store_module.task_store.open()
     try:
@@ -871,11 +870,6 @@ async def store_infra(tmp_path: Path) -> AsyncIterator[None]:
     finally:
         await store_module.task_store.close()
         store_module.init_store(previous_db_path)
-        store_module.task_store = previous_task
-        store_module.tool_store = previous_tool
-        store_module.presentation_store = previous_presentation
-        store_module.agent_store = previous_agent
-        store_module.context_error_store = previous_context_error
 
 
 # --- Whole app fixture and seed helpers ---
@@ -1000,26 +994,29 @@ async def app_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
     together with api_client, console_env, or task_store in the same test.
     """
     resources, data = configure_resource_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
+    previous_db_path = store_module.task_store.db_path
     monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(resources))
     server = uvicorn.Server(uvicorn.Config(server_module.build_app(), host=_APP_HTTP_HOST, port=0, log_level="warning"))
     task = asyncio.create_task(server.serve(), name="app_http")
     deadline = time.monotonic() + _APP_HTTP_START_TIMEOUT_S
-    while not (server.started and server.servers):
-        if task.done():
-            task.result()
-        if time.monotonic() >= deadline:
-            task.cancel()
-            await task
-            raise AssertionError("app_http: uvicorn did not start in time")
-        await asyncio.sleep(_APP_HTTP_POLL_S)
-    port = server.servers[0].sockets[0].getsockname()[1]
-    yield SimpleNamespace(base_url=f"http://{_APP_HTTP_HOST}:{port}", port=port, data_dir=data, resources_dir=resources)
-    server.should_exit = True
-    await asyncio.wait_for(task, timeout=_APP_HTTP_STOP_TIMEOUT_S)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        assert probe.connect_ex((_APP_HTTP_HOST, port)) != 0, "app_http: port still open after teardown"
-    assert not store_module.store_is_open(), "app_http: store left open after teardown"
+    try:
+        while not (server.started and server.servers):
+            if task.done():
+                task.result()
+            if time.monotonic() >= deadline:
+                task.cancel()
+                await task
+                raise AssertionError("app_http: uvicorn did not start in time")
+            await asyncio.sleep(_APP_HTTP_POLL_S)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        yield SimpleNamespace(base_url=f"http://{_APP_HTTP_HOST}:{port}", port=port, data_dir=data, resources_dir=resources)
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=_APP_HTTP_STOP_TIMEOUT_S)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            assert probe.connect_ex((_APP_HTTP_HOST, port)) != 0, "app_http: port still open after teardown"
+        assert not store_module.is_store_open(), "app_http: store left open after teardown"
+    finally:
+        store_module.init_store(previous_db_path)
 
 
 # --- A live, controllable console origin for browser tests ---
@@ -1193,7 +1190,7 @@ async def console_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Async
     fixture together with app_http, api_client, or console_env in the same test.
     """
     resources, data = configure_resource_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
+    previous_db_path = store_module.task_store.db_path
     monkeypatch.setattr(server_module, "_RESOURCES_DIR", str(resources))
     knobs: list[dict] = []
     last_call = {"id": None}
@@ -1201,11 +1198,14 @@ async def console_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Async
         uvicorn.Config(_stub_build_app(knobs, last_call), host=_CONSOLE_STUB_HOST, port=0, log_level="warning")
     )
     task = asyncio.create_task(server.serve(), name="console_stub")
-    port = await _stub_start(server, task)
-    monkeypatch.setenv("DAV_BASE_URL", f"http://{_CONSOLE_STUB_HOST}:{port}")
-    yield _stub_namespace(resources, data, knobs, last_call, port)
-    server.should_exit = True
-    await asyncio.wait_for(task, timeout=_CONSOLE_STUB_STOP_TIMEOUT_S)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        assert probe.connect_ex((_CONSOLE_STUB_HOST, port)) != 0, "console_stub: port still open after teardown"
-    assert not store_module.store_is_open(), "console_stub: store left open after teardown"
+    try:
+        port = await _stub_start(server, task)
+        monkeypatch.setenv("DAV_BASE_URL", f"http://{_CONSOLE_STUB_HOST}:{port}")
+        yield _stub_namespace(resources, data, knobs, last_call, port)
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=_CONSOLE_STUB_STOP_TIMEOUT_S)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            assert probe.connect_ex((_CONSOLE_STUB_HOST, port)) != 0, "console_stub: port still open after teardown"
+        assert not store_module.is_store_open(), "console_stub: store left open after teardown"
+    finally:
+        store_module.init_store(previous_db_path)

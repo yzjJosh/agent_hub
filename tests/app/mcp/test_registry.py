@@ -1103,9 +1103,9 @@ def test_the_slow_tool_set_is_the_ack_answering_tools() -> None:
 
 async def _run_state(tool_name: str) -> tuple[int, int, int]:
     """How many rows and run folders the store holds for one tool."""
-    stats = [s for s in await store_module.tool_stats() if s["tool_name"] == tool_name]
-    tool_rows = sum(s["completed"] + s["running"] + s["failed"] + s["cancelled"] for s in stats)
-    task_rows = await store_module.total_count()
+    stats = [s for s in await store_module.list_tool_stats() if s.tool_name == tool_name]
+    tool_rows = sum(s.completed + s.running + s.failed + s.cancelled for s in stats)
+    task_rows = await store_module.count_tasks()
     runs = os.path.join(store_module.tool_store.data_dir, "runs")
     run_dirs = len(os.listdir(runs)) if os.path.isdir(runs) else 0
     return tool_rows, task_rows, run_dirs

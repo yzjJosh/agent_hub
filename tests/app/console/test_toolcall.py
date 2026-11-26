@@ -213,6 +213,7 @@ async def toolcall_client(
 ) -> AsyncIterator[SimpleNamespace]:
     """A test client for the console api, with a tool map carrying the fake tools."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(tmp_path / "data" / "records.db"))
     await store_module.task_store.open()
     record: dict[str, type[Tool]] = dict(registered_tools())
@@ -233,6 +234,7 @@ async def toolcall_client(
                                   register_outer=register_outer, data_dir=str(tmp_path / "data"))
     finally:
         await store_module.task_store.close()
+        store_module.init_store(previous_db_path)
 
 
 # --- schema endpoint ---
@@ -400,7 +402,7 @@ async def test_call_202_row_committed_before_response(toolcall_client: SimpleNam
     assert set(body) == {"task_id", "status", "started_at", "started_at_local"}
     assert body["status"] in ("running", "completed")
     assert body["started_at"] and body["started_at_local"]
-    view = await store_module.task_view(body["task_id"])
+    view = await store_module.get_task_view(body["task_id"])
     assert view is not None and view.tool_name == "fake_blocking"
     assert view.params["q"] == "hello"
     assert view.parent_task_id is None
@@ -411,7 +413,7 @@ async def test_call_list_param_202(toolcall_client: SimpleNamespace) -> None:
     toolcall_client.register(_FakeBlockingTool)
     r = await toolcall_client.client.post("/api/tools/fake_blocking/call", json={"q": "x", "tags": ["a", "b"]})
     assert r.status_code == 202
-    view = await store_module.task_view(r.json()["task_id"])
+    view = await store_module.get_task_view(r.json()["task_id"])
     assert view is not None and view.params["tags"] == ["a", "b"]
 
 
@@ -420,7 +422,7 @@ async def test_call_lax_number_is_stored_raw(toolcall_client: SimpleNamespace) -
     toolcall_client.register(_FakeBlockingTool)
     r = await toolcall_client.client.post("/api/tools/fake_blocking/call", json={"q": "x", "limit": "5"})
     assert r.status_code == 202
-    view = await store_module.task_view(r.json()["task_id"])
+    view = await store_module.get_task_view(r.json()["task_id"])
     assert view is not None and view.params["limit"] == "5"
 
 
@@ -429,7 +431,7 @@ async def test_call_async_tool_202(toolcall_client: SimpleNamespace) -> None:
     toolcall_client.register(_FakeAsyncTool)
     r = await toolcall_client.client.post("/api/tools/fake_async/call", json={"q": "later"})
     assert r.status_code == 202
-    view = await store_module.task_view(r.json()["task_id"])
+    view = await store_module.get_task_view(r.json()["task_id"])
     assert view is not None and view.tool_name == "fake_async"
     record = await wait_record(r.json()["task_id"], "completed")
     assert record.status == "completed"
@@ -462,7 +464,7 @@ async def test_call_cache_hit_returns_existing_task(toolcall_client: SimpleNames
     task_id = first.json()["task_id"]
     assert "cached" not in first.json()  # a fresh run's 202 carries no cached flag
     await wait_record(task_id, "completed")
-    before = await store_module.total_count()
+    before = await store_module.count_tasks()
     r = await toolcall_client.client.post("/api/tools/fake_cached/call", json={"q": "dup"})
     assert r.status_code == 202  # a reused run answers 202 like a fresh one
     body = r.json()
@@ -470,7 +472,7 @@ async def test_call_cache_hit_returns_existing_task(toolcall_client: SimpleNames
     assert body["task_id"] == task_id  # the original run, not a new one
     assert body["status"] == "completed"
     assert body["started_at"] and body["started_at_local"]
-    assert await store_module.total_count() == before  # no new row
+    assert await store_module.count_tasks() == before  # no new row
 
 
 # --- call endpoint, 400 bad param ---
@@ -496,7 +498,7 @@ async def test_call_validation_400(
     r = await toolcall_client.client.post("/api/tools/fake_blocking/call", json=body)
     assert r.status_code == 400
     assert r.json() == {"error": expected, "code": "bad_param"}
-    assert await store_module.total_count() == 0
+    assert await store_module.count_tasks() == 0
 
 
 async def test_call_tool_tier_rejection_202(api_client: httpx.AsyncClient) -> None:
@@ -627,7 +629,7 @@ async def test_call_started_run_without_view_500(
     async def _no_view(_task_id: str) -> None:
         return None
 
-    monkeypatch.setattr(store_module, "task_view", _no_view)
+    monkeypatch.setattr(store_module, "get_task_view", _no_view)
     r = await toolcall_client.client.post("/api/tools/fake_blocking/call", json={"q": "x"})
     assert r.status_code == 500
     assert r.json() == {"error": "The tool call did not start a run.", "code": "internal"}
@@ -663,7 +665,7 @@ async def test_nested_run_is_a_subtask_of_the_answered_run(toolcall_client: Simp
     r = await toolcall_client.client.post("/api/tools/fake_outer/call", json={"q": "nest"})
     assert r.status_code == 202
     outer_id = r.json()["task_id"]
-    view = await store_module.task_view(outer_id)
+    view = await store_module.get_task_view(outer_id)
     assert view is not None and view.tool_name == "fake_outer"
     assert view.parent_task_id is None
     kids = await wait_subtasks(outer_id)  # the subtask row lands after the 202
@@ -685,9 +687,9 @@ async def test_concurrent_calls_get_their_own_runs(
     )
     assert a.status_code == 202 and b.status_code == 202
     assert direct.content[0].text == "fetch result: http://c-three.example"
-    stats = [s for s in await store_module.tool_stats() if s["tool_name"] == "web_fetch"]
-    assert sum(s["completed"] + s["running"] + s["failed"] + s["cancelled"] for s in stats) == 3
-    views = [await store_module.task_view(tid) for tid in
+    stats = [s for s in await store_module.list_tool_stats() if s.tool_name == "web_fetch"]
+    assert sum(s.completed + s.running + s.failed + s.cancelled for s in stats) == 3
+    views = [await store_module.get_task_view(tid) for tid in
              (a.json()["task_id"], b.json()["task_id"])]
     assert all(v is not None for v in views)  # both console 202 ids are real rows
     assert a.json()["task_id"] != b.json()["task_id"]
@@ -708,18 +710,18 @@ async def test_untracked_mcp_call_creates_no_run(
 
     monkeypatch.setattr(type(present_to_user_tool), "call", _ok)
     monkeypatch.setattr(type(send_or_receive_file_tool), "call", _boom)
-    before = await store_module.total_count()
+    before = await store_module.count_tasks()
     result = await mcp.call_tool("present_to_user", {"title": "x"})
     assert isinstance(result.content[0], TextContent)
     assert result.content[0].text == "untracked result"
     runs = os.path.join(toolcall_client.data_dir, "runs")
     if os.path.isdir(runs):
         assert os.listdir(runs) == []
-    assert await store_module.total_count() == before
+    assert await store_module.count_tasks() == before
     failed = await mcp.call_tool("send_or_receive_file", {})
     assert isinstance(failed.content[0], TextContent)
     assert failed.content[0].text == "Tool 'send_or_receive_file' failed: untracked boom"
-    assert await store_module.total_count() == before
+    assert await store_module.count_tasks() == before
 
 
 # --- declared bounds ---
@@ -771,11 +773,11 @@ async def test_not_exposed_schema_call_403(api_client: httpx.AsyncClient, name: 
 @pytest.mark.live
 async def test_send_or_receive_file_creates_no_row(toolcall_client: SimpleNamespace) -> None:
     """Calling send_or_receive_file makes no run row and no run folder."""
-    before = await store_module.total_count()
+    before = await store_module.count_tasks()
     result = await mcp.call_tool("send_or_receive_file", {})
     assert isinstance(result.content[0], TextContent)
     assert result.content[0].text.strip()  # the WebDAV transfer instructions
     runs = os.path.join(toolcall_client.data_dir, "runs")
     if os.path.isdir(runs):
         assert os.listdir(runs) == []
-    assert await store_module.total_count() == before
+    assert await store_module.count_tasks() == before

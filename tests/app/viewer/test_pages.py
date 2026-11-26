@@ -14,19 +14,17 @@ import app.lib.db.store as store_module
 import app.lib.render.cache as cache
 import app.lib.render.office as office
 from app.server import build_app
-from tests.app.conftest import configure_resource_env
+from tests.app.conftest import configure_resource_env, store_infra
 
 
 @pytest.fixture
 async def view_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
     """A client for the app, plus the resources dir it reads from."""
     resources, data = configure_resource_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(store_module, "_DB_PATH", str(data / "records.db"))
-    await store_module.task_store.open()
-    app = build_app()
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        yield c, resources
-    await store_module.task_store.close()
+    async for _ in store_infra(data):
+        app = build_app()
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            yield c, resources
 
 
 def _write(resources: Path, rel: str, content: str | bytes = b"") -> str:

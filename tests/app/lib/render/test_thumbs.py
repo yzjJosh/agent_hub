@@ -600,10 +600,10 @@ def test_browser_guard_serializes_cycles(_thumb_env: Path, _resources: Path,
 @pytest.mark.live
 @pytest.mark.timeout(90)
 def test_live_cdp_doc_thumbnail(
-    _thumb_env: Path, _resources: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    _thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real Chrome shoots a doc page and saves it as a thumbnail."""
-    monkeypatch.setattr(store_module, "_DB_PATH", str(tmp_path / "records.db"))
+    previous_db_path = store_module.task_store.db_path
     (_resources / "sample.md").write_bytes((FIX / "sample.md").read_bytes())
     server = uvicorn.Server(uvicorn.Config(build_app(), host="127.0.0.1", port=0, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -636,6 +636,7 @@ def test_live_cdp_doc_thumbnail(
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        store_module.init_store(previous_db_path)
 
     path = os.path.join(cache_module.render_root(), key, "thumb.png")
     assert os.path.exists(path)

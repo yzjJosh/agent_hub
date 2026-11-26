@@ -217,7 +217,7 @@ async def _run_response(task_id: str) -> Response:
     Returns:
         The task id and when it started, or an error reply.
     """
-    view = await store_module.task_view(task_id)
+    view = await store_module.get_task_view(task_id)
     if view is None:
         return error_response(500, "internal", "The tool call did not start a run.")
     body = {"task_id": task_id, "status": view.status,

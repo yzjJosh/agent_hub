@@ -79,15 +79,19 @@ def test_app_builds_in_a_fresh_environment(_no_required_settings: None,
 @pytest.mark.timeout(60)
 def test_lifespan_initializes_store_and_serves_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Starting the app opens the record store and serves the tool endpoint, and stopping closes the store."""
-    monkeypatch.setattr(store_module, "_DB_PATH", str(tmp_path / "records.db"))
+    previous_db_path = store_module.task_store.db_path
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    with TestClient(build_app()) as client:
-        assert store_module.task_store.data_dir == str(tmp_path)
-        response = client.get("/mcp")
-        # A plain GET does not ask for an event stream, so the answer is 406.
-        assert response.status_code == 406
-    with pytest.raises(RuntimeError, match="record store is not open"):
-        asyncio_run(store_module.task_store.get("any"))
+    try:
+        with TestClient(build_app()) as client:
+            assert store_module.task_store.data_dir == str(tmp_path)
+            response = client.get("/mcp")
+            # A plain GET does not ask for an event stream, so the answer is 406.
+            assert response.status_code == 406
+        with pytest.raises(RuntimeError, match="record store is not open"):
+            asyncio_run(store_module.task_store.get("any"))
+    finally:
+        store_module.init_store(previous_db_path)
 
 
 @pytest.mark.timeout(60)
@@ -96,11 +100,15 @@ def test_lifespan_restores_log_tee_when_startup_fails(
 ) -> None:
     """Printing is not captured after a failed startup."""
     (tmp_path / "records.db").mkdir()
-    monkeypatch.setattr(store_module, "_DB_PATH", str(tmp_path / "records.db"))
+    previous_db_path = store_module.task_store.db_path
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    with pytest.raises(sqlite3.OperationalError):
-        with TestClient(build_app()):
-            pass
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            with TestClient(build_app()):
+                pass
+    finally:
+        store_module.init_store(previous_db_path)
     buf = asyncio_run(logcapture.LogBuffer.create())
     token = logcapture.active_log_buffer.set(buf)
     try:
@@ -129,7 +137,8 @@ def test_lifespan_starts_no_worker_and_stops_thumbnails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Starting the app starts nothing persistent and stopping the app stops the thumbnails."""
-    monkeypatch.setattr(store_module, "_DB_PATH", str(tmp_path / "records.db"))
+    previous_db_path = store_module.task_store.db_path
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     stops = 0
     real_stop = thumbs.stop_thumbnails
 
@@ -139,8 +148,11 @@ def test_lifespan_starts_no_worker_and_stops_thumbnails(
         stops += 1
 
     monkeypatch.setattr(thumbs, "stop_thumbnails", spy_stop)
-    with TestClient(build_app()):
-        assert stops == 0  # nothing persistent runs while the app is up
+    try:
+        with TestClient(build_app()):
+            assert stops == 0  # nothing persistent runs while the app is up
+    finally:
+        store_module.init_store(previous_db_path)
     assert stops == 1
 
 

@@ -37,7 +37,7 @@ from app.console.tasks_api import (
 from app.console.thumb_api import get_thumbnail, queue_directory_thumbnails
 from app.console.view_api import get_resource_view, retry_office_view
 from app.console.vnc import vnc_reachable
-from app.lib.db.store import store_is_open
+from app.lib.db.store import is_store_open
 from app.resources.resources import dav_base_url
 
 __all__ = [
@@ -150,7 +150,7 @@ def _guard_http_methods(
 
 
 async def _get_health(_request: Request) -> JSONResponse:
-    if not store_is_open():
+    if not is_store_open():
         return error_response(503, "internal", "Record store is not open.")
     return JSONResponse({"status": "ok", "version": _VERSION, "dav_base_url": dav_base_url()})
 

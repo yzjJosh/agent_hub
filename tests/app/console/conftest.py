@@ -27,6 +27,7 @@ async def console_env(
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
     """Set up the console api for a test and give back the client and the resources folder."""
     resources, data = configure_resource_env(tmp_path, monkeypatch)
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(data / "records.db"))
     await store_module.task_store.open()
     app = Starlette(routes=[Mount("/api", build_api_routes())])
@@ -38,12 +39,14 @@ async def console_env(
     finally:
         await client.aclose()
         await store_module.task_store.close()
+        store_module.init_store(previous_db_path)
 
 
 @pytest.fixture
 async def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
     """A test client for the console api."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(tmp_path / "data" / "records.db"))
     await store_module.task_store.open()
     try:
@@ -54,6 +57,7 @@ async def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIt
             yield c
     finally:
         await store_module.task_store.close()
+        store_module.init_store(previous_db_path)
 
 
 async def wait_record(task_id: str, status: str) -> TaskRecord:
@@ -69,7 +73,7 @@ async def wait_record(task_id: str, status: str) -> TaskRecord:
 async def wait_rows(min_count: int) -> int:
     """Wait until the store holds at least min_count rows, then give back the count."""
     for _ in range(300):
-        total = await store_module.total_count()
+        total = await store_module.count_tasks()
         if total >= min_count:
             return total
         await asyncio.sleep(POLL_SLEEP_S)
@@ -79,7 +83,7 @@ async def wait_rows(min_count: int) -> int:
 async def wait_subtasks(parent_id: str) -> list[TaskView]:
     """Wait until subtask rows show up under the parent, then give them back."""
     for _ in range(500):
-        kids = await store_module.subtask_views(parent_id)
+        kids = await store_module.list_subtask_views(parent_id)
         if kids:
             return kids
         await asyncio.sleep(POLL_SLEEP_S)

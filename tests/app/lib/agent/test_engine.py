@@ -303,8 +303,8 @@ class TestAgentLoop:
         assert await run1.task.result() == "ok"
         assert await run2.task.result() == "ok"
         assert len(await store_module.task_store.list()) == 2
-        view1 = await store_module.task_view(str(run1.task.id))
-        view2 = await store_module.task_view(str(run2.task.id))
+        view1 = await store_module.get_task_view(str(run1.task.id))
+        view2 = await store_module.get_task_view(str(run2.task.id))
         assert view1 is not None and view1.agent_name == "res"
         assert view2 is not None and view2.agent_name == "res"
 
@@ -341,7 +341,7 @@ class TestAgentLoop:
     async def test_agent_name_written_and_view_identifies_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _agent, run = await self._run(monkeypatch, [_text_delta("ok", 1)], "ok")
         await run.task.result()
-        view = await store_module.task_view(str(run.task.id))
+        view = await store_module.get_task_view(str(run.task.id))
         assert view is not None and view.agent_name == "res"
         assert view.tool_name is None
         assert not (self._run_path(run.task.id) / "meta").exists()
@@ -370,8 +370,8 @@ class TestAgentLoop:
         assert events2[0].type == "system" and events2[1].type == "user" and events2[1].text == "second prompt"
         assert all(e.text != "second prompt" for e in events1)
         assert all(e.text != "first prompt" for e in events2)
-        view1 = await store_module.task_view(str(run1.task.id))
-        view2 = await store_module.task_view(str(run2.task.id))
+        view1 = await store_module.get_task_view(str(run1.task.id))
+        view2 = await store_module.get_task_view(str(run2.task.id))
         assert view1 is not None and view1.agent_name == "res" and view1.tool_name is None
         assert view2 is not None and view2.agent_name == "res" and view2.tool_name is None
 

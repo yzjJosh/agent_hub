@@ -62,14 +62,14 @@ async def present_env(
 ) -> AsyncIterator[tuple[Path, Path]]:
     """Point the resource folder, the data folder, and the record store at temp values."""
     resources, data = _env(tmp_path, monkeypatch)
-    previous_task = store_module.task_store
-    previous_tool = store_module.tool_store
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(data / "records.db"))
     await store_module.task_store.open()
-    yield resources, data
-    await store_module.task_store.close()
-    store_module.task_store = previous_task
-    store_module.tool_store = previous_tool
+    try:
+        yield resources, data
+    finally:
+        await store_module.task_store.close()
+        store_module.init_store(previous_db_path)
 
 
 class TestValidation:
@@ -480,9 +480,9 @@ class TestUntracked:
         result = await run_text(present_to_user_tool, title="t", files=["upload/pic.png"], content="notes")
 
         assert "presentation" in result
-        stats = await store_module.tool_stats()
-        assert [s for s in stats if s["tool_name"] == "present_to_user"] == []
-        assert await store_module.total_count() == 0
+        stats = await store_module.list_tool_stats()
+        assert [s for s in stats if s.tool_name == "present_to_user"] == []
+        assert await store_module.count_tasks() == 0
         runs = os.path.join(store_module.tool_store.data_dir, "runs")
         entries = os.listdir(runs) if os.path.isdir(runs) else []
         assert entries == []

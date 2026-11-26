@@ -1145,13 +1145,13 @@ class TestRenderTypeDeclaration:
     async def test_run_declaration_wins_over_class(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderRunTool())
         assert out == "run-body"
-        view = await store_module.task_view((await tool_infra.list())[0].task_id)
+        view = await store_module.get_task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type == "json"
 
     async def test_class_declaration_persists_when_run_silent(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderClassTool())
         assert out == "class-body"
-        view = await store_module.task_view((await tool_infra.list())[0].task_id)
+        view = await store_module.get_task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type == "text"
 
     async def test_out_of_family_class_declaration_persists_nothing(self, tool_infra: TaskRecordStore) -> None:
@@ -1159,19 +1159,19 @@ class TestRenderTypeDeclaration:
         assert out == "bad-class-body"
         rows = await tool_infra.list()
         assert rows[0].status == "completed"
-        view = await store_module.task_view(rows[0].task_id)
+        view = await store_module.get_task_view(rows[0].task_id)
         assert view is not None and view.render_type is None
 
     async def test_no_declaration_writes_nothing(self, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderNoneTool())
         assert out == "plain-body"
-        view = await store_module.task_view((await tool_infra.list())[0].task_id)
+        view = await store_module.get_task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type is None
 
     async def test_fast_call_keeps_insert_before_update(self, tool_infra: TaskRecordStore) -> None:
         task = await _RenderFastTool().run({})
         await wait_terminal(tool_infra, str(task.id))
-        view = await store_module.task_view(str(task.id))
+        view = await store_module.get_task_view(str(task.id))
         assert view is not None and view.render_type == "markdown"
 
     async def test_cache_hit_reuses_row_and_declaration(self, tool_infra: TaskRecordStore) -> None:
@@ -1181,14 +1181,14 @@ class TestRenderTypeDeclaration:
         second = await tool.run({"query": "q"})
         assert str(second.id) == str(first.id)
         assert len(await tool_infra.list()) == 1
-        view = await store_module.task_view(str(first.id))
+        view = await store_module.get_task_view(str(first.id))
         assert view is not None and view.render_type == "markdown"
 
     @pytest.mark.parametrize("token", sorted(k.value for k in TEXT_FAMILY_KINDS))
     async def test_every_text_family_token_is_accepted(self, token: str, tool_infra: TaskRecordStore) -> None:
         out = await run_text(_RenderTokenProbe(token))
         assert out == "probe-body"
-        view = await store_module.task_view((await tool_infra.list())[0].task_id)
+        view = await store_module.get_task_view((await tool_infra.list())[0].task_id)
         assert view is not None and view.render_type == token
 
     @pytest.mark.parametrize("token", ["pdf", "image", "unknown", "", "nonsense"])
@@ -1199,5 +1199,5 @@ class TestRenderTypeDeclaration:
         assert "result render_type must be one of:" in out
         rows = await tool_infra.list()
         assert rows[0].status == "failed"
-        view = await store_module.task_view(rows[0].task_id)
+        view = await store_module.get_task_view(rows[0].task_id)
         assert view is not None and view.render_type is None

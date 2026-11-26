@@ -57,14 +57,18 @@ async def test_health_ok(api_client: httpx.AsyncClient) -> None:
 
 async def test_health_503_when_store_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    previous_db_path = store_module.task_store.db_path
     store_module.init_store(str(tmp_path / "data" / "records.db"))
     await store_module.task_store.close()
-    app = Starlette(routes=[Mount("/api", build_api_routes())])
-    app.add_middleware(ConsoleSecurityMiddleware)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/api/health")
-    assert response.status_code == 503
-    assert response.json()["code"] == "internal"
+    try:
+        app = Starlette(routes=[Mount("/api", build_api_routes())])
+        app.add_middleware(ConsoleSecurityMiddleware)
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/health")
+        assert response.status_code == 503
+        assert response.json()["code"] == "internal"
+    finally:
+        store_module.init_store(previous_db_path)
 
 
 async def test_health_wrong_method_returns_405(api_client: httpx.AsyncClient) -> None:
