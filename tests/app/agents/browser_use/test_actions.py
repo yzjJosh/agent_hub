@@ -26,9 +26,9 @@ from tests.app.agents.browser_use.conftest import (
 
 _HALF = 0.5
 _TENTH = 0.1
-_THIRD = 0.3
+_THREE_TENTHS = 0.3
 _TENTH_POSITION = 100
-_THIRD_POSITION = 300
+_THREE_TENTHS_POSITION = 300
 _HALF_POSITION = 500
 _NETWORK_IDLE_TIMEOUT_MILLISECONDS = 2000
 _FIXED_YEAR = 2026
@@ -87,11 +87,11 @@ _PARAMS: dict[str, dict] = {
     "open_url": {"target_id": "tab1", "url": "https://a.example"},
     "click": {"target_id": "tab1", "x": 200, "y": 400},
     "move_mouse": {"target_id": "tab1", "x": 300, "y": 600},
-    "type_text": {"target_id": "tab1", "x": _TENTH_POSITION, "y": _THIRD_POSITION, "text": "hello"},
+    "type_text": {"target_id": "tab1", "x": _TENTH_POSITION, "y": _THREE_TENTHS_POSITION, "text": "hello"},
     "replace_input_text": {
         "target_id": "tab1",
         "x": _TENTH_POSITION,
-        "y": _THIRD_POSITION,
+        "y": _THREE_TENTHS_POSITION,
         "old_text": "helo",
         "new_text": "hello",
     },
@@ -127,9 +127,9 @@ _EXPECTED_RECORD: dict[str, dict[str, list[tuple]]] = {
     },
     "click": _build_snapshot_flow("tab1", "click_at_relative", ("tab1", 0.2, 0.4, True), waits_for_load=False),
     "move_mouse": _build_snapshot_flow("tab1", "move_mouse_to_relative", ("tab1", 0.3, 0.6, True)),
-    "type_text": _build_snapshot_flow("tab1", "type_text_at_relative", ("tab1", _TENTH, _THIRD, "hello", False, True)),
+    "type_text": _build_snapshot_flow("tab1", "type_text_at_relative", ("tab1", _TENTH, _THREE_TENTHS, "hello", False, True)),
     "replace_input_text": _build_snapshot_flow(
-        "tab1", "replace_input_text_at_relative", ("tab1", _TENTH, _THIRD, "helo", "hello", True)
+        "tab1", "replace_input_text_at_relative", ("tab1", _TENTH, _THREE_TENTHS, "helo", "hello", True)
     ),
     "scroll": _build_snapshot_flow("tab1", "scroll_by_relative", ("tab1", -_HALF, 1.0, True)),
     "press_key": _build_snapshot_flow("tab1", "press_key", ("tab1", "Enter", True)),
@@ -183,7 +183,7 @@ _EXPECTED_ORDER: dict[str, list[str]] = {
 }
 
 
-_POSITION_TOOL_OTHER_PARAMS: dict[str, dict] = {
+_NON_POSITION_PARAMS_BY_TOOL: dict[str, dict] = {
     "click": {},
     "upload_resources": {"resource_paths": ["upload/photo.jpg"]},
     "move_mouse": {},
@@ -193,7 +193,7 @@ _POSITION_TOOL_OTHER_PARAMS: dict[str, dict] = {
     "download_click": {},
 }
 
-_POSITION_TOOL_BROWSER_METHOD: dict[str, str] = {
+_BROWSER_METHOD_BY_POSITION_TOOL: dict[str, str] = {
     "click": "click_at_relative",
     "upload_resources": "upload_with_chooser_relative",
     "move_mouse": "move_mouse_to_relative",
@@ -274,7 +274,7 @@ class TestActionTools:
             tool,
             {
                 "x": _TENTH_POSITION,
-                "y": _THIRD_POSITION,
+                "y": _THREE_TENTHS_POSITION,
                 "resource_paths": ["upload/photo.jpg", "upload/notes.txt"],
                 "target_id": "tab1",
             },
@@ -282,7 +282,7 @@ class TestActionTools:
 
         assert "status: success" in result.text
         assert manager.recorded == _build_snapshot_flow(
-            "tab1", "upload_with_chooser_relative", ("tab1", _TENTH, _THIRD, [str(resource), str(second)], True)
+            "tab1", "upload_with_chooser_relative", ("tab1", _TENTH, _THREE_TENTHS, [str(resource), str(second)], True)
         )
         assert manager.order == ["capture_snapshot", "upload_with_chooser_relative", "wait_for_load"]
 
@@ -296,7 +296,7 @@ class TestActionTools:
 
         result = await _run_tool(
             tool,
-            {"x": _TENTH_POSITION, "y": _THIRD_POSITION, "resource_paths": paths, "target_id": "tab1"},
+            {"x": _TENTH_POSITION, "y": _THREE_TENTHS_POSITION, "resource_paths": paths, "target_id": "tab1"},
         )
 
         assert "status: failed" in result.text
@@ -361,7 +361,7 @@ class TestActionTools:
         action = await _run_plain_action(session, tool, params)
         manager = FakeActionManager()
         assert await action(manager, "tab1") is True
-        assert manager.recorded["type_text_at_relative"] == [("tab1", _TENTH, _THIRD, "hello", True, True)]
+        assert manager.recorded["type_text_at_relative"] == [("tab1", _TENTH, _THREE_TENTHS, "hello", True, True)]
         assert manager.order == _EXPECTED_ORDER["type_text"]
 
     async def test_replace_input_text_with_empty_new_text_passes_it_through(self) -> None:
@@ -371,7 +371,7 @@ class TestActionTools:
         action = await _run_plain_action(session, tool, params)
         manager = FakeActionManager()
         assert await action(manager, "tab1") is True
-        assert manager.recorded["replace_input_text_at_relative"] == [("tab1", _TENTH, _THIRD, "remove me", "", True)]
+        assert manager.recorded["replace_input_text_at_relative"] == [("tab1", _TENTH, _THREE_TENTHS, "remove me", "", True)]
         assert manager.order == _EXPECTED_ORDER["replace_input_text"]
 
     async def test_scroll_with_an_anchor_moves_the_mouse_before_scrolling(self) -> None:
@@ -381,13 +381,13 @@ class TestActionTools:
         anchor_y = next(param for param in tool.params if param.name == "y")
         assert anchor_x.default is None
         assert anchor_y.default is None
-        params = dict(_PARAMS["scroll"], x=_THIRD_POSITION, y=_HALF_POSITION)
+        params = dict(_PARAMS["scroll"], x=_THREE_TENTHS_POSITION, y=_HALF_POSITION)
         action = await _run_plain_action(session, tool, params)
         manager = FakeActionManager()
         assert await action(manager, "tab1") is True
         assert manager.recorded == {
             "capture_snapshot": [("tab1", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
-            "move_mouse_to_relative": [("tab1", _THIRD, _HALF, True)],
+            "move_mouse_to_relative": [("tab1", _THREE_TENTHS, _HALF, True)],
             "scroll_by_relative": [("tab1", -_HALF, 1.0, True)],
             "wait_for_load": [("tab1", "networkidle", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
         }
@@ -401,7 +401,7 @@ class TestActionTools:
         manager = FakeActionManager(tab_ids=("only",))
         session = FakeSession([], manager=manager)
         params = {key: value for key, value in _PARAMS["scroll"].items() if key != "target_id"}
-        params[given] = _THIRD_POSITION
+        params[given] = _THREE_TENTHS_POSITION
         result = await _run_tool(find_tool("scroll", _build_tools(session)), params)
         assert "status: failed, action failed: x and y must be given together" in result.text
         assert manager.recorded == {}
@@ -410,12 +410,12 @@ class TestActionTools:
         manager = FakeActionManager(tab_ids=("only",), move_fails=True)
         session = FakeSession([], manager=manager)
         params = {key: value for key, value in _PARAMS["scroll"].items() if key != "target_id"}
-        params.update(x=_THIRD_POSITION, y=_HALF_POSITION)
+        params.update(x=_THREE_TENTHS_POSITION, y=_HALF_POSITION)
         result = await _run_tool(find_tool("scroll", _build_tools(session)), params)
         assert "status: failed, action failed: could not move the mouse to the scroll anchor" in result.text
         assert manager.recorded == {
             "capture_snapshot": [("only", _NETWORK_IDLE_TIMEOUT_MILLISECONDS, True)],
-            "move_mouse_to_relative": [("only", _THIRD, _HALF, True)],
+            "move_mouse_to_relative": [("only", _THREE_TENTHS, _HALF, True)],
         }
 
     async def test_scroll_anchor_docs_name_the_contract(self) -> None:
@@ -429,7 +429,7 @@ class TestActionTools:
         assert "Give it with y" in anchor_x.description
         assert "Give it with x" in anchor_y.description
 
-    @pytest.mark.parametrize("name", _POSITION_TOOL_OTHER_PARAMS)
+    @pytest.mark.parametrize("name", _NON_POSITION_PARAMS_BY_TOOL)
     @pytest.mark.parametrize(
         "position_x,position_y,fraction_x,fraction_y",
         [
@@ -456,15 +456,15 @@ class TestActionTools:
         monkeypatch.setattr(actions_module.asyncio, "sleep", AsyncMock())
         manager = FakeActionManager(tab_ids=("tab1",))
         tool = find_tool(name, _build_tools(FakeSession([], manager=manager), str(tmp_path)))
-        params = dict(_POSITION_TOOL_OTHER_PARAMS[name], target_id="tab1", x=position_x, y=position_y)
+        params = dict(_NON_POSITION_PARAMS_BY_TOOL[name], target_id="tab1", x=position_x, y=position_y)
 
         result = await _run_tool(tool, params)
 
         assert "status: success" in result.text
-        browser_call = manager.recorded[_POSITION_TOOL_BROWSER_METHOD[name]][0]
+        browser_call = manager.recorded[_BROWSER_METHOD_BY_POSITION_TOOL[name]][0]
         assert browser_call[:3] == ("tab1", fraction_x, fraction_y)
 
-    @pytest.mark.parametrize("name", _POSITION_TOOL_OTHER_PARAMS)
+    @pytest.mark.parametrize("name", _NON_POSITION_PARAMS_BY_TOOL)
     @pytest.mark.parametrize("axis", ["x", "y"])
     @pytest.mark.parametrize(
         "position,message",
@@ -479,7 +479,7 @@ class TestActionTools:
         """A position outside 0 to 1000 fails before any browser action runs."""
         session = FakeSession([build_success_transaction()])
         tool = find_tool(name, _build_tools(session))
-        params = dict(_POSITION_TOOL_OTHER_PARAMS[name], target_id="tab1", x=_HALF_POSITION, y=_HALF_POSITION)
+        params = dict(_NON_POSITION_PARAMS_BY_TOOL[name], target_id="tab1", x=_HALF_POSITION, y=_HALF_POSITION)
         params[axis] = position
 
         with pytest.raises(ToolMessageError, match=re.escape(f"Error: {axis}: {message}")):
