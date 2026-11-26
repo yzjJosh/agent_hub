@@ -77,14 +77,6 @@ class _HighlightedCode:
     line_count: int
 
 
-@dataclass(frozen=True)
-class _CsvTableFragment:
-    """Rendered CSV table HTML and its row and column counts."""
-
-    html: str
-    metadata: dict
-
-
 def build_text_metadata(
     kind: RenderKind, path: str, modified_time: int, size: int, extras: dict
 ) -> dict:
@@ -196,14 +188,14 @@ def build_table_html(header: list[str], data: list[list[str]]) -> str:
     return f'<table class="csv-table">{head}<tbody>{"".join(rows)}</tbody></table>'
 
 
-def _build_csv_fragment(text: str) -> _CsvTableFragment | None:
+def _build_csv_fragment(text: str) -> BuiltFragment | None:
     rows = _parse_csv_rows(text)
     if not rows:
         return None
     header, data = rows[0], rows[1:]
-    return _CsvTableFragment(
+    return BuiltFragment(
         html=build_table_html(header, data),
-        metadata={"row_count": len(data), "column_count": len(header)},
+        metadata={"mode": "table", "row_count": len(data), "column_count": len(header)},
     )
 
 
@@ -253,7 +245,7 @@ def _render_kind_text(
     text: str,
     language: str | None,
     raw_preview_builder: Callable[[], str] | None,
-    label: str,
+    caller_name: str,
 ) -> BuiltFragment:
     if kind is RenderKind.MARKDOWN:
         rendered_markdown = _get_markdown_parser().render(text)
@@ -276,10 +268,10 @@ def _render_kind_text(
         if table_fragment is None:
             fallback_html = raw_preview_builder() if raw_preview_builder is not None else None
             return BuiltFragment(html=fallback_html, metadata={"mode": "raw", "note": _EMPTY_CSV_NOTE})
-        return BuiltFragment(html=table_fragment.html, metadata={"mode": "table", **table_fragment.metadata})
+        return table_fragment
     if kind in _DATA_KINDS:
         return _build_data_fragment(kind, text)
-    raise ValueError(f"{label}: no fragment builder for kind {kind}")
+    raise ValueError(f"{caller_name}: no fragment builder for kind {kind}")
 
 
 def build_fragment_sync(kind: RenderKind, full_path: str, size: int) -> BuiltFragment:
@@ -338,6 +330,9 @@ async def build_fragment_bytes(
 
     Returns:
         The built HTML and metadata for the content.
+
+    Raises:
+        ValueError: When kind is not one of the text or data kinds.
     """
     return await asyncio.to_thread(_build_fragment_bytes_sync, kind, data, language)
 

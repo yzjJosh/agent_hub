@@ -40,7 +40,7 @@ _LOOPBACK_HOST = "127.0.0.1"
 _CDP_TIMEOUT_MS = 15000
 _THUMBNAIL_WIDTH = 1024
 _THUMBNAIL_HEIGHT = 640
-_DOC_THUMBNAIL_KINDS = frozenset({
+_DOCUMENT_THUMBNAIL_KINDS = frozenset({
     RenderKind.MARKDOWN,
     RenderKind.CODE,
     RenderKind.CSV,
@@ -101,7 +101,7 @@ def get_thumbnail_engine(kind: RenderKind) -> str | None:
         return "pdf"
     if kind is RenderKind.OFFICE_PPT:
         return "ppt_pdf"
-    if kind in _DOC_THUMBNAIL_KINDS:
+    if kind in _DOCUMENT_THUMBNAIL_KINDS:
         return "doc"
     return None
 
@@ -269,8 +269,15 @@ def _save_png_atomically(image: Image.Image, key: str) -> None:
     key_directory = os.path.join(cache.get_render_root(), key)
     os.makedirs(key_directory, exist_ok=True)
     staging_path = os.path.join(key_directory, f".thumb-{os.getpid()}-{threading.get_ident()}.png")
-    image.save(staging_path, "PNG")
-    os.replace(staging_path, os.path.join(key_directory, "thumb.png"))
+    try:
+        image.save(staging_path, "PNG")
+        os.replace(staging_path, os.path.join(key_directory, "thumb.png"))
+    except BaseException:
+        try:
+            os.remove(staging_path)
+        except OSError:
+            pass
+        raise
 
 
 def _crop_and_resize_image(image: Image.Image) -> Image.Image:
@@ -282,11 +289,16 @@ def _crop_and_resize_image(image: Image.Image) -> Image.Image:
 def _save_cropped_thumbnail_sync(
     source_path: str, key: str, *, should_remove_source: bool = False
 ) -> None:
-    with Image.open(source_path) as image:
-        image.load()
-        _save_png_atomically(_crop_and_resize_image(image), key)
-    if should_remove_source:
-        os.remove(source_path)
+    try:
+        with Image.open(source_path) as image:
+            image.load()
+            _save_png_atomically(_crop_and_resize_image(image), key)
+    finally:
+        if should_remove_source:
+            try:
+                os.remove(source_path)
+            except FileNotFoundError:
+                pass
 
 
 async def _render_image_thumbnail(full_path: str, key: str) -> None:
