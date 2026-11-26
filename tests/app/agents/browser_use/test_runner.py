@@ -32,7 +32,7 @@ from tests.app.agents.browser_use.conftest import (
     find_tool,
     set_thinking_backend,
 )
-from tests.app.conftest import skip_if_no_chrome
+from tests.app.conftest import is_llm_available, skip_if_no_chrome
 
 _LIVE_TIMEOUT_SECONDS = 600
 _EXPECTED_MAX_TURNS = 180
@@ -383,6 +383,44 @@ class TestLiveRunner:
         assert "Content for section 20" in result.summary
         assert result.files == ()
         assert list(resources_dir.iterdir()) == []
+
+    @pytest.mark.skipif(not is_llm_available(), reason="LLM server not available")
+    @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
+    @pytest.mark.parametrize(
+        ("element_id", "element_label"),
+        [
+            pytest.param("top-section", "the block at the top of the page with the heading Top", id="large-block"),
+            pytest.param("mid-input", "the text box with the placeholder Type here", id="medium-text-box"),
+            pytest.param("mid-button", "the button labeled Click Me", id="small-button"),
+        ],
+    )
+    async def test_click_lands_inside_labeled_element(
+        self, tmp_path: Path, test_server_url: str, element_id: str, element_label: str
+    ) -> None:
+        """The model's last click on the page lands inside the element it was asked to click."""
+        downloads_dir = tmp_path / "downloads"
+        resources_dir = tmp_path / "resources"
+        downloads_dir.mkdir()
+        resources_dir.mkdir()
+        token = uuid4().hex
+        prompt = (
+            f"Open {test_server_url}/page/long/{token} in the browser. "
+            f"Find {element_label} on the page, click it once, and then finish."
+        )
+
+        result = await runner_module.run_browser_use(prompt, str(downloads_dir), str(resources_dir))
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{test_server_url}/clicks/{token}")
+        clicks = response.json()
+        assert clicks, f"No click reached the page. Summary: {result.summary}"
+        last_click = clicks[-1]
+        box = last_click["boxes"][element_id]
+        click_report = f"click at ({last_click['x']}, {last_click['y']}), {element_id} box {box}"
+        print(click_report)
+        assert box["left"] <= last_click["x"] <= box["right"], click_report
+        assert box["top"] <= last_click["y"] <= box["bottom"], click_report
+        assert result.status == "completed", result.summary
 
     @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     async def test_download_file_from_page(self, tmp_path: Path, test_server_url: str) -> None:

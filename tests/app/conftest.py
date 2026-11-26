@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import io
+import json
 import os
 import re
 import socket
@@ -382,6 +383,7 @@ _DUMMY_PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0
 _DUMMY_MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x01isomiso2avc1mp41"
 _DUMMY_MP3 = b"\xff\xfb\x90\x00\x80\x00\x00\x62\x00\x00\x00\x00"
 _uploaded_files: dict[str, bytes] = {}
+_recorded_clicks: dict[str, list[dict]] = {}
 
 
 @pytest.fixture
@@ -421,7 +423,7 @@ class _TestServerHandler(BaseHTTPRequestHandler):
             self._send_video_page()
         elif self.path == "/page/audio":
             self._send_audio_page()
-        elif self.path == "/page/long":
+        elif self.path == "/page/long" or self.path.startswith("/page/long/"):
             self._send_long_page()
         elif self.path == "/page/nested":
             self._send_nested_page()
@@ -435,6 +437,8 @@ class _TestServerHandler(BaseHTTPRequestHandler):
             self._send_upload_page()
         elif self.path.startswith("/upload/result/"):
             self._send_uploaded_file()
+        elif self.path.startswith("/clicks/"):
+            self._send_recorded_clicks()
         elif self.path == "/status/403":
             self.send_response(403)
             self.end_headers()
@@ -447,16 +451,21 @@ class _TestServerHandler(BaseHTTPRequestHandler):
 
     @override
     def do_POST(self) -> None:
-        """Save a file sent from the upload test page."""
-        if not self.path.startswith("/upload/file/"):
+        """Save a file sent from the upload test page, or a click sent from the long page."""
+        if self.path.startswith("/upload/file/"):
+            _uploaded_files[self.path.removeprefix("/upload/file/")] = self._read_body()
+        elif self.path.startswith("/clicks/"):
+            _recorded_clicks.setdefault(self.path.removeprefix("/clicks/"), []).append(json.loads(self._read_body()))
+        else:
             self.send_response(404)
             self.end_headers()
             return
-        token = self.path.removeprefix("/upload/file/")
-        size = int(self.headers["Content-Length"])
-        _uploaded_files[token] = self.rfile.read(size)
         self.send_response(200)
         self.end_headers()
+
+    def _read_body(self) -> bytes:
+        """Read the body of the request."""
+        return self.rfile.read(int(self.headers["Content-Length"]))
 
     def _send_upload_page(self) -> None:
         """Serve a button that opens a file chooser and sends the chosen file."""
@@ -492,6 +501,11 @@ class _TestServerHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self._send_media(_uploaded_files[token], "application/octet-stream")
+
+    def _send_recorded_clicks(self) -> None:
+        """Return the clicks the long page sent for a token, oldest first."""
+        clicks = _recorded_clicks.get(self.path.removeprefix("/clicks/"), [])
+        self._send_media(json.dumps(clicks).encode(), "application/json")
 
     def _send_home_page(self) -> None:
         self.send_response(200)
@@ -548,6 +562,12 @@ class _TestServerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_long_page(self) -> None:
+        """Serve a tall page of sections with a button and a text box far down.
+
+        Opened at /page/long/<token>, the page sends each click to
+        /clicks/<token> with the click point and the box of every element
+        that has an id, all measured from the window corner at click time.
+        """
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -576,6 +596,20 @@ class _TestServerHandler(BaseHTTPRequestHandler):
                 document.getElementById('top-section').addEventListener('click', function() {{
                     window.__clickLog.push('top-section');
                 }});
+                const clickToken = location.pathname.split('/page/long/')[1];
+                if (clickToken) {{
+                    document.addEventListener('click', function(event) {{
+                        const boxes = {{}};
+                        for (const element of document.querySelectorAll('[id]')) {{
+                            const box = element.getBoundingClientRect();
+                            boxes[element.id] = {{left: box.left, top: box.top, right: box.right, bottom: box.bottom}};
+                        }}
+                        fetch('/clicks/' + clickToken, {{
+                            method: 'POST',
+                            body: JSON.stringify({{x: event.clientX, y: event.clientY, boxes: boxes}}),
+                        }});
+                    }}, true);
+                }}
             </script>
         </body></html>"""
         self.wfile.write(body.encode())
