@@ -30,14 +30,14 @@ _TEXT_WELL_MODES = ("doc", "code", "table", "plain")
 class _FilePathStatus:
     """Whether a resolved path on disk is a directory or an existing path."""
 
-    is_dir: bool
-    exists: bool
+    is_directory: bool
+    is_present: bool
 
 
 def _probe_file_path_sync(full_path: str) -> _FilePathStatus:
     return _FilePathStatus(
-        is_dir=os.path.isdir(full_path),
-        exists=os.path.exists(full_path),
+        is_directory=os.path.isdir(full_path),
+        is_present=os.path.exists(full_path),
     )
 
 
@@ -77,7 +77,7 @@ def render_text_well_html(
     descriptor: dict,
     *,
     extra_class: str = "",
-    attrs: str = "",
+    extra_attributes: str = "",
     prefix_html: str = "",
 ) -> str | None:
     """Build the text or raw well markup when the descriptor uses a text well mode.
@@ -85,7 +85,7 @@ def render_text_well_html(
     Args:
         descriptor: File descriptor dictionary.
         extra_class: Extra CSS class suffix for the outer well element.
-        attrs: Extra HTML attributes for the outer well element.
+        extra_attributes: Extra HTML attributes for the outer well element.
         prefix_html: Optional HTML placed inside the well before the content.
 
     Returns:
@@ -93,10 +93,13 @@ def render_text_well_html(
     """
     mode = descriptor["mode"]
     if mode in _TEXT_WELL_MODES:
-        return f'<div class="vp-well{extra_class} vp-well-{mode}"{attrs}>{prefix_html}{descriptor["fragment"]}</div>'
+        return (
+            f'<div class="vp-well{extra_class} vp-well-{mode}"{extra_attributes}>'
+            f'{prefix_html}{descriptor["fragment"]}</div>'
+        )
     if mode == "raw":
         inner_html = descriptor["fragment"] if descriptor["fragment"] is not None else esc(descriptor["note"])
-        return f'<div class="vp-well{extra_class} vp-well-raw"{attrs}>{prefix_html}{inner_html}</div>'
+        return f'<div class="vp-well{extra_class} vp-well-raw"{extra_attributes}>{prefix_html}{inner_html}</div>'
     return None
 
 
@@ -199,9 +202,9 @@ async def view_file(request: Request) -> Response:
     if full_path is None:
         return PlainTextResponse("Not Found", status_code=404)
     path_status = await asyncio.to_thread(_probe_file_path_sync, full_path)
-    if path_status.is_dir:
+    if path_status.is_directory:
         return PlainTextResponse("Not Found", status_code=404)
-    if not path_status.exists:
+    if not path_status.is_present:
         return render_expired_page()
     descriptor = await build_descriptor(resource_path, full_path)
     download_href = build_download_href(descriptor["path"])

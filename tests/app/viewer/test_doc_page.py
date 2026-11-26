@@ -26,9 +26,9 @@ async def test_doc_page_composed_and_thumb_override(view_client: tuple[httpx.Asy
     assert response.status_code == 200
     assert "composed" in response.text
     assert "thumb" not in response.text
-    thumb_response = await client.get(f"/view/doc/{cache_key}?thumb=1")
-    assert thumb_response.status_code == 200
-    assert "vp-thumb-override" in thumb_response.text
+    thumbnail_response = await client.get(f"/view/doc/{cache_key}?thumb=1")
+    assert thumbnail_response.status_code == 200
+    assert "vp-thumb-override" in thumbnail_response.text
 
 
 async def test_doc_missing_key_is_plain_404(view_client: tuple[httpx.AsyncClient, Path]) -> None:
@@ -53,9 +53,9 @@ async def test_doc_asset_serves_sibling(view_client: tuple[httpx.AsyncClient, Pa
     """A document sibling asset returns its bytes with the guessed media type."""
     client, _ = view_client
     cache_key = "0" * 64
-    key_dir = os.path.join(cache.render_root(), cache_key)
-    os.makedirs(key_dir, exist_ok=True)
-    with open(os.path.join(key_dir, "img.png"), "wb") as asset_file:
+    key_directory = os.path.join(cache.render_root(), cache_key)
+    os.makedirs(key_directory, exist_ok=True)
+    with open(os.path.join(key_directory, "img.png"), "wb") as asset_file:
         asset_file.write(b"\x89PNG asset")
     response = await client.get(f"/view/doc/{cache_key}/img.png")
     assert response.status_code == 200

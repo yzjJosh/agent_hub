@@ -50,11 +50,11 @@ def _build_plain_not_found() -> Response:
 
 
 def _resolve_doc_asset_sync(key: str, asset_name: str) -> _DocAsset | None:
-    key_dir = os.path.realpath(os.path.join(cache.render_root(), key))
-    if not os.path.isdir(key_dir):
+    key_directory = os.path.realpath(os.path.join(cache.render_root(), key))
+    if not os.path.isdir(key_directory):
         return None
-    full_path = os.path.realpath(os.path.join(key_dir, asset_name))
-    if full_path == key_dir or not full_path.startswith(key_dir + os.sep):
+    full_path = os.path.realpath(os.path.join(key_directory, asset_name))
+    if full_path == key_directory or not full_path.startswith(key_directory + os.sep):
         return None
     if not os.path.isfile(full_path):
         return None

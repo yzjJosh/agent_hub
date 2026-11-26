@@ -72,6 +72,19 @@ async def test_presentation_page_lists_files(view_client: tuple[httpx.AsyncClien
     assert "markdown" in response.text
 
 
+async def test_presentation_python_card_shows_language_label(view_client: tuple[httpx.AsyncClient, Path]) -> None:
+    """A Python file card renders python as its kind label in thumb-meta."""
+    client, resources_dir = view_client
+    write_resource_file(resources_dir, "upload/script.py", "print('hello')\n")
+    presentation_id = "b1" * 8
+    await _insert_presentation(presentation_id, ["upload/script.py"])
+    response = await client.get(f"/view/presentation/{presentation_id}")
+    assert response.status_code == 200
+    card_html = _extract_card_html(response.text, 0)
+    assert '<div class="thumb-meta">' in card_html
+    assert "· python</div>" in card_html
+
+
 async def test_presentation_card_is_whole_card_link(view_client: tuple[httpx.AsyncClient, Path]) -> None:
     """A present card is one link over the whole card, with Download beside it."""
     client, resources_dir = view_client
@@ -145,10 +158,10 @@ async def test_presentation_thumb_src_url_encoded(view_client: tuple[httpx.Async
     client, resources_dir = view_client
     relative_path = "upload/photo & more.png"
     write_resource_file(resources_dir, relative_path, b"\x89PNG")
-    key_dir = os.path.join(cache.render_root(), compute_cache_key(resources_dir, relative_path))
-    os.makedirs(key_dir, exist_ok=True)
-    with open(os.path.join(key_dir, "thumb.png"), "wb") as thumb_file:
-        thumb_file.write(b"\x89PNG")
+    key_directory = os.path.join(cache.render_root(), compute_cache_key(resources_dir, relative_path))
+    os.makedirs(key_directory, exist_ok=True)
+    with open(os.path.join(key_directory, "thumb.png"), "wb") as thumbnail_file:
+        thumbnail_file.write(b"\x89PNG")
     presentation_id = "d" * 16
     await _insert_presentation(presentation_id, [relative_path])
     response = await client.get(f"/view/presentation/{presentation_id}")

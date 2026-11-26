@@ -14,7 +14,6 @@ from starlette.responses import HTMLResponse, Response
 
 import app.lib.db.store as store_module
 from app.lib.render import cache
-from app.lib.render.classify import classify, kind_label
 from app.lib.render.descriptor import build_descriptor, resolve_view
 from app.viewer.file_page import (
     build_download_href,
@@ -30,7 +29,7 @@ from app.viewer.view_chrome import delegate_miss, esc, fmt_size, page, theme_btn
 __all__ = ["view_presentation"]
 
 _PRESENTATION_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
-_CONTENT_DIRS = ("presentations", "handoffs")
+_CONTENT_DIRECTORIES = ("presentations", "handoffs")
 
 
 @dataclass(frozen=True)
@@ -42,13 +41,14 @@ class _PresentationFile:
     size: int | None
     label: str
     thumbnail_status: str
+    descriptor: dict | None
 
 
 def _find_content_path(file_paths: list[str], presentation_id: str) -> str | None:
     for resource_path in file_paths:
-        in_content_dir = os.path.dirname(resource_path) in _CONTENT_DIRS
+        is_in_content_directory = os.path.dirname(resource_path) in _CONTENT_DIRECTORIES
         file_stem = os.path.splitext(os.path.basename(resource_path))[0]
-        if in_content_dir and file_stem == presentation_id:
+        if is_in_content_directory and file_stem == presentation_id:
             return resource_path
     return None
 
@@ -69,26 +69,24 @@ async def _load_presentation_file(resource_path: str) -> _PresentationFile:
             size=None,
             label="file",
             thumbnail_status="none",
+            descriptor=None,
         )
-    file_kind = await classify(full_path)
-    label = kind_label(file_kind, os.path.basename(resource_path), None)
+    descriptor = await build_descriptor(resource_path, full_path)
     thumbnail_key = cache.key_for(resource_path, int(file_stat.st_mtime))
     return _PresentationFile(
         resource_path=resource_path,
         is_present=True,
         size=file_stat.st_size,
-        label=label,
+        label=descriptor["kind_label"],
         thumbnail_status=await cache.thumb_status(thumbnail_key),
+        descriptor=descriptor,
     )
 
 
-async def _load_content_descriptor(files: list[_PresentationFile], content_path: str) -> dict | None:
+def _find_content_descriptor(files: list[_PresentationFile], content_path: str) -> dict | None:
     for file_item in files:
         if file_item.resource_path == content_path and file_item.is_present:
-            full_path = await resolve_view(file_item.resource_path)
-            if full_path is not None:
-                return await build_descriptor(file_item.resource_path, full_path)
-            break
+            return file_item.descriptor
     return None
 
 
@@ -135,12 +133,12 @@ def _render_presentation_body_section(content_path: str, descriptor: dict | None
     if mode == "unsupported":
         return None
     download_href = build_download_href(content_path)
-    attrs = f' data-path="{esc(content_path)}" data-dl-href="{download_href}"'
+    extra_attributes = f' data-path="{esc(content_path)}" data-dl-href="{download_href}"'
     toolbar = _render_presentation_toolbar(descriptor, download_href)
     well_html = render_text_well_html(
         descriptor,
         extra_class=" vp-presentation-body",
-        attrs=attrs,
+        extra_attributes=extra_attributes,
         prefix_html=toolbar,
     )
     if well_html is not None:
@@ -158,7 +156,7 @@ def _render_presentation_body_section(content_path: str, descriptor: dict | None
         inner_html = render_convert_failed_html(descriptor, download_href)
     else:
         raise ValueError(f"Unknown mode: {mode}")
-    return f'<div class="vp-well vp-presentation-body"{attrs}>{toolbar}{inner_html}</div>'
+    return f'<div class="vp-well vp-presentation-body"{extra_attributes}>{toolbar}{inner_html}</div>'
 
 
 def _render_presentation_card(file_item: _PresentationFile) -> str:
@@ -248,7 +246,7 @@ async def view_presentation(request: Request) -> Response:
     if present_count == 0:
         return render_expired_page()
     content_path = _find_content_path(presentation.files, presentation_id)
-    content_descriptor = await _load_content_descriptor(files, content_path) if content_path else None
+    content_descriptor = _find_content_descriptor(files, content_path) if content_path else None
     body_html = _render_presentation_body_section(content_path, content_descriptor) if content_path else None
     has_body = body_html is not None
     grid_cards = [
