@@ -170,7 +170,7 @@ async def test_office_planted_marker_is_convert_failed(view_api: tuple[httpx.Asy
     c, resources = view_api
     rel = _write(resources, "upload/doc.docx", "PK\x03\x04 fake docx")
     st = (resources / rel).stat()
-    await cache.mark_failed(cache.key_for(rel, int(st.st_mtime)), "convert", "Conversion cancelled")
+    await cache.mark_failed(cache.build_cache_key(rel, int(st.st_mtime)), "convert", "Conversion cancelled")
     d = (await c.get("/api/view/" + rel)).json()
     assert d["mode"] == "convert_failed"
     assert d["error"] == "Conversion cancelled"
@@ -207,7 +207,7 @@ async def test_retry_cached_key_deletes_entry_and_converts(view_api: tuple[httpx
     monkeypatch.setattr(thumbs, "start_thumbnail_job", record_thumb)
     rel = _write(resources, "upload/cached.docx", "PK\x03\x04 fake")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await cache.write_doc(key, "<div class='md-doc'>x</div>", None, {"mode": "doc"})
     r = await c.post(f"/api/view/{rel}/retry")
     assert r.status_code == 200
@@ -230,7 +230,7 @@ async def test_retry_absolute_path_clears_the_view_entry(view_api: tuple[httpx.A
     rel = _write(resources, "upload/abs.docx", "PK\x03\x04 fake")
     full = os.path.realpath(str(resources / rel))
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await cache.mark_failed(key, "convert", "Conversion cancelled")
     view = (await c.get(f"/api/view/{full}")).json()
     assert view["mode"] == "convert_failed"
@@ -239,7 +239,7 @@ async def test_retry_absolute_path_clears_the_view_entry(view_api: tuple[httpx.A
     d = r.json()
     assert d["mode"] == "converting"
     assert d["path"] == rel
-    assert await cache.convert_failed_reason(key) is None
+    assert await cache.get_convert_failure_reason(key) is None
 
 
 async def test_retry_non_office_is_bad_param(view_api: tuple[httpx.AsyncClient, Path]) -> None:
@@ -274,7 +274,7 @@ async def test_retry_in_flight_joins_and_keeps_entry(view_api: tuple[httpx.Async
     monkeypatch.setattr(thumbs, "start_thumbnail_job", record_thumb)
     rel = _write(resources, "upload/busy.docx", "PK\x03\x04 fake")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await cache.write_doc(key, "<div class='md-doc'>y</div>", None, {"mode": "doc"})
     await office.start_office_conversion(rel, key, str(resources / rel))
     r = await c.post(f"/api/view/{rel}/retry")
@@ -282,7 +282,7 @@ async def test_retry_in_flight_joins_and_keeps_entry(view_api: tuple[httpx.Async
     assert r.json()["mode"] == "converting"
     assert "task_id" not in r.json()
     assert queued == []
-    assert await cache.read_doc(key) == ("<div class='md-doc'>y</div>", {"mode": "doc"})  # the saved entry stays
+    assert await cache.read_doc(key) == cache.CachedDocument("<div class='md-doc'>y</div>", {"mode": "doc"})  # the saved entry stays
 
 
 async def test_route_order_literal_retry_file_is_viewable(view_api: tuple[httpx.AsyncClient, Path]) -> None:

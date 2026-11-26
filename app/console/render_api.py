@@ -33,7 +33,8 @@ async def render_message(request: Request) -> Response:
     if kind not in TEXT_FAMILY_KINDS:
         fragment, meta = None, {"mode": "raw", "note": _NO_PREVIEW_NOTE}
     else:
-        fragment, meta = await build_fragment_bytes(kind, body, detection.language)
+        built = await build_fragment_bytes(kind, body, detection.language)
+        fragment, meta = built.html, built.metadata
     return JSONResponse({
         "kind": kind.value,
         "kind_label": kind_label(kind, "", detection.language),

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import app.garbage_collector_cli as gc_cli
-from app.lib.render.cache import key_for
+from app.lib.render.cache import build_cache_key
 
 _SCHEMA = """
 CREATE TABLE tool_records (
@@ -53,7 +53,7 @@ def _seed_render_entry(data: Path, resources: Path, rel: str, content: str) -> P
     src.write_text(content, encoding="utf-8")
     mtime = int(time.time())
     os.utime(src, (mtime, mtime))
-    key_dir = data / "render" / key_for(rel, mtime)
+    key_dir = data / "render" / build_cache_key(rel, mtime)
     key_dir.mkdir(parents=True)
     (key_dir / "doc.html").write_text(content, encoding="utf-8")
     (key_dir / "meta.json").write_text(json.dumps({"path": rel, "mtime": mtime}), encoding="utf-8")

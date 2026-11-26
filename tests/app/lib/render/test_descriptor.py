@@ -9,7 +9,7 @@ import pytest
 import app.lib.render.cache as cache
 import app.lib.render.office as office
 from app.lib.render.classify import RenderKind
-from app.lib.render.descriptor import (build_descriptor, converting_descriptor,
+from app.lib.render.descriptor import (build_converting_descriptor, build_descriptor,
                                        get_resource_path, resolve_view)
 
 _DESCKEYS = (
@@ -70,7 +70,7 @@ def test_get_resource_path_symlinked_resources_root(_resources: Path, monkeypatc
 
 
 def test_converting_descriptor_shape() -> None:
-    d = converting_descriptor("upload/doc.docx", "doc.docx", 10, 1234, RenderKind.OFFICE_DOC)
+    d = build_converting_descriptor("upload/doc.docx", "doc.docx", 10, 1234, RenderKind.OFFICE_DOC)
     assert set(d) == set(_DESCKEYS)
     assert d["mode"] == "converting"
     assert d["kind"] == "office_doc"
@@ -156,7 +156,7 @@ async def test_build_descriptor_cached_presentation_uses_pdf_asset(_resources: P
     full = _resources / rel
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_bytes(b"PK\x03\x04 fake pptx")
-    key = cache.key_for(rel, int(full.stat().st_mtime))
+    key = cache.build_cache_key(rel, int(full.stat().st_mtime))
     await cache.write_doc(key, "", {cache.OFFICE_PDF_ASSET: b"%PDF"}, {"mode": "frame"})
 
     d = await build_descriptor(rel, str(full))

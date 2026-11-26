@@ -5,7 +5,7 @@ import os
 from typing import ClassVar, override
 
 from app.lib.shared.paths import resolve_path_sync, resources_dir
-from app.lib.render import RenderKind, cache, classify, thumb_engine, thumbs
+from app.lib.render import RenderKind, cache, classify, get_thumbnail_engine, thumbs
 from app.lib.tool.base import Param, Tool, ToolResult
 from app.resources.resources import dav_base_url
 
@@ -118,8 +118,8 @@ async def _resolve_thumb(path: str) -> tuple[RenderKind, str, str]:
     """
     target, mtime = await asyncio.to_thread(_thumb_target, path)
     kind = await classify(target)
-    key = cache.key_for(path, mtime)
-    return kind, key, await cache.thumb_status(key)
+    key = cache.build_cache_key(path, mtime)
+    return kind, key, await cache.get_thumbnail_status(key)
 
 
 class _ResourceToImageTool(Tool):
@@ -143,14 +143,14 @@ class _ResourceToImageTool(Tool):
     async def call(self, params: dict) -> ToolResult:
         resource_path: str = params["resource_path"]
         kind, key, status = await _resolve_thumb(resource_path)
-        if thumb_engine(kind) is None:
+        if get_thumbnail_engine(kind) is None:
             raise ValueError(_not_previewable_error(resource_path, kind))
         if status == "failed":
             raise ValueError(_failed_error(resource_path))
         # A thumbnail that is already being made must not be asked for again.
         if status == "pending":
             thumbs.start_thumbnail_job(key, kind, resource_path)
-        url = dav_base_url() + cache.thumb_url(resource_path)
+        url = dav_base_url() + cache.build_thumbnail_url(resource_path)
         return ToolResult(text=_success_message(resource_path, url, ready=(status == "done")))
 
 

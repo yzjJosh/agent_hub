@@ -143,7 +143,7 @@ async def _thumb_jobs(presented: list[str]) -> list[tuple[str, RenderKind, str]]
     jobs: list[tuple[str, RenderKind, str]] = []
     for rel in presented:
         full, mtime = await asyncio.to_thread(_resolve_and_stat, root, rel)
-        jobs.append((cache.key_for(rel, mtime), await classify(full), rel))
+        jobs.append((cache.build_cache_key(rel, mtime), await classify(full), rel))
     return jobs
 
 

@@ -6,23 +6,31 @@ import asyncio
 import os
 from typing import TypedDict, Unpack
 
-from app.lib.shared.paths import ephemeral_dav_url, resolve_path, resources_dir
 from app.lib.render import cache, fragments, office, probe
+from app.lib.render.cache import CachedDocument
 from app.lib.render.classify import RenderKind, classify, kind_label
+from app.lib.render.fragments import BuiltFragment
+from app.lib.shared.paths import ephemeral_dav_url, resolve_path, resources_dir
 
 __all__ = [
     "DescriptorFields",
     "OFFICE_KINDS",
+    "build_converting_descriptor",
     "build_descriptor",
-    "converting_descriptor",
     "get_resource_path",
     "resolve_view",
 ]
 
-_TEXT_KINDS = frozenset(
-    {RenderKind.MARKDOWN, RenderKind.CODE, RenderKind.TEXT, RenderKind.CSV,
-     RenderKind.JSON, RenderKind.JSONL, RenderKind.YAML, RenderKind.XML}
-)
+_TEXT_KINDS = frozenset({
+    RenderKind.MARKDOWN,
+    RenderKind.CODE,
+    RenderKind.TEXT,
+    RenderKind.CSV,
+    RenderKind.JSON,
+    RenderKind.JSONL,
+    RenderKind.YAML,
+    RenderKind.XML,
+})
 OFFICE_KINDS = frozenset({RenderKind.OFFICE_DOC, RenderKind.OFFICE_PPT, RenderKind.XLSX, RenderKind.XLS})
 _MEDIA_KINDS = frozenset({RenderKind.PDF, RenderKind.IMAGE, RenderKind.VIDEO, RenderKind.AUDIO, RenderKind.HTML})
 
@@ -51,10 +59,10 @@ def get_resource_path(full_path: str, fallback: str) -> str:
     Returns:
         The path inside the resources folder, or the fallback.
     """
-    rel = os.path.relpath(full_path, os.path.realpath(resources_dir()))
-    if rel == ".." or rel.startswith(".." + os.sep):
+    relative_path = os.path.relpath(full_path, os.path.realpath(resources_dir()))
+    if relative_path == ".." or relative_path.startswith(".." + os.sep):
         return fallback
-    return rel
+    return relative_path
 
 
 class DescriptorFields(TypedDict, total=False):
@@ -75,59 +83,100 @@ class DescriptorFields(TypedDict, total=False):
     duration: float | None
 
 
-def _descriptor(path: str, name: str, size: int, mtime: int, kind: RenderKind, **fields: Unpack[DescriptorFields]) -> dict:
-    d = {
-        "path": path, "name": name, "size": size, "mtime": mtime,
-        "kind": kind.value, "kind_label": kind_label(kind, name, fields.get("language")),
-        "mode": None, "fragment": None, "url": None, "error": None,
-        "provenance": None, "note": None, "language": None, "line_count": None,
-        "row_count": None, "column_count": None, "pages": None, "dimensions": None,
+def _assemble_descriptor(
+    path: str,
+    name: str,
+    size: int,
+    modified_time: int,
+    kind: RenderKind,
+    **fields: Unpack[DescriptorFields],
+) -> dict:
+    descriptor: dict = {
+        "path": path,
+        "name": name,
+        "size": size,
+        "mtime": modified_time,
+        "kind": kind.value,
+        "kind_label": kind_label(kind, name, fields.get("language")),
+        "mode": None,
+        "fragment": None,
+        "url": None,
+        "error": None,
+        "provenance": None,
+        "note": None,
+        "language": None,
+        "line_count": None,
+        "row_count": None,
+        "column_count": None,
+        "pages": None,
+        "dimensions": None,
         "duration": None,
     }
-    d.update(fields)
-    return d
+    descriptor.update(fields)
+    return descriptor
 
 
-def converting_descriptor(path: str, name: str, size: int, mtime: int, kind: RenderKind) -> dict:
+def build_converting_descriptor(
+    path: str, name: str, size: int, modified_time: int, kind: RenderKind
+) -> dict:
     """Describe a file that is still being converted.
 
     Args:
         path: A path inside the resources folder.
         name: The file name.
         size: How big the file is in bytes.
-        mtime: When the file last changed.
+        modified_time: When the file last changed.
         kind: What sort of file this is.
 
     Returns:
         A description that says the file is converting.
     """
-    return _descriptor(path, name, size, mtime, kind, mode="converting")
+    return _assemble_descriptor(path, name, size, modified_time, kind, mode="converting")
 
 
-async def _build_text_body(kind: RenderKind, full_path: str, size: int, mtime: int, path: str, key: str) -> tuple[str | None, dict]:
-    """Get the shown body of a text file.
+async def _build_text_body(
+    kind: RenderKind, full_path: str, size: int, modified_time: int, path: str, key: str
+) -> BuiltFragment:
+    cached_document: CachedDocument | None = await cache.read_doc(key)
+    if cached_document is not None:
+        fragment_html = None if cached_document.html == "" else cached_document.html
+        metadata = {field: cached_document.metadata.get(field) for field in fragments.META_FIELDS}
+        return BuiltFragment(html=fragment_html, metadata=metadata)
+    built = await fragments.build_fragment(kind, full_path, size)
+    cache_metadata = fragments.build_text_metadata(kind, path, modified_time, size, built.metadata)
+    await cache.write_doc(key, built.html or "", None, cache_metadata)
+    metadata = {field: built.metadata.get(field) for field in fragments.META_FIELDS}
+    return BuiltFragment(html=built.html, metadata=metadata)
 
-    A file that cannot be read as text has no body.
 
-    Args:
-        kind: What sort of file this is.
-        full_path: Where the file is on disk.
-        size: How big the file is in bytes.
-        mtime: When the file last changed.
-        path: A path inside the resources folder.
-        key: The name this file is saved under.
-
-    Returns:
-        The body to show, or None, plus the extra facts about the file.
-    """
-    cached = await cache.read_doc(key)
-    if cached is not None:
-        _doc, meta = cached
-        return (None if _doc == "" else _doc), {f: meta.get(f) for f in fragments.META_FIELDS}
-    fragment, extras = await fragments.build_fragment(kind, full_path, size)
-    # The office code saves this same entry.
-    await cache.write_doc(key, fragment or "", None, fragments.text_meta(kind, path, mtime, size, extras))
-    return fragment, {f: extras.get(f) for f in fragments.META_FIELDS}
+async def _build_office_descriptor(
+    resource_path: str, name: str, size: int, modified_time: int, kind: RenderKind, full_path: str, key: str
+) -> dict:
+    cached_document = await cache.read_doc(key)
+    if cached_document is not None:
+        metadata = cached_document.metadata
+        mode = metadata.get("mode", "doc")
+        pdf_url = f"/view/doc/{key}/{cache.OFFICE_PDF_ASSET}" if mode == "frame" else None
+        return _assemble_descriptor(
+            resource_path,
+            name,
+            size,
+            modified_time,
+            kind,
+            mode=mode,
+            fragment=cached_document.html,
+            provenance=metadata.get("provenance"),
+            row_count=metadata.get("row_count"),
+            column_count=metadata.get("column_count"),
+            url=pdf_url,
+        )
+    reason = await cache.get_convert_failure_reason(key)
+    if reason is not None:
+        return _assemble_descriptor(
+            resource_path, name, size, modified_time, kind, mode="convert_failed", error=reason
+        )
+    await office.start_office_conversion(resource_path, key, full_path)
+    return build_converting_descriptor(resource_path, name, size, modified_time, kind)
 
 
 async def build_descriptor(path: str, full_path: str) -> dict:
@@ -141,32 +190,22 @@ async def build_descriptor(path: str, full_path: str) -> dict:
         Everything the viewer needs to show the file.
     """
     resource_path = get_resource_path(full_path, path)
-    stat = await asyncio.to_thread(os.stat, full_path)
+    file_stat = await asyncio.to_thread(os.stat, full_path)
     kind = await classify(full_path)
-    size, mtime = stat.st_size, int(stat.st_mtime)
+    size, modified_time = file_stat.st_size, int(file_stat.st_mtime)
     name = os.path.basename(resource_path)
-    key = cache.key_for(resource_path, mtime)
+    key = cache.build_cache_key(resource_path, modified_time)
     if kind in _TEXT_KINDS:
-        fragment, per_type = await _build_text_body(kind, full_path, size, mtime, resource_path, key)
-        return _descriptor(resource_path, name, size, mtime, kind, fragment=fragment, **per_type)
+        built = await _build_text_body(kind, full_path, size, modified_time, resource_path, key)
+        return _assemble_descriptor(
+            resource_path, name, size, modified_time, kind, fragment=built.html, **built.metadata
+        )
     if kind in OFFICE_KINDS:
-        cached = await cache.read_doc(key)
-        if cached is not None:
-            doc_html, meta = cached
-            mode = meta.get("mode", "doc")
-            return _descriptor(resource_path, name, size, mtime, kind, mode=mode,
-                               fragment=doc_html, provenance=meta.get("provenance"),
-                               row_count=meta.get("row_count"), column_count=meta.get("column_count"),
-                               url=(f"/view/doc/{key}/{cache.OFFICE_PDF_ASSET}"
-                                    if mode == "frame" else None))
-        reason = await cache.convert_failed_reason(key)
-        if reason is not None:
-            return _descriptor(resource_path, name, size, mtime, kind, mode="convert_failed", error=reason)
-        await office.start_office_conversion(resource_path, key, full_path)
-        return converting_descriptor(resource_path, name, size, mtime, kind)
+        return await _build_office_descriptor(resource_path, name, size, modified_time, kind, full_path, key)
     if kind in _MEDIA_KINDS:
-        meta = await probe.probe_meta(kind, full_path)
+        metadata = await probe.probe_meta(kind, full_path)
         mode = "frame" if kind in (RenderKind.PDF, RenderKind.HTML) else "native"
-        return _descriptor(resource_path, name, size, mtime, kind, mode=mode,
-                           url=ephemeral_dav_url(resource_path), **meta)
-    return _descriptor(resource_path, name, size, mtime, kind, mode="unsupported")
+        return _assemble_descriptor(
+            resource_path, name, size, modified_time, kind, mode=mode, url=ephemeral_dav_url(resource_path), **metadata
+        )
+    return _assemble_descriptor(resource_path, name, size, modified_time, kind, mode="unsupported")

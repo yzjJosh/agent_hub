@@ -16,6 +16,7 @@ import yaml
 
 import app.lib.text_type.detector as detector
 from app.lib.render import cache, fragments
+from app.lib.render.cache import CachedDocument
 from app.lib.render.classify import RenderKind
 from app.lib.render.descriptor import DescriptorFields, OFFICE_KINDS
 from app.lib.render.detect import BINARY_KINDS, TEXT_FAMILY_KINDS, Detection, detect, language_extension
@@ -171,7 +172,7 @@ def _copy_input_to_cache_dir(
     filename = _select_cached_input_filename(effective_kind, detection.language, detection.subtype)
     if filename is None:
         return None
-    cache_dir = os.path.join(cache.render_root(), cache_key)
+    cache_dir = os.path.join(cache.get_render_root(), cache_key)
     os.makedirs(cache_dir, exist_ok=True)
     destination_path = os.path.join(cache_dir, filename)
     if not os.path.isfile(destination_path):
@@ -248,8 +249,8 @@ def _render_text_fragment(
             return _build_raw_fallback_fragment(text, _format_parse_error_note(RenderKind.CSV))
     elif effective_kind in _PARSE_VALIDATED_KINDS and not _is_valid_structured_text(effective_kind, text):
         return _build_raw_fallback_fragment(text, _format_parse_error_note(effective_kind))
-    fragment_html, metadata = fragments.build_fragment_sync(effective_kind, input_path, size_bytes)
-    return _enforce_fragment_size_limit(fragment_html, text, metadata)
+    built = fragments.build_fragment_sync(effective_kind, input_path, size_bytes)
+    return _enforce_fragment_size_limit(built.html, text, built.metadata)
 
 
 def _split_code_fragment_lines(fragment_html: str) -> _SplitCodeFragment:
@@ -360,14 +361,13 @@ async def _detect_text_kind(text: str) -> Detection:
     return await detect(text.encode("utf-8"))
 
 
-def _has_matching_cached_kind(cached_entry: tuple[str, dict], effective_kind: RenderKind) -> bool:
-    _, cached_metadata = cached_entry
-    return cached_metadata.get("kind") == effective_kind.value
+def _has_matching_cached_kind(cached_entry: CachedDocument, effective_kind: RenderKind) -> bool:
+    return cached_entry.metadata.get("kind") == effective_kind.value
 
 
 async def _write_cached_text_fragment(context: _TextResultContext, rendered: _RenderedFragment) -> str:
     result_file = context.result_file
-    cache_metadata = fragments.text_meta(
+    cache_metadata = fragments.build_text_metadata(
         context.effective_kind,
         result_file.relative_path,
         result_file.modified_time_seconds,
@@ -398,9 +398,9 @@ async def _describe_text_result(context: _TextResultContext) -> dict:
     source_path = input_path or result_file.disk_path
     cached_entry = await cache.read_doc(context.cache_key) if context.requested_kind is None else None
     if cached_entry is not None and _has_matching_cached_kind(cached_entry, context.effective_kind):
-        cached_html, cached_metadata = cached_entry
+        cached_metadata = cached_entry.metadata
         rendered = _RenderedFragment(
-            fragment_html=cached_html or None,
+            fragment_html=cached_entry.html or None,
             mode=cached_metadata.get("mode"),
             note=cached_metadata.get("note"),
             metadata=cached_metadata,
@@ -469,7 +469,7 @@ async def build_result_descriptor(
     if detection.kind not in TEXT_FAMILY_KINDS:
         detection = await _classify_text_bytes(result_file.body)
     effective_kind = declared_kind if declared_kind is not None else (kind if kind is not None else detection.kind)
-    cache_key = cache.key_for(result_file.relative_path, result_file.modified_time_seconds)
+    cache_key = cache.build_cache_key(result_file.relative_path, result_file.modified_time_seconds)
     context = _TextResultContext(
         task_id=task_id,
         cache_key=cache_key,

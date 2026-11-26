@@ -72,13 +72,13 @@ async def _load_presentation_file(resource_path: str) -> _PresentationFile:
             descriptor=None,
         )
     descriptor = await build_descriptor(resource_path, full_path)
-    thumbnail_key = cache.key_for(resource_path, int(file_stat.st_mtime))
+    thumbnail_key = cache.build_cache_key(resource_path, int(file_stat.st_mtime))
     return _PresentationFile(
         resource_path=resource_path,
         is_present=True,
         size=file_stat.st_size,
         label=descriptor["kind_label"],
-        thumbnail_status=await cache.thumb_status(thumbnail_key),
+        thumbnail_status=await cache.get_thumbnail_status(thumbnail_key),
         descriptor=descriptor,
     )
 
@@ -171,7 +171,7 @@ def _render_presentation_card(file_item: _PresentationFile) -> str:
     download_href = build_download_href(file_item.resource_path)
     view_href = f"/view/{esc(quote(file_item.resource_path, safe='/'))}"
     thumbnail_html = (
-        f'<img class="thumb-img" src="{cache.thumb_url(file_item.resource_path)}">'
+        f'<img class="thumb-img" src="{cache.build_thumbnail_url(file_item.resource_path)}">'
         if file_item.thumbnail_status == "done"
         else '<span class="thumb-glyph" data-vp-icon="box"></span>'
     )

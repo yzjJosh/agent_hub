@@ -37,7 +37,7 @@ async def _await_outcome(key: str) -> None:
     for _ in range(200):
         if await cache_module.read_doc(key) is not None:
             return
-        if await cache_module.convert_failed_reason(key) is not None:
+        if await cache_module.get_convert_failure_reason(key) is not None:
             return
         await asyncio.sleep(_SETTLE_SHORT)
     raise AssertionError("conversion did not reach a durable outcome")
@@ -48,7 +48,7 @@ async def _read_cached_doc(key: str) -> tuple[str, dict]:
     cached = await cache_module.read_doc(key)
     if cached is None:
         raise AssertionError(f"expected cached doc for {key}")
-    return cached
+    return cached.html, cached.metadata
 
 
 async def _convert(key: str, path: str, full_path: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
@@ -147,7 +147,7 @@ def test_start_dedup_joins_live(_office_env: Path, monkeypatch: pytest.MonkeyPat
         await hold.wait()
 
     monkeypatch.setattr(office, "_convert_office_file", slow)
-    key = cache_module.key_for("a", 1)
+    key = cache_module.build_cache_key("a", 1)
 
     async def run() -> None:
         await asyncio.wait_for(office.start_office_conversion("a.docx", key, str(FIX / "sample.docx")), _WAIT_LIMIT_S)
@@ -298,7 +298,7 @@ def test_failed_conversion_ends_completed_with_bounded_marker(_office_env: Path,
         await asyncio.wait_for(task, _WAIT_LIMIT_S)  # let the failure mark be written
         assert not task.cancelled()
         assert task.exception() is None  # the failure was swallowed after the marker
-        assert await cache_module.convert_failed_reason(key) == reason[:200]
+        assert await cache_module.get_convert_failure_reason(key) == reason[:200]
         assert await cache_module.read_doc(key) is None
 
     asyncio.run(run())
@@ -338,7 +338,7 @@ async def test_ensure_waits_for_a_live_conversion(_office_env: Path, monkeypatch
     assert not checker.done()  # still waiting on the live conversion
     release.set()
     assert await checker == "published"
-    assert await cache_module.convert_failed_reason(key) is None  # no premature failure
+    assert await cache_module.get_convert_failure_reason(key) is None  # no premature failure
 
 
 async def test_converted_page_is_reduced(_office_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -429,7 +429,7 @@ async def test_marked_key_never_starts_from_thumb(_office_env: Path, monkeypatch
     )
     assert status == "failed"
     assert started == []
-    assert await cache_module.convert_failed_reason(key) == "Conversion cancelled"  # the reason is kept
+    assert await cache_module.get_convert_failure_reason(key) == "Conversion cancelled"  # the reason is kept
 
 
 async def test_ensure_fresh_starts_and_reports(_office_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -455,7 +455,7 @@ async def test_ensure_doc_kind_builds_and_publishes(_office_env: Path) -> None:
     assert status == "published"
     doc, _meta = await _read_cached_doc(key)
     assert "Hello" in doc
-    assert await cache_module.convert_failed_reason(key) is None  # no failure mark written
+    assert await cache_module.get_convert_failure_reason(key) is None  # no failure mark written
 
 
 async def test_ensure_doc_kind_html_is_sandboxed_frame(_office_env: Path) -> None:
@@ -508,22 +508,22 @@ async def test_sheet_read_timeout_message(_office_env: Path, monkeypatch: pytest
     key = "9" * 64
 
     await asyncio.wait_for(_convert(key, "a.xlsx", str(FIX / "sample.docx"), timeout=_FAST_TIMEOUT), _WAIT_LIMIT_S)
-    assert await cache_module.convert_failed_reason(key) == "Sheet read failed: timed out after 90 s"
+    assert await cache_module.get_convert_failure_reason(key) == "Sheet read failed: timed out after 90 s"
 
 
 async def test_retry_force_reconvert_deletes_cached_entry(_office_env: Path,
                                                          monkeypatch: pytest.MonkeyPatch) -> None:
     key = "n" * 64
     await cache_module.write_doc(key, "<div class=\"md-doc\">old</div>", {"a.png": b"x"}, {"path": "a"})
-    assert os.path.exists(os.path.join(cache_module.render_root(), key, "a.png"))
+    assert os.path.exists(os.path.join(cache_module.get_render_root(), key, "a.png"))
 
     async def stub(_key: str, _path: str, _full: str, _kind: RenderKind, _timeout: float) -> None:
         await asyncio.sleep(_SETTLE_SHORT)
 
     monkeypatch.setattr(office, "_convert_office_file", stub)
     assert await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx")) is True
-    assert not os.path.isdir(os.path.join(cache_module.render_root(), key))
-    assert await cache_module.convert_failed_reason(key) is None
+    assert not os.path.isdir(os.path.join(cache_module.get_render_root(), key))
+    assert await cache_module.get_convert_failure_reason(key) is None
 
 
 async def test_retry_joins_in_flight_and_deletes_nothing(_office_env: Path,
@@ -538,7 +538,7 @@ async def test_retry_joins_in_flight_and_deletes_nothing(_office_env: Path,
     monkeypatch.setattr(office, "_convert_office_file", running)
     await office.start_office_conversion("a.docx", key, str(FIX / "sample.docx"))
     assert await office.retry_office_conversion("a.docx", key, str(FIX / "sample.docx")) is False
-    assert await cache_module.read_doc(key) == ("doc", {})  # nothing deleted
+    assert await cache_module.read_doc(key) == cache_module.CachedDocument("doc", {})  # nothing deleted
 
 
 class _StubSofficeProc(asyncio.subprocess.Process):
@@ -616,7 +616,7 @@ def test_soffice_kills_child_on_cancel(_office_env: Path, monkeypatch: pytest.Mo
         with pytest.raises(asyncio.CancelledError):
             await task
         assert proc.killed == [1]
-        assert await cache_module.convert_failed_reason(key) is None  # no marker at shutdown
+        assert await cache_module.get_convert_failure_reason(key) is None  # no marker at shutdown
 
     asyncio.run(run())
 
@@ -651,7 +651,7 @@ async def test_live_soffice_converts_presentation_to_pdf(_office_env: Path, tmp_
     shutil.copy(FIX / "sample.pptx", full)
     await _convert(key, "sample.pptx", full)
     doc, meta = await _read_cached_doc(key)
-    pdf_path = os.path.join(cache_module.render_root(), key, cache_module.OFFICE_PDF_ASSET)
+    pdf_path = os.path.join(cache_module.get_render_root(), key, cache_module.OFFICE_PDF_ASSET)
     with open(pdf_path, "rb") as fh:
         assert fh.read(5) == b"%PDF-"
     assert doc == ""
@@ -670,6 +670,6 @@ async def test_live_soffice_convert_docx_with_embedded_image(
     await _convert(key, "sample.docx", full)
     doc, _meta = await _read_cached_doc(key)
     assert '<div class="md-doc">' in doc
-    saved = os.listdir(os.path.join(cache_module.render_root(), key))
+    saved = os.listdir(os.path.join(cache_module.get_render_root(), key))
     assert any(name.endswith(".png") for name in saved), "soffice must emit the embedded image"
     assert f"/view/doc/{key}/" in doc

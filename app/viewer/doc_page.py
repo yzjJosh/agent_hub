@@ -50,7 +50,7 @@ def _build_plain_not_found() -> Response:
 
 
 def _resolve_doc_asset_sync(key: str, asset_name: str) -> _DocAsset | None:
-    key_directory = os.path.realpath(os.path.join(cache.render_root(), key))
+    key_directory = os.path.realpath(os.path.join(cache.get_render_root(), key))
     if not os.path.isdir(key_directory):
         return None
     full_path = os.path.realpath(os.path.join(key_directory, asset_name))
@@ -76,9 +76,8 @@ async def view_doc(request: Request) -> Response:
     entry = await cache.read_doc(key) if is_valid_key else None
     if entry is None:
         return await delegate_miss(request, f"doc/{key}", _build_plain_not_found(), view_file)
-    doc_html, _meta = entry
     is_thumbnail = request.query_params.get("thumb") == "1"
-    return HTMLResponse(_compose_doc_page(doc_html, is_thumbnail=is_thumbnail))
+    return HTMLResponse(_compose_doc_page(entry.html, is_thumbnail=is_thumbnail))
 
 
 async def view_doc_asset(request: Request) -> Response:

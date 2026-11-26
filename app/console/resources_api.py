@@ -14,7 +14,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from app.console.errors import error_response
 from app.console.windows import parse_int
 from app.lib.render import cache, thumbs
-from app.lib.render.cache import thumb_status_sync
+from app.lib.render.cache import get_thumbnail_status_sync
 from app.lib.render.classify import classify_sync, kind_label
 from app.lib.shared import activity
 from app.lib.shared.paths import resolve_path, resolve_path_sync, resources_dir
@@ -100,11 +100,11 @@ def _measure_subtree(full_path: str) -> _SubtreeStats:
 
 def _describe_file_metadata(full_path: str, relative_path: str, modified_time: int) -> dict:
     kind = classify_sync(full_path)
-    engine = thumbs.thumb_engine(kind)
-    status = "none" if engine is None else thumb_status_sync(cache.key_for(relative_path, modified_time))
+    engine = thumbs.get_thumbnail_engine(kind)
+    status = "none" if engine is None else get_thumbnail_status_sync(cache.build_cache_key(relative_path, modified_time))
     return {
         "kind": kind_label(kind, os.path.basename(relative_path), None),
-        "thumb": {"status": status, "url": cache.thumb_url(relative_path)},
+        "thumb": {"status": status, "url": cache.build_thumbnail_url(relative_path)},
     }
 
 

@@ -10,30 +10,33 @@ import re
 import shutil
 import sys
 import threading
+from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
 
-from app.lib.gc.file_sweep import sweep as _file_sweep
+from app.lib.gc import file_sweep
 from app.lib.render import gen_state
 from app.lib.shared.paths import data_dir, resolve_path_sync, resources_dir
 
 __all__ = [
+    "CachedDocument",
     "OFFICE_PDF_ASSET",
+    "build_cache_key",
+    "build_thumbnail_url",
     "clear_failed",
-    "convert_failed_reason",
+    "get_convert_failure_reason",
+    "get_render_root",
+    "get_thumbnail_status",
+    "get_thumbnail_status_sync",
     "invalidate_sync",
-    "key_for",
     "mark_failed",
     "read_doc",
-    "render_root",
     "sweep_sync",
-    "thumb_status",
-    "thumb_status_sync",
-    "thumb_url",
     "write_doc",
 ]
 
 _FailedKind = Literal["thumb", "convert"]
+_FAILED_KINDS: tuple[_FailedKind, ...] = ("thumb", "convert")
 
 _RUN_RESULT = re.compile(r"^runs/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/result$")
 OFFICE_PDF_ASSET = "preview.pdf"
@@ -42,7 +45,23 @@ OFFICE_PDF_ASSET = "preview.pdf"
 _KEY_VERSION = 3
 
 
-def render_root() -> str:
+@dataclass(frozen=True)
+class CachedDocument:
+    """Saved document HTML and metadata read from the render cache."""
+
+    html: str
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class _CachedIdentity:
+    """Source path and modified time recorded in a cached render entry."""
+
+    relative_path: str
+    modified_time: int
+
+
+def get_render_root() -> str:
     """Get the folder that holds rendered files.
 
     Returns:
@@ -51,72 +70,66 @@ def render_root() -> str:
     return os.path.join(data_dir(), "render")
 
 
-def _state_root() -> str:
-    """Get the folder that holds failure marks.
-
-    Returns:
-        The path to that folder.
-    """
-    return os.path.join(render_root(), ".state")
+def _get_state_root() -> str:
+    return os.path.join(get_render_root(), ".state")
 
 
-def key_for(path: str, mtime: int) -> str:
+def build_cache_key(path: str, modified_time: int) -> str:
     """Make the name a file is saved under.
 
     Args:
         path: A path inside the resources folder.
-        mtime: When the file last changed.
+        modified_time: When the file last changed.
 
     Returns:
         The saved name for that file.
     """
-    return hashlib.sha256(f"{_KEY_VERSION}\0{path}\0{mtime}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{_KEY_VERSION}\0{path}\0{modified_time}".encode("utf-8")).hexdigest()
 
 
-def _key_dir(key: str) -> str:
-    return os.path.join(render_root(), key)
+def _get_key_directory(key: str) -> str:
+    return os.path.join(get_render_root(), key)
 
 
-def _read_doc_sync(key: str) -> tuple[str, dict] | None:
-    doc_path = os.path.join(_key_dir(key), "doc.html")
-    meta_path = os.path.join(_key_dir(key), "meta.json")
+def _read_doc_sync(key: str) -> CachedDocument | None:
+    doc_path = os.path.join(_get_key_directory(key), "doc.html")
+    metadata_path = os.path.join(_get_key_directory(key), "meta.json")
     try:
-        with open(doc_path, "r", encoding="utf-8") as fh:
-            doc_html = fh.read()
-        with open(meta_path, "r", encoding="utf-8") as fh:
-            meta = json.load(fh)
-        return doc_html, meta
+        with open(doc_path, "r", encoding="utf-8") as file_handle:
+            doc_html = file_handle.read()
+        with open(metadata_path, "r", encoding="utf-8") as file_handle:
+            metadata = json.load(file_handle)
+        return CachedDocument(html=doc_html, metadata=metadata)
     except (OSError, json.JSONDecodeError):
         return None
 
 
-async def read_doc(key: str) -> tuple[str, dict] | None:
+async def read_doc(key: str) -> CachedDocument | None:
     """Read a saved render.
 
     Args:
         key: The name the file is saved under.
 
     Returns:
-        The saved page and the facts about it, or None when nothing good is
-        there.
+        The saved document and metadata, or None when nothing valid is there.
     """
     return await asyncio.to_thread(_read_doc_sync, key)
 
 
-def _write_doc_sync(key: str, doc_html: str, assets: dict[str, bytes] | None, meta: dict) -> None:
-    root = render_root()
+def _write_doc_sync(key: str, doc_html: str, assets: dict[str, bytes] | None, metadata: dict) -> None:
+    root = get_render_root()
     os.makedirs(root, exist_ok=True)
     staging = os.path.join(root, f".staging-{key}-{os.getpid()}-{threading.get_ident()}")
     try:
         os.makedirs(staging)
-        with open(os.path.join(staging, "doc.html"), "w", encoding="utf-8") as fh:
-            fh.write(doc_html)
-        for name, data in (assets or {}).items():
-            with open(os.path.join(staging, name), "wb") as fh:
-                fh.write(data)
-        with open(os.path.join(staging, "meta.json"), "w", encoding="utf-8") as fh:
-            json.dump(meta, fh)
-        target = _key_dir(key)
+        with open(os.path.join(staging, "doc.html"), "w", encoding="utf-8") as file_handle:
+            file_handle.write(doc_html)
+        for name, content in (assets or {}).items():
+            with open(os.path.join(staging, name), "wb") as file_handle:
+                file_handle.write(content)
+        with open(os.path.join(staging, "meta.json"), "w", encoding="utf-8") as file_handle:
+            json.dump(metadata, file_handle)
+        target = _get_key_directory(key)
         if os.path.isdir(target):
             shutil.rmtree(target)
         os.replace(staging, target)
@@ -125,7 +138,7 @@ def _write_doc_sync(key: str, doc_html: str, assets: dict[str, bytes] | None, me
         raise
 
 
-async def write_doc(key: str, doc_html: str, assets: dict[str, bytes] | None, meta: dict) -> None:
+async def write_doc(key: str, doc_html: str, assets: dict[str, bytes] | None, metadata: dict) -> None:
     """Save a render.
 
     A reader never sees a half saved one.
@@ -134,12 +147,12 @@ async def write_doc(key: str, doc_html: str, assets: dict[str, bytes] | None, me
         key: The name to save under.
         doc_html: The page to save.
         assets: Extra files to save next to the page, or None.
-        meta: The facts about the file.
+        metadata: The facts about the file.
     """
-    await asyncio.to_thread(_write_doc_sync, key, doc_html, assets, meta)
+    await asyncio.to_thread(_write_doc_sync, key, doc_html, assets, metadata)
 
 
-def thumb_url(path: str) -> str:
+def build_thumbnail_url(path: str) -> str:
     """Get the web address of a file's thumbnail.
 
     Args:
@@ -151,14 +164,14 @@ def thumb_url(path: str) -> str:
     return "/api/resources/thumb?path=" + quote(path, safe="/")
 
 
-def _marker_path(key: str, kind: _FailedKind) -> str:
-    return os.path.join(_state_root(), f"{key}.{kind}-failed")
+def _get_marker_path(key: str, kind: _FailedKind) -> str:
+    return os.path.join(_get_state_root(), f"{key}.{kind}-failed")
 
 
 def _mark_failed_sync(key: str, kind: _FailedKind, reason: str) -> None:
-    os.makedirs(_state_root(), exist_ok=True)
-    with open(_marker_path(key, kind), "w", encoding="utf-8") as fh:
-        fh.write(reason)
+    os.makedirs(_get_state_root(), exist_ok=True)
+    with open(_get_marker_path(key, kind), "w", encoding="utf-8") as file_handle:
+        file_handle.write(reason)
 
 
 async def mark_failed(key: str, kind: _FailedKind, reason: str) -> None:
@@ -176,7 +189,7 @@ async def mark_failed(key: str, kind: _FailedKind, reason: str) -> None:
 
 def _clear_failed_sync(key: str, kind: _FailedKind) -> None:
     try:
-        os.remove(_marker_path(key, kind))
+        os.remove(_get_marker_path(key, kind))
     except FileNotFoundError:
         pass
 
@@ -193,15 +206,15 @@ async def clear_failed(key: str, kind: _FailedKind) -> None:
     await asyncio.to_thread(_clear_failed_sync, key, kind)
 
 
-def _convert_failed_reason_sync(key: str) -> str | None:
+def _get_convert_failure_reason_sync(key: str) -> str | None:
     try:
-        with open(_marker_path(key, "convert"), "r", encoding="utf-8") as fh:
-            return fh.read()
+        with open(_get_marker_path(key, "convert"), "r", encoding="utf-8") as file_handle:
+            return file_handle.read()
     except OSError:
         return None
 
 
-async def convert_failed_reason(key: str) -> str | None:
+async def get_convert_failure_reason(key: str) -> str | None:
     """Get why a conversion failed.
 
     Args:
@@ -210,20 +223,20 @@ async def convert_failed_reason(key: str) -> str | None:
     Returns:
         What went wrong, or None when the conversion did not fail.
     """
-    return await asyncio.to_thread(_convert_failed_reason_sync, key)
+    return await asyncio.to_thread(_get_convert_failure_reason_sync, key)
 
 
-def _thumb_status_sync(key: str) -> str:
-    if os.path.exists(os.path.join(_key_dir(key), "thumb.png")):
+def _get_thumbnail_status_sync(key: str) -> str:
+    if os.path.exists(os.path.join(_get_key_directory(key), "thumb.png")):
         return "done"
     if key in gen_state.generating_keys():
         return "generating"
-    if os.path.exists(_marker_path(key, "thumb")):
+    if os.path.exists(_get_marker_path(key, "thumb")):
         return "failed"
     return "pending"
 
 
-async def thumb_status(key: str) -> str:
+async def get_thumbnail_status(key: str) -> str:
     """Say how a file's thumbnail is doing.
 
     Args:
@@ -232,14 +245,11 @@ async def thumb_status(key: str) -> str:
     Returns:
         One of done, generating, failed, or pending.
     """
-    return await asyncio.to_thread(_thumb_status_sync, key)
+    return await asyncio.to_thread(_get_thumbnail_status_sync, key)
 
 
-def thumb_status_sync(key: str) -> str:
-    """Say how a file's thumbnail is doing, without an event loop.
-
-    This is for code that already runs off the loop, such as a listing inside
-    a worker thread. Never call it on the event loop.
+def get_thumbnail_status_sync(key: str) -> str:
+    """Say how a file's thumbnail is doing without an event loop.
 
     Args:
         key: The name the file is saved under.
@@ -247,14 +257,11 @@ def thumb_status_sync(key: str) -> str:
     Returns:
         One of done, generating, failed, or pending.
     """
-    return _thumb_status_sync(key)
+    return _get_thumbnail_status_sync(key)
 
 
 def sweep_sync(days: int) -> list[str]:
-    """Clean out saved renders that are no longer wanted, without an event loop.
-
-    This is for code that runs outside the server, such as the garbage
-    collector command. Never call it on the event loop.
+    """Clean out saved renders that are no longer wanted without an event loop.
 
     A render goes away once its source file is gone or has changed. Renders
     that are old and untouched go away too. A render whose source cannot be
@@ -267,17 +274,14 @@ def sweep_sync(days: int) -> list[str]:
     Returns:
         The paths of everything that was removed.
     """
-    root = render_root()
+    root = get_render_root()
     removed = _remove_orphans(root, None)
-    removed.extend(_file_sweep(root, days))
+    removed.extend(file_sweep.sweep(root, days))
     return removed
 
 
 def invalidate_sync(path: str) -> list[str]:
-    """Throw away the saved renders of one file or folder, without an event loop.
-
-    This is for code that runs outside the server, such as the WebDAV worker
-    threads. Never call it on the event loop.
+    """Throw away the saved renders of one file or folder without an event loop.
 
     A render goes away only when its source is gone or has changed. A render
     whose source cannot be told is kept.
@@ -289,20 +293,10 @@ def invalidate_sync(path: str) -> list[str]:
     Returns:
         The paths of everything that was removed.
     """
-    return _remove_orphans(render_root(), path)
+    return _remove_orphans(get_render_root(), path)
 
 
 def _remove_orphans(root: str, path: str | None) -> list[str]:
-    """Remove saved renders whose source file is gone or has changed.
-
-    Args:
-        root: The folder that holds saved renders.
-        path: Look only at renders of this file or of files inside it. None
-            looks at all of them.
-
-    Returns:
-        The paths of everything that was removed.
-    """
     if not os.path.isdir(root):
         return []
     prefix = path.rstrip("/") + "/" if path is not None else ""
@@ -310,86 +304,58 @@ def _remove_orphans(root: str, path: str | None) -> list[str]:
     for name in sorted(os.listdir(root)):
         if name.startswith("."):
             continue
-        key_dir = os.path.join(root, name)
-        if not os.path.isdir(key_dir):
+        key_directory = os.path.join(root, name)
+        if not os.path.isdir(key_directory):
             continue
-        identity = _read_identity(key_dir)
+        identity = _read_identity(key_directory)
         if identity is None:
             continue
-        source_path, mtime = identity
-        if path is not None and source_path != path and not source_path.startswith(prefix):
+        if path is not None and identity.relative_path != path and not identity.relative_path.startswith(prefix):
             continue
-        if not _source_is_live(source_path, mtime):
+        if not _is_source_live(identity.relative_path, identity.modified_time):
             removed.extend(_remove_entry(name, root))
     return removed
 
 
-def _read_identity(key_dir: str) -> tuple[str, int] | None:
-    """Find out which file a saved render came from.
-
-    Args:
-        key_dir: The folder that holds one saved render.
-
-    Returns:
-        The source path and when it last changed, or None when that cannot
-        be told.
-    """
+def _read_identity(key_directory: str) -> _CachedIdentity | None:
     try:
-        with open(os.path.join(key_dir, "meta.json"), "r", encoding="utf-8") as fh:
-            meta = json.load(fh)
+        with open(os.path.join(key_directory, "meta.json"), "r", encoding="utf-8") as file_handle:
+            metadata = json.load(file_handle)
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(meta, dict):
+    if not isinstance(metadata, dict):
         return None
-    path = meta.get("path")
-    mtime = meta.get("mtime")
-    if not isinstance(path, str) or not isinstance(mtime, int) or isinstance(mtime, bool):
+    relative_path = metadata.get("path")
+    modified_time = metadata.get("mtime")
+    if not isinstance(relative_path, str) or not isinstance(modified_time, int) or isinstance(modified_time, bool):
         return None
-    return path, mtime
+    return _CachedIdentity(relative_path=relative_path, modified_time=modified_time)
 
 
 def _remove_entry(key: str, root: str) -> list[str]:
-    """Remove one saved render and its failure marks.
-
-    Args:
-        key: The name the file is saved under.
-        root: The folder that holds saved renders.
-
-    Returns:
-        The paths of everything that was removed.
-    """
     removed: list[str] = []
-    key_dir = os.path.join(root, key)
+    key_directory = os.path.join(root, key)
     try:
-        shutil.rmtree(key_dir)
-        removed.append(key_dir)
-    except OSError as exc:
-        print(f"[render.cache] cannot remove {key_dir}: {exc}", file=sys.stderr)
-    for kind in ("thumb", "convert"):
-        marker = _marker_path(key, kind)
-        if os.path.exists(marker):
+        shutil.rmtree(key_directory)
+        removed.append(key_directory)
+    except OSError as error:
+        print(f"[render.cache] cannot remove {key_directory}: {error}", file=sys.stderr)
+    for kind in _FAILED_KINDS:
+        marker_path = _get_marker_path(key, kind)
+        if os.path.exists(marker_path):
             try:
-                os.remove(marker)
-                removed.append(marker)
-            except OSError as exc:
-                print(f"[render.cache] cannot remove {marker}: {exc}", file=sys.stderr)
+                os.remove(marker_path)
+                removed.append(marker_path)
+            except OSError as error:
+                print(f"[render.cache] cannot remove {marker_path}: {error}", file=sys.stderr)
     return removed
 
 
-def _source_is_live(path: str, mtime: int) -> bool:
-    """Check that a source file is still there and unchanged.
-
-    Args:
-        path: Where the source file was.
-        mtime: When it last changed.
-
-    Returns:
-        True when the file is still there and still that old.
-    """
+def _is_source_live(path: str, modified_time: int) -> bool:
     if _RUN_RESULT.match(path):
-        full = os.path.join(data_dir(), path)
+        full_path = os.path.join(data_dir(), path)
         try:
-            return os.path.isfile(full) and int(os.stat(full).st_mtime) == mtime
+            return os.path.isfile(full_path) and int(os.stat(full_path).st_mtime) == modified_time
         except OSError:
             return False
     try:
@@ -401,6 +367,6 @@ def _source_is_live(path: str, mtime: int) -> bool:
     try:
         if not os.path.isfile(resolved):
             return False
-        return int(os.stat(resolved).st_mtime) == mtime
+        return int(os.stat(resolved).st_mtime) == modified_time
     except OSError:
         return False

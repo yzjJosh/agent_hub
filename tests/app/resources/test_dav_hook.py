@@ -10,7 +10,14 @@ from a2wsgi import WSGIMiddleware
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from app.lib.render.cache import convert_failed_reason, key_for, mark_failed, render_root, thumb_status, write_doc
+from app.lib.render.cache import (
+    build_cache_key,
+    get_convert_failure_reason,
+    get_render_root,
+    get_thumbnail_status,
+    mark_failed,
+    write_doc,
+)
 from app.lib.shared import activity
 from app.resources.dav_hook import CacheInvalidatingProvider
 from app.resources.resources import create_dav_app
@@ -69,7 +76,7 @@ async def _publish(resources: Path, rel: str) -> str:
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("x", encoding="utf-8")
     os.utime(src, (_MTIME, _MTIME))
-    key = key_for(rel, _MTIME)
+    key = build_cache_key(rel, _MTIME)
     await write_doc(key, "doc", None, {"path": rel, "mtime": _MTIME})
     return key
 
@@ -102,9 +109,9 @@ class TestDavInvalidation:
         response = await client.request("DELETE", "/dav/upload/a.md")
         assert response.status_code == 204
         assert not (resources / "upload" / "a.md").exists()
-        assert not os.path.isdir(os.path.join(render_root(), key))
-        assert await thumb_status(key) == "pending"  # the thumbnail failure mark is gone
-        assert await convert_failed_reason(key) is None  # so is the conversion one
+        assert not os.path.isdir(os.path.join(get_render_root(), key))
+        assert await get_thumbnail_status(key) == "pending"  # the thumbnail failure mark is gone
+        assert await get_convert_failure_reason(key) is None  # so is the conversion one
 
     async def test_delete_folder_removes_children_entries(
         self, client: httpx.AsyncClient, resources: Path
@@ -115,8 +122,8 @@ class TestDavInvalidation:
         response = await client.request("DELETE", "/dav/upload/x")
         assert response.status_code == 204
         assert not (resources / "upload" / "x").exists()
-        assert not os.path.isdir(os.path.join(render_root(), key_a))
-        assert not os.path.isdir(os.path.join(render_root(), key_b))
+        assert not os.path.isdir(os.path.join(get_render_root(), key_a))
+        assert not os.path.isdir(os.path.join(get_render_root(), key_b))
 
     async def test_put_overwrite_removes_old_entry(
         self, client: httpx.AsyncClient, resources: Path
@@ -126,7 +133,7 @@ class TestDavInvalidation:
         response = await client.put("/dav/upload/a.md", content="new content")
         assert response.status_code == 204
         assert (resources / "upload" / "a.md").read_text() == "new content"
-        assert not os.path.isdir(os.path.join(render_root(), key))
+        assert not os.path.isdir(os.path.join(get_render_root(), key))
 
     async def test_put_new_file_leaves_the_cache_alone(
         self, client: httpx.AsyncClient, resources: Path
@@ -151,8 +158,8 @@ class TestDavInvalidation:
         assert response.status_code == 204
         assert not (resources / "upload" / "a.md").exists()
         assert (resources / "upload" / "b.md").exists()
-        assert not os.path.isdir(os.path.join(render_root(), key_a))
-        assert not os.path.isdir(os.path.join(render_root(), key_b))
+        assert not os.path.isdir(os.path.join(get_render_root(), key_a))
+        assert not os.path.isdir(os.path.join(get_render_root(), key_b))
 
     async def test_invalidate_error_does_not_fail_the_delete(
         self,
@@ -184,4 +191,4 @@ class TestDavInvalidation:
         assert resource.name == "a.txt"
         resource.delete()
         assert not (resources / "a.txt").exists()
-        assert os.path.isdir(os.path.join(render_root(), key))
+        assert os.path.isdir(os.path.join(get_render_root(), key))

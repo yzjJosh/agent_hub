@@ -36,4 +36,4 @@ def write_resource_file(resources_dir: Path, relative_path: str, content: str | 
 def compute_cache_key(resources_dir: Path, relative_path: str) -> str:
     """Compute the render cache key for a file in the test resources directory."""
     file_stat = (resources_dir / relative_path).stat()
-    return cache.key_for(relative_path, int(file_stat.st_mtime))
+    return cache.build_cache_key(relative_path, int(file_stat.st_mtime))

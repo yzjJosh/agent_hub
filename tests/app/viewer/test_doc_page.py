@@ -53,7 +53,7 @@ async def test_doc_asset_serves_sibling(view_client: tuple[httpx.AsyncClient, Pa
     """A document sibling asset returns its bytes with the guessed media type."""
     client, _ = view_client
     cache_key = "0" * 64
-    key_directory = os.path.join(cache.render_root(), cache_key)
+    key_directory = os.path.join(cache.get_render_root(), cache_key)
     os.makedirs(key_directory, exist_ok=True)
     with open(os.path.join(key_directory, "img.png"), "wb") as asset_file:
         asset_file.write(b"\x89PNG asset")

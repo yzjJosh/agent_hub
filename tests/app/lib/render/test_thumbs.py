@@ -85,7 +85,7 @@ def _resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ],
 )
 def test_engine_selection(kind: RenderKind, expected: str | None) -> None:
-    assert thumbs.thumb_engine(kind) == expected
+    assert thumbs.get_thumbnail_engine(kind) == expected
 
 
 def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _resources: Path,
@@ -99,7 +99,7 @@ def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _resources
         seen.append(full_path)
 
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
-    monkeypatch.setattr(thumbs, "_thumb_pdf", fake_pdf)
+    monkeypatch.setattr(thumbs, "_render_pdf_thumbnail", fake_pdf)
 
     async def run() -> None:
         try:
@@ -115,13 +115,13 @@ def test_presentation_thumbnail_reads_converted_pdf(_thumb_env: Path, _resources
 def test_start_job_idempotent(_thumb_env: Path, _resources: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A second start for an in-flight key is a no-op, whatever the generating set says."""
     (_resources / "a.png").write_bytes((FIX / "small.png").read_bytes())
-    key = cache_module.key_for("a.png", int(os.stat(_resources / "a.png").st_mtime))
+    key = cache_module.build_cache_key("a.png", int(os.stat(_resources / "a.png").st_mtime))
     hold = asyncio.Event()
 
     async def held_image(_full: str, _key: str) -> None:
         await hold.wait()
 
-    monkeypatch.setattr(thumbs, "_thumb_image", held_image)
+    monkeypatch.setattr(thumbs, "_render_image_thumbnail", held_image)
 
     async def run() -> None:
         try:
@@ -144,7 +144,7 @@ def test_start_job_idempotent(_thumb_env: Path, _resources: Path, monkeypatch: p
 def _copy_to_resources(resources: Path, name: str) -> tuple[str, str]:
     """Put a fixture file in the resources folder and give back its path and saved name."""
     (resources / name).write_bytes((FIX / name).read_bytes())
-    return name, cache_module.key_for(name, int(os.stat(resources / name).st_mtime))
+    return name, cache_module.build_cache_key(name, int(os.stat(resources / name).st_mtime))
 
 
 def test_image_engine_emits_1024x640(_thumb_env: Path, _resources: Path) -> None:
@@ -159,7 +159,7 @@ def test_image_engine_emits_1024x640(_thumb_env: Path, _resources: Path) -> None
             await thumbs.stop_thumbnails()
 
     asyncio.run(run())
-    with Image.open(os.path.join(cache_module.render_root(), key, "thumb.png")) as im:
+    with Image.open(os.path.join(cache_module.get_render_root(), key, "thumb.png")) as im:
         assert im.format == "PNG"
         assert im.size == (_THUMB_W, _THUMB_H)
 
@@ -176,7 +176,7 @@ def test_pdf_engine_emits_1024x640(_thumb_env: Path, _resources: Path) -> None:
             await thumbs.stop_thumbnails()
 
     asyncio.run(run())
-    with Image.open(os.path.join(cache_module.render_root(), key, "thumb.png")) as im:
+    with Image.open(os.path.join(cache_module.get_render_root(), key, "thumb.png")) as im:
         assert im.size == (_THUMB_W, _THUMB_H)
 
 
@@ -222,7 +222,7 @@ def test_parallel_jobs_reach_render_cap(_thumb_env: Path, _resources: Path,
     first, key_a = _copy_to_resources(_resources, "small.png")
     second = "second.png"
     (_resources / second).write_bytes((FIX / "small.png").read_bytes())
-    key_b = cache_module.key_for(second, int(os.stat(_resources / second).st_mtime))
+    key_b = cache_module.build_cache_key(second, int(os.stat(_resources / second).st_mtime))
     stats = {"now": 0, "peak": 0}
     both_in = asyncio.Event()
     release = asyncio.Event()
@@ -234,12 +234,12 @@ def test_parallel_jobs_reach_render_cap(_thumb_env: Path, _resources: Path,
             both_in.set()
         await release.wait()
         stats["now"] -= 1
-        key_dir = os.path.join(cache_module.render_root(), _key)
+        key_dir = os.path.join(cache_module.get_render_root(), _key)
         os.makedirs(key_dir, exist_ok=True)
         with open(os.path.join(key_dir, "thumb.png"), "wb") as fh:
             fh.write(b"\x89PNG fake")
 
-    monkeypatch.setattr(thumbs, "_thumb_image", slow_image)
+    monkeypatch.setattr(thumbs, "_render_image_thumbnail", slow_image)
 
     async def run() -> None:
         try:
@@ -260,7 +260,7 @@ def test_generating_held_across_prepare(_thumb_env: Path, _resources: Path,
                                         monkeypatch: pytest.MonkeyPatch) -> None:
     """A doc job sitting in its prepare stage still reads generating, not pending."""
     (_resources / "a.md").write_text("# hi\n")
-    key = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
+    key = cache_module.build_cache_key("a.md", int(os.stat(_resources / "a.md").st_mtime))
     release = asyncio.Event()
 
     async def slow_prepare(_kind: RenderKind, _key: str, _path: str, _full: str) -> str:
@@ -268,18 +268,18 @@ def test_generating_held_across_prepare(_thumb_env: Path, _resources: Path,
         return "published"
 
     async def fake_page(_key: str) -> None:
-        key_dir = os.path.join(cache_module.render_root(), _key)
+        key_dir = os.path.join(cache_module.get_render_root(), _key)
         os.makedirs(key_dir, exist_ok=True)
         with open(os.path.join(key_dir, "thumb.png"), "wb") as fh:
             fh.write(b"\x89PNG fake")
 
     monkeypatch.setattr(office, "ensure_doc_for_thumb", slow_prepare)
-    monkeypatch.setattr(thumbs, "_render_doc_page", fake_page)
+    monkeypatch.setattr(thumbs, "_render_document_thumbnail", fake_page)
 
     async def run() -> None:
         try:
             assert thumbs.start_thumbnail_job(key, RenderKind.OFFICE_DOC, "a.md") is True
-            assert await cache_module.thumb_status(key) == "generating"  # the prepare wait is in flight
+            assert await cache_module.get_thumbnail_status(key) == "generating"  # the prepare wait is in flight
             release.set()
             assert await _await_thumb_status(key) == "done"
         finally:
@@ -299,10 +299,10 @@ async def test_start_dir_thumbnails_counts_pending_and_failed(
     monkeypatch.setattr(thumbs, "BrowserManager", SimpleNamespace(create=no_browser))
     (_resources / "a.md").write_text("# hi\n")
     (_resources / "b.opus").write_bytes(b"audio")
-    key_a = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
+    key_a = cache_module.build_cache_key("a.md", int(os.stat(_resources / "a.md").st_mtime))
     await cache_module.mark_failed(key_a, "thumb", "x")  # a failed thumbnail is started again
     try:
-        n = await thumbs.start_dir_thumbnails("")
+        n = await thumbs.start_directory_thumbnails("")
         assert n == 1  # only a.md needs one, b.opus gets no thumbnail
         assert thumbs.start_thumbnail_job(key_a, RenderKind.MARKDOWN, "a.md") is False  # already started
         assert await _await_thumb_failed(key_a) == "failed"
@@ -318,8 +318,8 @@ async def test_start_dir_thumbnails_subdirectory_uses_resource_relative_paths(
     sub.mkdir(parents=True)
     photo = sub / "photo.png"
     photo.write_bytes((FIX / "small.png").read_bytes())
-    key = cache_module.key_for("upload/sub/photo.png", int(os.stat(photo).st_mtime))
-    assert await thumbs.start_dir_thumbnails("upload/sub") == 1
+    key = cache_module.build_cache_key("upload/sub/photo.png", int(os.stat(photo).st_mtime))
+    assert await thumbs.start_directory_thumbnails("upload/sub") == 1
     try:
         assert await _await_thumb_status(key) == "done"
     finally:
@@ -329,21 +329,21 @@ async def test_start_dir_thumbnails_subdirectory_uses_resource_relative_paths(
 async def _await_thumb_status(key: str) -> str:
     """Wait for a thumbnail to finish and give back how it ended."""
     for _ in range(100):
-        status = await cache_module.thumb_status(key)
+        status = await cache_module.get_thumbnail_status(key)
         if status == "done":
             return status
         await asyncio.sleep(_POLL_S)
-    return await cache_module.thumb_status(key)
+    return await cache_module.get_thumbnail_status(key)
 
 
 async def _await_thumb_failed(key: str) -> str:
     """Wait for a thumbnail job to give up and give back how it ended."""
     for _ in range(100):
-        status = await cache_module.thumb_status(key)
+        status = await cache_module.get_thumbnail_status(key)
         if status == "failed":
             return status
         await asyncio.sleep(_POLL_S)
-    return await cache_module.thumb_status(key)
+    return await cache_module.get_thumbnail_status(key)
 
 
 class _FakeManager(BrowserManager):
@@ -455,13 +455,13 @@ def _run_doc_render_job(_thumb_env: Path, _resources: Path, monkeypatch: pytest.
     _patch_browser(monkeypatch, factory)
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
     (_resources / "a.md").write_text("# hi\n")
-    key = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
+    key = cache_module.build_cache_key("a.md", int(os.stat(_resources / "a.md").st_mtime))
 
     async def run() -> str:
         try:
             assert thumbs.start_thumbnail_job(key, RenderKind.MARKDOWN, "a.md") is True
             for _ in range(100):
-                status = await cache_module.thumb_status(key)
+                status = await cache_module.get_thumbnail_status(key)
                 if status in ("done", "failed"):
                     return status
                 await asyncio.sleep(_POLL_S)
@@ -479,7 +479,7 @@ def test_doc_render_browser_call_sequence(_thumb_env: Path, _resources: Path,
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "done"
     assert calls == ["create", "open_page", "set_viewport_size", "navigate", "capture_screenshot", "close_page", "cleanup"]
-    with Image.open(os.path.join(cache_module.render_root(), key, "thumb.png")) as im:
+    with Image.open(os.path.join(cache_module.get_render_root(), key, "thumb.png")) as im:
         assert im.format == "PNG"
         assert im.size == (_THUMB_W, _THUMB_H)
 
@@ -512,7 +512,7 @@ def test_doc_render_failed_navigation_marks_failed(_thumb_env: Path, _resources:
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
     assert calls == ["create", "open_page", "set_viewport_size", "navigate", "close_page", "cleanup"]
-    assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
+    assert not os.path.exists(os.path.join(cache_module.get_render_root(), key, "thumb.png"))
 
 
 def test_doc_render_failed_viewport_marks_failed(_thumb_env: Path, _resources: Path,
@@ -522,7 +522,7 @@ def test_doc_render_failed_viewport_marks_failed(_thumb_env: Path, _resources: P
     status, key = _run_doc_render_job(_thumb_env, _resources, monkeypatch, factory)
     assert status == "failed"
     assert calls == ["create", "open_page", "set_viewport_size", "close_page", "cleanup"]
-    assert not os.path.exists(os.path.join(cache_module.render_root(), key, "thumb.png"))
+    assert not os.path.exists(os.path.join(cache_module.get_render_root(), key, "thumb.png"))
 
 
 def test_doc_render_new_page_failure_keeps_original_error(_thumb_env: Path, _resources: Path,
@@ -580,8 +580,8 @@ def test_browser_guard_serializes_cycles(_thumb_env: Path, _resources: Path,
     monkeypatch.setattr(office, "ensure_doc_for_thumb", _published)
     (_resources / "a.md").write_text("# hi\n")
     (_resources / "b.md").write_text("# hai\n")
-    key_a = cache_module.key_for("a.md", int(os.stat(_resources / "a.md").st_mtime))
-    key_b = cache_module.key_for("b.md", int(os.stat(_resources / "b.md").st_mtime))
+    key_a = cache_module.build_cache_key("a.md", int(os.stat(_resources / "a.md").st_mtime))
+    key_b = cache_module.build_cache_key("b.md", int(os.stat(_resources / "b.md").st_mtime))
 
     async def run() -> None:
         try:
@@ -643,7 +643,7 @@ def test_live_cdp_doc_thumbnail(
             thread.join(timeout=5)
         store_module.init_store(previous_db_path)
 
-    path = os.path.join(cache_module.render_root(), key, "thumb.png")
+    path = os.path.join(cache_module.get_render_root(), key, "thumb.png")
     assert os.path.exists(path)
     with Image.open(path) as im:
         assert im.size == (_THUMB_W, _THUMB_H)

@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from app.lib.render import cache
 from app.lib.render.classify import RenderKind, classify
-from app.lib.render.fragments import build_fragment, table_html, text_meta
+from app.lib.render.fragments import build_fragment, build_table_html, build_text_metadata
 from app.lib.resolver.office_docs import SheetCell, soffice_cmd, xls_sheets, xlsx_sheets
 from app.lib.shared import paths
 
@@ -203,7 +203,7 @@ async def retry_office_conversion(path: str, key: str, full_path: str) -> bool:
 
 
 async def _delete_cached_conversion_state(key: str) -> None:
-    await asyncio.to_thread(shutil.rmtree, os.path.join(cache.render_root(), key), ignore_errors=True)
+    await asyncio.to_thread(shutil.rmtree, os.path.join(cache.get_render_root(), key), ignore_errors=True)
     await cache.clear_failed(key, "convert")
     await cache.clear_failed(key, "thumb")
 
@@ -232,7 +232,7 @@ async def _ensure_office_document(key: str, path: str, full_path: str) -> str:
     if active_conversion is not None:
         await active_conversion.done_event.wait()
         return "published" if await cache.read_doc(key) is not None else "failed"
-    if await cache.convert_failed_reason(key) is not None:
+    if await cache.get_convert_failure_reason(key) is not None:
         return "failed"
     await start_office_conversion(path, key, full_path)
     active_conversion = _get_active_conversion(key)
@@ -264,9 +264,9 @@ async def _build_document_fragment(kind: RenderKind, path: str, full_path: str) 
         )
     file_stat = await asyncio.to_thread(os.stat, full_path)
     file_size = file_stat.st_size
-    fragment_html, extras = await build_fragment(kind, full_path, file_size)
-    metadata = text_meta(kind, path, int(file_stat.st_mtime), file_size, extras)
-    return _PreparedDocument(fragment_html=fragment_html, metadata=metadata)
+    built = await build_fragment(kind, full_path, file_size)
+    metadata = build_text_metadata(kind, path, int(file_stat.st_mtime), file_size, built.metadata)
+    return _PreparedDocument(fragment_html=built.html, metadata=metadata)
 
 
 def _format_failure_reason(error: BaseException) -> str:
@@ -424,7 +424,7 @@ def _build_spreadsheet_fragment_sync(
             first_column_count = len(non_empty_rows[0])
         header_row, data_rows = non_empty_rows[0], non_empty_rows[1:]
         total_rows += len(data_rows)
-        table = table_html(
+        table = build_table_html(
             [_format_cell_value(cell) for cell in header_row],
             [[_format_cell_value(cell) for cell in row] for row in data_rows],
         )

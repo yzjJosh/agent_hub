@@ -11,8 +11,8 @@ from starlette.responses import JSONResponse, Response
 from app.console.errors import error_response
 from app.lib.render import cache, office, thumbs
 from app.lib.render.classify import classify
-from app.lib.render.descriptor import (OFFICE_KINDS, build_descriptor,
-                                       converting_descriptor, get_resource_path, resolve_view)
+from app.lib.render.descriptor import (OFFICE_KINDS, build_converting_descriptor,
+                                       build_descriptor, get_resource_path, resolve_view)
 from app.lib.shared import activity
 
 __all__ = ["get_resource_view", "retry_office_view"]
@@ -72,8 +72,8 @@ async def retry_office_view(request: Request) -> Response:
         return error_response(400, "bad_param", f"'{path}' is not a convertible Office file.")
     resource_path = get_resource_path(full, path)
     stat = await asyncio.to_thread(os.stat, full)
-    key = cache.key_for(resource_path, int(stat.st_mtime))
+    key = cache.build_cache_key(resource_path, int(stat.st_mtime))
     if await office.retry_office_conversion(resource_path, key, full):
         thumbs.start_thumbnail_job(key, kind, resource_path)
-    return JSONResponse(converting_descriptor(resource_path, os.path.basename(resource_path),
-                                              stat.st_size, int(stat.st_mtime), kind))
+    return JSONResponse(build_converting_descriptor(resource_path, os.path.basename(resource_path),
+                                                    stat.st_size, int(stat.st_mtime), kind))

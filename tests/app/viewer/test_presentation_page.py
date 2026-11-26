@@ -158,7 +158,7 @@ async def test_presentation_thumb_src_url_encoded(view_client: tuple[httpx.Async
     client, resources_dir = view_client
     relative_path = "upload/photo & more.png"
     write_resource_file(resources_dir, relative_path, b"\x89PNG")
-    key_directory = os.path.join(cache.render_root(), compute_cache_key(resources_dir, relative_path))
+    key_directory = os.path.join(cache.get_render_root(), compute_cache_key(resources_dir, relative_path))
     os.makedirs(key_directory, exist_ok=True)
     with open(os.path.join(key_directory, "thumb.png"), "wb") as thumbnail_file:
         thumbnail_file.write(b"\x89PNG")
@@ -166,7 +166,7 @@ async def test_presentation_thumb_src_url_encoded(view_client: tuple[httpx.Async
     await _insert_presentation(presentation_id, [relative_path])
     response = await client.get(f"/view/presentation/{presentation_id}")
     assert response.status_code == 200
-    assert f'src="{cache.thumb_url(relative_path)}"' in response.text
+    assert f'src="{cache.build_thumbnail_url(relative_path)}"' in response.text
     assert "path=upload/photo%20%26%20more.png" in response.text
 
 

@@ -51,7 +51,7 @@ def _resource_file(resources: Path, rel: str, data: bytes) -> Path:
 
 def _key_for_file(rel: str, full: Path) -> str:
     """The cache key for this file."""
-    return cache.key_for(rel, int(full.stat().st_mtime))
+    return cache.build_cache_key(rel, int(full.stat().st_mtime))
 
 
 def _seed_thumb(data: Path, key: str) -> None:

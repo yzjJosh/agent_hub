@@ -42,7 +42,7 @@ async def _describe_presented_file(resources_root: str, relative_path: str) -> d
     if presented_file is not None:
         modified_time = int(presented_file.stat_result.st_mtime)
         kind = await classify(presented_file.full_path)
-        thumbnail_status = await cache.thumb_status(cache.key_for(relative_path, modified_time))
+        thumbnail_status = await cache.get_thumbnail_status(cache.build_cache_key(relative_path, modified_time))
         return {
             "path": relative_path,
             "name": file_name,
@@ -50,7 +50,7 @@ async def _describe_presented_file(resources_root: str, relative_path: str) -> d
             "mtime": modified_time,
             "present": True,
             "kind": kind_label(kind, file_name, None),
-            "thumb": {"status": thumbnail_status, "url": cache.thumb_url(relative_path)},
+            "thumb": {"status": thumbnail_status, "url": cache.build_thumbnail_url(relative_path)},
         }
     kind = await classify(os.path.join(resources_root, relative_path))
     return {
@@ -60,7 +60,7 @@ async def _describe_presented_file(resources_root: str, relative_path: str) -> d
         "mtime": None,
         "present": False,
         "kind": kind_label(kind, file_name, None),
-        "thumb": {"status": "none", "url": cache.thumb_url(relative_path)},
+        "thumb": {"status": "none", "url": cache.build_thumbnail_url(relative_path)},
     }
 
 

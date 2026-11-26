@@ -47,8 +47,8 @@ async def test_code_materializes_language_extension(tmp_path: Path, monkeypatch:
     assert d["kind_label"] == "code · python" and d["language"] == "python" and d["mode"] == "code"
     assert 'class="code-block"' in d["fragment"]
     mtime = int(os.stat(os.path.join(run_dir, "result")).st_mtime)
-    key = _cache.key_for(f"runs/{tid}/result", mtime)
-    assert os.path.isfile(os.path.join(_cache.render_root(), key, "input.py"))
+    key = _cache.build_cache_key(f"runs/{tid}/result", mtime)
+    assert os.path.isfile(os.path.join(_cache.get_render_root(), key, "input.py"))
 
 
 async def test_code_sh_language_matches_badge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,8 +58,8 @@ async def test_code_sh_language_matches_badge(tmp_path: Path, monkeypatch: pytes
     d = await rd.build_result_descriptor(tid, run_dir)
     assert d["kind_label"] == "code · sh" and d["language"] == "sh" and d["mode"] == "code"
     mtime = int(os.stat(os.path.join(run_dir, "result")).st_mtime)
-    key = _cache.key_for(f"runs/{tid}/result", mtime)
-    assert os.path.isfile(os.path.join(_cache.render_root(), key, "input.sh"))
+    key = _cache.build_cache_key(f"runs/{tid}/result", mtime)
+    assert os.path.isfile(os.path.join(_cache.get_render_root(), key, "input.sh"))
 
 
 async def test_override_code_on_markdown_renders_bare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

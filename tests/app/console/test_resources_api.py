@@ -350,7 +350,7 @@ async def test_resources_listing_done_thumb(
     (resources / "media_gen" / "a.png").write_bytes(b"x" * 100)
     monkeypatch.setenv("RESOURCES_DIR", str(resources))
     modified_time = int((resources / "media_gen" / "a.png").stat().st_mtime)
-    thumb_dir = Path(os.environ["DATA_DIR"]) / "render" / cache.key_for("media_gen/a.png", modified_time)
+    thumb_dir = Path(os.environ["DATA_DIR"]) / "render" / cache.build_cache_key("media_gen/a.png", modified_time)
     thumb_dir.mkdir(parents=True, exist_ok=True)
     (thumb_dir / "thumb.png").write_bytes(b"png")
 

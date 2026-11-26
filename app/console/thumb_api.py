@@ -11,7 +11,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 
 from app.console.errors import error_response
 from app.lib.shared.paths import resolve_path, resources_dir
-from app.lib.render import cache, thumb_engine, thumbs
+from app.lib.render import cache, get_thumbnail_engine, thumbs
 from app.lib.render.classify import classify
 
 __all__ = ["get_thumbnail", "queue_directory_thumbnails"]
@@ -57,17 +57,17 @@ async def get_thumbnail(request: Request) -> Response:
     if isinstance(resolved, Response):
         return resolved
     stat_result = await asyncio.to_thread(os.stat, resolved.full_path)
-    key = cache.key_for(resolved.relative_path, int(stat_result.st_mtime))
-    thumb_path = os.path.join(cache.render_root(), key, "thumb.png")
+    key = cache.build_cache_key(resolved.relative_path, int(stat_result.st_mtime))
+    thumb_path = os.path.join(cache.get_render_root(), key, "thumb.png")
     if await asyncio.to_thread(os.path.exists, thumb_path):
         return FileResponse(thumb_path, media_type="image/png")
     kind = await classify(resolved.full_path)
-    status = await cache.thumb_status(key)
+    status = await cache.get_thumbnail_status(key)
     if status == "pending":
         thumbs.start_thumbnail_job(key, kind, resolved.relative_path)
     # A document whose page is published again is worth one more try, so a
     # stale failure mark is re-queued. Media is not retried on every poll.
-    elif status == "failed" and thumb_engine(kind) == "doc" and await cache.read_doc(key) is not None:
+    elif status == "failed" and get_thumbnail_engine(kind) == "doc" and await cache.read_doc(key) is not None:
         thumbs.start_thumbnail_job(key, kind, resolved.relative_path)
     return error_response(409, "not_ready", f"No thumbnail yet for '{resolved.relative_path}'.")
 
@@ -84,5 +84,5 @@ async def queue_directory_thumbnails(request: Request) -> Response:
     resolved = await _resolve_resource_query(request, is_directory=True)
     if isinstance(resolved, Response):
         return resolved
-    queued = await thumbs.start_dir_thumbnails(resolved.relative_path)
+    queued = await thumbs.start_directory_thumbnails(resolved.relative_path)
     return JSONResponse({"queued": queued})

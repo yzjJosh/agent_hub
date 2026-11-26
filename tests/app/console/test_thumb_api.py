@@ -57,8 +57,8 @@ async def test_thumb_hit_serves_png(thumb_api: tuple[httpx.AsyncClient, Path]) -
     c, resources = thumb_api
     rel = _seed_png(resources, "upload/a.png")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
-    key_dir = os.path.join(cache.render_root(), key)
+    key = cache.build_cache_key(rel, int(st.st_mtime))
+    key_dir = os.path.join(cache.get_render_root(), key)
     os.makedirs(key_dir, exist_ok=True)
     with open(os.path.join(key_dir, "thumb.png"), "wb") as fh:
         fh.write(b"\x89PNG fake thumb")
@@ -74,13 +74,13 @@ async def test_thumb_not_ready_409(
     """Asking for a thumbnail that is not made yet gives 409 not_ready and queues the work."""
     c, resources = thumb_api
     rel = _seed_png(resources, "upload/b.png")
-    key = cache.key_for(rel, int((resources / rel).stat().st_mtime))
+    key = cache.build_cache_key(rel, int((resources / rel).stat().st_mtime))
     hold = asyncio.Event()
 
     async def held_image(_full: str, _key: str) -> None:
         await hold.wait()
 
-    monkeypatch.setattr(thumbs, "_thumb_image", held_image)
+    monkeypatch.setattr(thumbs, "_render_image_thumbnail", held_image)
     r = await asyncio.wait_for(c.get("/api/resources/thumb", params={"path": rel}), _JOB_WAIT_S)
     assert r.status_code == 409
     assert r.json() == {"error": f"No thumbnail yet for '{rel}'.", "code": "not_ready"}
@@ -141,7 +141,7 @@ async def test_thumb_failed_doc_with_published_doc_requeues(
     c, resources = thumb_api
     rel = _seed_md(resources, "upload/notes.md")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await cache.write_doc(key, '<div class="md-doc">hi</div>', None, {})
     await cache.mark_failed(key, "thumb", "stale failure")
 
@@ -149,18 +149,18 @@ async def test_thumb_failed_doc_with_published_doc_requeues(
 
     async def fake_page(_key: str) -> None:
         await hold.wait()
-        key_dir = os.path.join(cache.render_root(), _key)
+        key_dir = os.path.join(cache.get_render_root(), _key)
         os.makedirs(key_dir, exist_ok=True)
         with open(os.path.join(key_dir, "thumb.png"), "wb") as fh:
             fh.write(b"\x89PNG fake thumb")
 
-    monkeypatch.setattr(thumbs, "_render_doc_page", fake_page)
+    monkeypatch.setattr(thumbs, "_render_document_thumbnail", fake_page)
     r = await asyncio.wait_for(c.get("/api/resources/thumb", params={"path": rel}), _JOB_WAIT_S)
     assert r.status_code == 409
     assert key in gen_state.generating_keys()  # the poll re-queued the job
     hold.set()
     await asyncio.wait_for(_thumb_job_task(key), _JOB_WAIT_S)
-    assert await cache.thumb_status(key) == "done"
+    assert await cache.get_thumbnail_status(key) == "done"
     r2 = await c.get("/api/resources/thumb", params={"path": rel})
     assert r2.status_code == 200
     assert r2.content == b"\x89PNG fake thumb"
@@ -191,7 +191,7 @@ async def test_thumb_failed_media_is_not_requeued(
     c, resources = thumb_api
     rel = _seed_png(resources, "upload/c.png")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await _poll_failed_key(c, key, rel, "corrupt", monkeypatch)
 
 
@@ -202,5 +202,5 @@ async def test_thumb_failed_doc_without_page_is_not_requeued(
     c, resources = thumb_api
     rel = _seed_md(resources, "upload/notes.md")
     st = (resources / rel).stat()
-    key = cache.key_for(rel, int(st.st_mtime))
+    key = cache.build_cache_key(rel, int(st.st_mtime))
     await _poll_failed_key(c, key, rel, "stale failure", monkeypatch)
