@@ -53,7 +53,7 @@ def _validate_reviewer_output(text: str) -> ValidationResult[dict]:
         Validation result holding the parsed verdict dict when valid, or an error message.
     """
     parsed_result = parse_json_object(text)
-    if parsed_result.value is None:
+    if not parsed_result.is_valid or parsed_result.value is None:
         return ValidationResult(is_valid=False, error=parsed_result.error)
     verdict = parsed_result.value
     problems: list[str] = []

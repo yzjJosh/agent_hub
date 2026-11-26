@@ -83,7 +83,7 @@ async def _validate_collector_output(text: str, run: AgentRun) -> ValidationResu
         Validation result holding the parsed deliverable dict when valid, or an error message.
     """
     parsed_result = parse_json_object(text)
-    if parsed_result.value is None:
+    if not parsed_result.is_valid or parsed_result.value is None:
         return ValidationResult(is_valid=False, error=parsed_result.error)
     deliverable = parsed_result.value
     problems: list[str] = []
@@ -164,8 +164,6 @@ async def _run_collector(
     agent_run = await agent.run(user_message)
     try:
         result = await agent_run.task.result()
-        if result is None:
-            raise RuntimeError("collector agent run did not return a deliverable")
         deliverable = json.loads(result)
         summary = deliverable["summary"]
         citation_ids = deliverable["evidences"]

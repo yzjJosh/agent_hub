@@ -90,7 +90,7 @@ def validate_role_output(text: str, _run: AgentRun) -> ValidationResult[dict]:
         Validation result holding the parsed answer when valid, or an error message.
     """
     parsed_result = parse_json_object(text)
-    if parsed_result.value is None:
+    if not parsed_result.is_valid or parsed_result.value is None:
         return ValidationResult(is_valid=False, error=parsed_result.error)
     parsed = parsed_result.value
     status = parsed.get("status")

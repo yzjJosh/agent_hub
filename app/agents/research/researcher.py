@@ -139,10 +139,7 @@ async def run_researcher(
         agent.add_tool_adapter(tool)
     agent_run = await agent.run(user_message)
     try:
-        report = await agent_run.task.result()
-        if report is None:
-            raise RuntimeError("researcher agent run did not return a report")
-        return report
+        return await agent_run.task.result()
     except asyncio.CancelledError:
         await asyncio.shield(agent_run.task.cancel())
         raise
