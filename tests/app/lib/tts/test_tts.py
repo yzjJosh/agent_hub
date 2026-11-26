@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -45,8 +46,17 @@ async def _run_preprocessing(text: str) -> str:
     return " ".join(payload["input"] for payload in recorder.payloads)
 
 
+@dataclass(frozen=True)
+class _SpeechTestMocks:
+    """Stubbed narration, speech HTTP recorder, and ffmpeg subprocess mocks."""
+
+    mock_reason: MagicMock
+    recorder: SpeechHttpRecorder
+    mock_subprocess: MagicMock
+
+
 @pytest.fixture
-def split_test_mocks() -> Iterator[tuple[MagicMock, SpeechHttpRecorder, MagicMock]]:
+def split_test_mocks() -> Iterator[_SpeechTestMocks]:
     """Stub the narration LLM, speech HTTP server, and ffmpeg subprocess."""
     recorder = create_speech_http_recorder()
     with (
@@ -57,7 +67,11 @@ def split_test_mocks() -> Iterator[tuple[MagicMock, SpeechHttpRecorder, MagicMoc
             side_effect=create_ffmpeg_subprocess_mock(),
         ) as mock_subprocess,
     ):
-        yield mock_reason, recorder, mock_subprocess
+        yield _SpeechTestMocks(
+            mock_reason=mock_reason,
+            recorder=recorder,
+            mock_subprocess=mock_subprocess,
+        )
 
 
 async def _run_for_split(
@@ -72,115 +86,106 @@ async def _run_for_split(
     return recorder.payloads
 
 
-async def test_short_text_no_split(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_short_text_no_split(split_test_mocks: _SpeechTestMocks) -> None:
     """Short text produces a single speech request."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    payloads = await _run_for_split("This is a short text.", mock_reason, recorder)
+    payloads = await _run_for_split(
+        "This is a short text.",
+        split_test_mocks.mock_reason,
+        split_test_mocks.recorder,
+    )
     assert len(payloads) == 1
 
 
-async def test_chinese_text_splits(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_chinese_text_splits(split_test_mocks: _SpeechTestMocks) -> None:
     """Long Chinese text produces multiple segments."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "这是一种非常长的中文文本，用来测试自动分段功能是否正常工作。" * 20
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) >= 3
 
 
-async def test_english_text_splits(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_english_text_splits(split_test_mocks: _SpeechTestMocks) -> None:
     """Long English text produces multiple segments."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "This is a long English text. " * 30
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) >= 2
 
 
-async def test_mixed_chinese_majority_splits(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_mixed_chinese_majority_splits(split_test_mocks: _SpeechTestMocks) -> None:
     """Mixed text with Chinese majority splits at the Chinese limit."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "这是一个包含 English 单词的中文句子，我们需要测试它的分段逻辑是否正确。" * 6
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) > 1
 
 
-async def test_mixed_english_majority_splits(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_mixed_english_majority_splits(split_test_mocks: _SpeechTestMocks) -> None:
     """Mixed text with English majority splits at the English limit."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "This is a sentence containing some 中文 content, and we should check the split." * 10
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) >= 2
 
 
-async def test_chinese_comma_split(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_chinese_comma_split(split_test_mocks: _SpeechTestMocks) -> None:
     """Chinese text splits at a Chinese comma."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "这是一段很长的中文文本" * 20 + "，" + "这里是逗号之后的内容。"
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert any(payload["input"].endswith("，") for payload in payloads[:-1])
 
 
-async def test_chinese_period_split(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_chinese_period_split(split_test_mocks: _SpeechTestMocks) -> None:
     """Chinese text splits at a Chinese period."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "这是一段很长的中文文本。" * 20
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) > 1
     assert all(payload["input"].endswith(("。", "，")) for payload in payloads[:-1])
 
 
-async def test_english_comma_split(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_english_comma_split(split_test_mocks: _SpeechTestMocks) -> None:
     """English text splits at a comma."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "This is a very long English sentence that needs to be split at some point, " * 8
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) > 1
     assert payloads[0]["input"].endswith(",")
 
 
-async def test_english_period_split(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_english_period_split(split_test_mocks: _SpeechTestMocks) -> None:
     """English text splits at a period."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "This is a sentence. " * 30
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) > 1
     assert all(payload["input"].endswith((".", ",")) for payload in payloads[:-1])
 
 
-async def test_last_punctuation_before_limit(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_last_punctuation_before_limit(split_test_mocks: _SpeechTestMocks) -> None:
     """Text splits at the last punctuation mark before the limit."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "First comma, second comma, " + "more text. " * 20
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert "second comma" in payloads[0]["input"]
 
 
-async def test_no_punctuation_single_segment(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_no_punctuation_single_segment(split_test_mocks: _SpeechTestMocks) -> None:
     """Text with no punctuation stays in one segment."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     text = "Thisisalongtextwithnopunctuationandnospaces" * 50
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) == 1
     assert text in payloads[0]["input"]
 
@@ -202,13 +207,12 @@ async def test_no_punctuation_single_segment(
     ],
 )
 async def test_split_preserves_numeric_and_identifier_tokens(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     is_chinese: bool,
     search: str,
     token: str,
 ) -> None:
     """Speech requests keep numbers and dotted names whole."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     limit = 200 if is_chinese else 500
     intro = "开始，" if is_chinese else "Start, "
     if search == "forward":
@@ -219,7 +223,9 @@ async def test_split_preserves_numeric_and_identifier_tokens(
     suffix = "，这里是结果。已经结束。" if is_chinese else ", and this is the result. It is done."
     text = intro + padding[: token_start - len(intro)] + token + suffix
 
-    payloads = await _run_for_split(text, mock_reason, recorder)
+    payloads = await _run_for_split(
+        text, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
 
     segments = [payload["input"] for payload in payloads]
     assert sum(token in segment for segment in segments) == 1
@@ -278,21 +284,17 @@ async def test_model_left_out_when_not_set(model: str | None) -> None:
     ]
 
 
-async def test_long_text_splits(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_long_text_splits(split_test_mocks: _SpeechTestMocks) -> None:
     """Long text splits into multiple speech API requests."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    payloads = await _run_for_split(LONG_SPLIT_TEXT, mock_reason, recorder)
+    payloads = await _run_for_split(
+        LONG_SPLIT_TEXT, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
     assert len(payloads) > 1
 
 
-async def test_model_passed_to_api(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_model_passed_to_api(split_test_mocks: _SpeechTestMocks) -> None:
     """LOCAL_TTS_MODEL is sent in the JSON payload when configured."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = ("Hello world.", 0)
+    split_test_mocks.mock_reason.return_value = ("Hello world.", 0)
 
     with patch.dict(
         os.environ,
@@ -301,30 +303,39 @@ async def test_model_passed_to_api(
     ):
         await generate_tts("Hello world.", is_verbose=True)
 
-    assert recorder.payloads[0]["model"] == "custom-model"
+    assert split_test_mocks.recorder.payloads[0]["model"] == "custom-model"
 
 
 async def test_multi_segment_concatenates_with_ffmpeg(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
 ) -> None:
     """Multiple speech segments are joined with ffmpeg."""
-    mock_reason, recorder, mock_subprocess = split_test_mocks
-    payloads = await _run_for_split(LONG_SPLIT_TEXT, mock_reason, recorder)
+    payloads = await _run_for_split(
+        LONG_SPLIT_TEXT, split_test_mocks.mock_reason, split_test_mocks.recorder
+    )
 
     assert len(payloads) > 1
-    assert any(
-        call.args and call.args[0] == "ffmpeg" for call in mock_subprocess.call_args_list
-    )
+    ffmpeg_calls = [
+        call.args
+        for call in split_test_mocks.mock_subprocess.call_args_list
+        if call.args and call.args[0] == "ffmpeg"
+    ]
+    assert len(ffmpeg_calls) == 1
+    ffmpeg_args = ffmpeg_calls[0]
+    assert len(ffmpeg_args) == 11
+    assert ffmpeg_args[:7] == ("ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i")
+    assert ffmpeg_args[7].endswith(".txt")
+    assert ffmpeg_args[8:10] == ("-c", "copy")
+    assert ffmpeg_args[10].endswith(".opus")
 
 
 @pytest.mark.parametrize("audio_format", ["mp3", "opus", "aac", "flac", "wav", "pcm"])
 async def test_supported_formats(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     audio_format: str,
 ) -> None:
     """All supported audio formats are sent to the speech API."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = (f"Testing {audio_format} format.", 0)
+    split_test_mocks.mock_reason.return_value = (f"Testing {audio_format} format.", 0)
 
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         output_path = await generate_tts(
@@ -334,30 +345,26 @@ async def test_supported_formats(
         )
 
     assert output_path.endswith(f".{audio_format}")
-    assert recorder.payloads[0]["response_format"] == audio_format
+    assert split_test_mocks.recorder.payloads[0]["response_format"] == audio_format
 
 
-async def test_default_format_is_opus(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
-) -> None:
+async def test_default_format_is_opus(split_test_mocks: _SpeechTestMocks) -> None:
     """Default audio format is opus."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = ("Testing default format.", 0)
+    split_test_mocks.mock_reason.return_value = ("Testing default format.", 0)
 
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         output_path = await generate_tts("Testing default format.", is_verbose=True)
 
     assert output_path.endswith(".opus")
-    assert recorder.payloads[0]["response_format"] == "opus"
+    assert split_test_mocks.recorder.payloads[0]["response_format"] == "opus"
 
 
 async def test_output_file_kwarg(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     tmp_path: Path,
 ) -> None:
     """An explicit output_file is used as the final audio path."""
-    mock_reason, _recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = ("Testing output file.", 0)
+    split_test_mocks.mock_reason.return_value = ("Testing output file.", 0)
     target = tmp_path / "custom" / "out.opus"
 
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
@@ -413,8 +420,13 @@ async def test_api_timeout_error_raises_tts_error(tmp_path: Path) -> None:
     [
         (400, b"voice not found", "Error calling TTS API: HTTP 400: voice not found"),
         (502, b"", "Error calling TTS API: HTTP 502"),
+        (
+            500,
+            b"e" * 500 + b"truncated-tail",
+            f"Error calling TTS API: HTTP 500: {'e' * 500}",
+        ),
     ],
-    ids=["with-body", "empty-body"],
+    ids=["with-body", "empty-body", "truncated-body"],
 )
 async def test_api_http_error_includes_status_and_body(
     tmp_path: Path,
@@ -462,7 +474,11 @@ async def test_multi_segment_api_error_cleans_up_segments(
     scratch = tmp_path / "scratch"
     monkeypatch.setenv("SCRATCH_DIR", str(scratch))
     recorder = create_speech_http_recorder(
-        create_failing_speech_handler(status_code=500, body=b"Segment failed", ok_segments=1)
+        create_failing_speech_handler(
+            status_code=500,
+            body=b"Segment failed",
+            successful_segments=1,
+        )
     )
 
     with (
@@ -503,11 +519,10 @@ async def test_ffmpeg_concat_failure_raises_tts_error_and_cleans_up(
 
 
 async def test_preprocessing_failure_raises_tts_error(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
 ) -> None:
     """A failing preprocessing LLM raises TtsError before any speech request."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = ("", 1)
+    split_test_mocks.mock_reason.return_value = ("", 1)
 
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         with pytest.raises(
@@ -515,7 +530,7 @@ async def test_preprocessing_failure_raises_tts_error(
         ):
             await generate_tts("Test text", is_verbose=True)
 
-    assert recorder.requests == []
+    assert split_test_mocks.recorder.requests == []
 
 
 @pytest.mark.parametrize(
@@ -532,16 +547,15 @@ async def test_preprocessing_failure_raises_tts_error(
     ],
 )
 async def test_prepared_narration_sent_without_cleanup(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     narration: str,
 ) -> None:
     """Speech receives the narration without any text changes."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = (narration, 0)
+    split_test_mocks.mock_reason.return_value = (narration, 0)
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         await generate_tts("Source material.")
-    assert [payload["input"] for payload in recorder.payloads] == [narration]
-    mock_reason.assert_awaited_once()
+    assert [payload["input"] for payload in split_test_mocks.recorder.payloads] == [narration]
+    split_test_mocks.mock_reason.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -560,34 +574,32 @@ async def test_prepared_narration_sent_without_cleanup(
     ],
 )
 async def test_arbitrary_content_prepared_once(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     source: str,
     narration: str,
 ) -> None:
     """The full source is prepared once before its narration is spoken."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = (narration, 0)
+    split_test_mocks.mock_reason.return_value = (narration, 0)
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         await generate_tts(source)
-    mock_reason.assert_awaited_once()
-    assert json.dumps(source, ensure_ascii=False) in mock_reason.call_args.args[0]
-    assert [payload["input"] for payload in recorder.payloads] == [narration]
+    split_test_mocks.mock_reason.assert_awaited_once()
+    assert json.dumps(source, ensure_ascii=False) in split_test_mocks.mock_reason.call_args.args[0]
+    assert [payload["input"] for payload in split_test_mocks.recorder.payloads] == [narration]
 
 
 @pytest.mark.parametrize("narration", ["", "   \n\t   "])
 async def test_empty_prepared_narration_fails(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     narration: str,
 ) -> None:
     """An empty narration raises TtsError before the speech service is called."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
-    mock_reason.return_value = (narration, 0)
+    split_test_mocks.mock_reason.return_value = (narration, 0)
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         with pytest.raises(
             TtsError, match=r"^Language detection and text preparation failed$"
         ):
             await generate_tts("Source material.")
-    assert recorder.payloads == []
+    assert split_test_mocks.recorder.payloads == []
 
 
 @pytest.mark.parametrize(
@@ -614,21 +626,20 @@ async def test_empty_prepared_narration_fails(
     ],
 )
 async def test_voice_selected_by_detected_language(
-    split_test_mocks: tuple[MagicMock, SpeechHttpRecorder, MagicMock],
+    split_test_mocks: _SpeechTestMocks,
     text: str,
     expected_voice: str,
 ) -> None:
     """The voice is chosen from the language of the input text, not the LLM response."""
-    mock_reason, recorder, _mock_subprocess = split_test_mocks
     opposite_language_response = (
         _ENGLISH_RESPONSE if expected_voice == _CHINESE_VOICE else _CHINESE_RESPONSE
     )
-    mock_reason.return_value = (opposite_language_response, 0)
+    split_test_mocks.mock_reason.return_value = (opposite_language_response, 0)
 
     with patch.dict(os.environ, MOCK_TTS_ENV, clear=False):
         await generate_tts(text, is_verbose=True)
 
-    assert recorder.payloads[0]["voice"] == expected_voice
+    assert split_test_mocks.recorder.payloads[0]["voice"] == expected_voice
 
 
 @pytest.mark.skipif(not os.environ.get("LOCAL_TTS_URL"), reason="LOCAL_TTS_URL not set")

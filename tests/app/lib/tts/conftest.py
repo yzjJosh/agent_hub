@@ -37,7 +37,7 @@ class RecordedSpeechRequest:
 
 
 class SpeechHttpRecorder:
-    """Provide mock httpx clients while recording each speech request."""
+    """Record speech HTTP requests through a mock client."""
 
     def __init__(
         self,
@@ -52,9 +52,9 @@ class SpeechHttpRecorder:
         follow_redirects: bool = False,
         timeout: httpx.Timeout | float | None = None,
     ) -> httpx.AsyncClient:
-        """Build an AsyncClient backed by MockTransport that records requests."""
+        """Build a mock HTTP client that records each speech request."""
 
-        def _transport_handler(request: httpx.Request) -> httpx.Response:
+        def _record_and_handle_request(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content.decode("utf-8"))
             self.requests.append(
                 RecordedSpeechRequest(
@@ -67,7 +67,7 @@ class SpeechHttpRecorder:
             return self._handler(request)
 
         return _REAL_ASYNC_CLIENT(
-            transport=httpx.MockTransport(_transport_handler),
+            transport=httpx.MockTransport(_record_and_handle_request),
             follow_redirects=follow_redirects,
             timeout=timeout,
         )
@@ -97,15 +97,15 @@ def create_speech_http_recorder(
 def create_failing_speech_handler(
     status_code: int,
     body: bytes = b"",
-    ok_segments: int = 0,
+    successful_segments: int = 0,
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """Build a speech handler that succeeds for ok_segments calls then fails."""
+    """Build a speech handler that succeeds for successful_segments calls then fails."""
     call_count = 0
 
     def _handle_request(_request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        if call_count <= ok_segments:
+        if call_count <= successful_segments:
             return httpx.Response(200, content=FAKE_AUDIO_BYTES)
         return httpx.Response(status_code, content=body)
 
@@ -118,7 +118,7 @@ def create_ffmpeg_subprocess_mock(
 ) -> Callable[..., MagicMock]:
     """Build a subprocess side effect for ffmpeg concatenation calls."""
 
-    def _side_effect(*command: str, **_kwargs: int) -> MagicMock:
+    def _run_fake_ffmpeg(*command: str, **_kwargs: int) -> MagicMock:
         if command and command[0] == "ffmpeg" and return_code == 0:
             output_path = command[-1]
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -126,4 +126,4 @@ def create_ffmpeg_subprocess_mock(
                 output_handle.write(FAKE_AUDIO_BYTES)
         return mock_cli_proc(stderr=stderr, returncode=return_code)
 
-    return _side_effect
+    return _run_fake_ffmpeg

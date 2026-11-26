@@ -128,7 +128,7 @@ def _files_holding_error_body(*roots: Path) -> list[Path]:
 
 
 @pytest.mark.parametrize(
-    ("text", "ok_segments"),
+    ("text", "successful_segments"),
     [("Hello world.", 0), (LONG_SPLIT_TEXT, 1)],
     ids=["short-text", "long-text-second-piece-fails"],
 )
@@ -136,7 +136,7 @@ async def test_server_error_fails_the_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     text: str,
-    ok_segments: int,
+    successful_segments: int,
 ) -> None:
     """A 422 from the TTS server fails the call with its status and text, and leaves no temp file."""
     resources = tmp_path / "resources"
@@ -147,7 +147,7 @@ async def test_server_error_fails_the_call(
         create_failing_speech_handler(
             status_code=422,
             body=_ERROR_BODY,
-            ok_segments=ok_segments,
+            successful_segments=successful_segments,
         )
     )
 
@@ -160,6 +160,6 @@ async def test_server_error_fails_the_call(
 
     assert result.startswith("Tool 'tts' failed: Error calling TTS API: HTTP 422: ")
     assert "Field required" in result
-    assert len(recorder.requests) == ok_segments + 1
+    assert len(recorder.requests) == successful_segments + 1
     assert list((scratch / "tts").iterdir()) == []
     assert _files_holding_error_body(resources, scratch) == []
