@@ -82,25 +82,26 @@ async def _validate_collector_output(text: str, run: AgentRun) -> ValidationResu
     Returns:
         Validation result holding the parsed deliverable dict when valid, or an error message.
     """
-    ok, parsed = parse_json_object(text)
-    if not ok:
-        return ValidationResult(is_valid=False, error=parsed)
+    parsed_result = parse_json_object(text)
+    if parsed_result.value is None:
+        return ValidationResult(is_valid=False, error=parsed_result.error)
+    deliverable = parsed_result.value
     problems: list[str] = []
-    if "summary" not in parsed:
+    if "summary" not in deliverable:
         problems.append("Missing field: summary.")
     else:
-        ok, error = check_nonblank_string(
-            parsed, "summary", "'summary' must be a non-empty string."
+        summary_check = check_nonblank_string(
+            deliverable, "summary", "'summary' must be a non-empty string."
         )
-        if not ok:
-            problems.append(error)
+        if not summary_check.is_valid:
+            problems.append(summary_check.error)
     id_items: list[str] = []
-    if "evidences" not in parsed:
+    if "evidences" not in deliverable:
         problems.append("Missing field: evidences.")
-    elif not isinstance(parsed["evidences"], list):
+    elif not isinstance(deliverable["evidences"], list):
         problems.append("'evidences' must be a list.")
     else:
-        for index, item in enumerate(parsed["evidences"]):
+        for index, item in enumerate(deliverable["evidences"]):
             if not isinstance(item, str) or not item.strip():
                 problems.append(f"Citation {index} is not a task id string.")
             else:
@@ -120,7 +121,7 @@ async def _validate_collector_output(text: str, run: AgentRun) -> ValidationResu
         problems.append("No data-source tool call completed during the run.")
     if problems:
         return ValidationResult(is_valid=False, error=combine_problems(problems))
-    return ValidationResult(is_valid=True, value=parsed)
+    return ValidationResult(is_valid=True, value=deliverable)
 
 
 async def _run_collector(
@@ -163,6 +164,8 @@ async def _run_collector(
     agent_run = await agent.run(user_message)
     try:
         result = await agent_run.task.result()
+        if result is None:
+            raise RuntimeError("collector agent run did not return a deliverable")
         deliverable = json.loads(result)
         summary = deliverable["summary"]
         citation_ids = deliverable["evidences"]

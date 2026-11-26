@@ -52,32 +52,33 @@ def _validate_reviewer_output(text: str) -> ValidationResult[dict]:
     Returns:
         Validation result holding the parsed verdict dict when valid, or an error message.
     """
-    ok, parsed = parse_json_object(text)
-    if not ok or not isinstance(parsed, dict):
-        return ValidationResult(is_valid=False, error=str(parsed))
+    parsed_result = parse_json_object(text)
+    if parsed_result.value is None:
+        return ValidationResult(is_valid=False, error=parsed_result.error)
+    verdict = parsed_result.value
     problems: list[str] = []
     for field in _FIELDS:
-        if field not in parsed:
+        if field not in verdict:
             problems.append(f"Missing field: {field}.")
-    if "pass" in parsed and not isinstance(parsed["pass"], bool):
+    if "pass" in verdict and not isinstance(verdict["pass"], bool):
         problems.append("'pass' must be a boolean.")
-    if "reason" in parsed:
-        ok, error = check_nonblank_string(parsed, "reason", "'reason' must be a non-empty string.")
-        if not ok:
-            problems.append(error)
-    if "action" in parsed:
-        ok, error = check_choice(
-            parsed, "action", _VALID_ACTIONS, f"'action' must be one of {sorted(_VALID_ACTIONS)}."
+    if "reason" in verdict:
+        reason_check = check_nonblank_string(verdict, "reason", "'reason' must be a non-empty string.")
+        if not reason_check.is_valid:
+            problems.append(reason_check.error)
+    if "action" in verdict:
+        action_check = check_choice(
+            verdict, "action", _VALID_ACTIONS, f"'action' must be one of {sorted(_VALID_ACTIONS)}."
         )
-        if not ok:
-            problems.append(error)
-    if "feedback" in parsed:
-        ok, error = check_string(parsed, "feedback", "'feedback' must be a string.")
-        if not ok:
-            problems.append(error)
+        if not action_check.is_valid:
+            problems.append(action_check.error)
+    if "feedback" in verdict:
+        feedback_check = check_string(verdict, "feedback", "'feedback' must be a string.")
+        if not feedback_check.is_valid:
+            problems.append(feedback_check.error)
     if problems:
         return ValidationResult(is_valid=False, error=combine_problems(problems))
-    return ValidationResult(is_valid=True, value=parsed)
+    return ValidationResult(is_valid=True, value=verdict)
 
 
 def _reviewer_validator(draft: str) -> Callable[[str, AgentRun], Awaitable[ValidationResult[dict]]]:

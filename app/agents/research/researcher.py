@@ -10,7 +10,7 @@ from app.agents.research.collector import CollectionLedger, format_records
 from app.agents.research.coverage import UNVERIFIED_NOTE, unverified_refs
 from app.agents.research.models import REF_RE, Review
 from app.agents.research.prompt import REVIEW_FEEDBACK_HEADER, load_prompt
-from app.lib.agent.checks import combine_problems, normalize_markdown_body
+from app.lib.agent.checks import TextCheckResult, combine_problems, extract_markdown_body
 from app.lib.agent.engine import Agent, AgentRun, ValidationResult
 from app.lib.agent.prompt import render_tool_descriptions
 from app.lib.tool.base import Tool
@@ -72,9 +72,10 @@ def _researcher_validator(
     """
 
     async def validate(text: str, run: AgentRun) -> ValidationResult[str]:
-        ok, body = normalize_markdown_body(text)
-        if not ok:
-            return ValidationResult(is_valid=False, error=body)
+        body_result: TextCheckResult = extract_markdown_body(text)
+        if not body_result.is_valid:
+            return ValidationResult(is_valid=False, error=body_result.error)
+        body = body_result.value
         problems: list[str] = []
         if not ledger.records:
             problems.append("Call collect_evidence before writing the report.")
@@ -138,7 +139,10 @@ async def run_researcher(
         agent.add_tool_adapter(tool)
     agent_run = await agent.run(user_message)
     try:
-        return await agent_run.task.result()
+        report = await agent_run.task.result()
+        if report is None:
+            raise RuntimeError("researcher agent run did not return a report")
+        return report
     except asyncio.CancelledError:
         await asyncio.shield(agent_run.task.cancel())
         raise

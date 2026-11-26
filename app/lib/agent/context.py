@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import asyncio
 import inspect
 import json
 import mimetypes
+import re
 import sqlite3
 import sys
 
@@ -46,13 +47,14 @@ CompactHook = Callable[[list[dict]], list[dict] | None | Awaitable[list[dict] | 
 _PAYLOAD_TOO_LARGE_STATUS = 413
 _INTERNAL_ERROR_STATUS = 500
 _EXCLUDED_STATUS_CODES = frozenset({401, 403, 404, 408, 409, 429, 502, 503, 504})
-_FORMAL_OVERFLOW_CODE = "context_length_exceeded"
-_STREAM_ERROR_DEFAULT_MSG = "An error occurred during streaming"
+_OVERFLOW_ERROR_CODE = "context_length_exceeded"
+_STREAM_ERROR_DEFAULT_MESSAGE = "An error occurred during streaming"
 _HALF_REDUCTION_FACTOR = 2
-_LOG_PREVIEW_LEN = 100
+_LOG_PREVIEW_LENGTH = 100
 _DATA_URL_PREFIX = "data:"
-_EMPTY_ARGS_FALLBACK = "{}"
+_EMPTY_ARGUMENTS_FALLBACK = "{}"
 _TEXT_ONLY_ROLES = frozenset({"system", "developer", "assistant"})
+_NUMBER_PATTERN = re.compile(r"[0-9]+(?:[.,][0-9]+)*")
 
 _OVERFLOW_SCHEMA = {
     "type": "object",
@@ -84,17 +86,33 @@ class CompactionError(RuntimeError):
     """Raised when message history cannot shrink by at least half."""
 
 
-def _status_code_of(exc: BaseException) -> int | None:
-    if isinstance(exc, APIStatusError):
-        return exc.status_code
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code
+@dataclass(frozen=True)
+class _ServerPayload:
+    dict_body: dict | None = None
+    list_body: list | None = None
+    text_body: str | None = None
+    response_text: str = ""
+    is_json: bool = False
+
+
+@dataclass(frozen=True)
+class _DefaultCompactionResult:
+    items: list[dict]
+    remaining_characters: int
+    is_accepted: bool
+
+
+def _extract_status_code(error: BaseException) -> int | None:
+    if isinstance(error, APIStatusError):
+        return error.status_code
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code
     return None
 
 
-def _is_excluded_error(exc: BaseException) -> bool:
+def _is_excluded_error(error: BaseException) -> bool:
     if isinstance(
-        exc,
+        error,
         (
             APIConnectionError,
             APITimeoutError,
@@ -107,27 +125,18 @@ def _is_excluded_error(exc: BaseException) -> bool:
         ),
     ):
         return True
-    status_code = _status_code_of(exc)
+    status_code = _extract_status_code(error)
     if status_code in _EXCLUDED_STATUS_CODES:
         return True
     return not isinstance(
-        exc,
+        error,
         (LengthFinishReasonError, APIStatusError, APIError, httpx.HTTPStatusError, ModelBehaviorError),
     )
 
 
-@dataclass(frozen=True)
-class _ServerPayload:
-    dict_body: dict | None = None
-    list_body: list | None = None
-    str_body: str | None = None
-    response_text: str = ""
-    is_json: bool = False
-
-
-def _decode_payload(exc: BaseException) -> _ServerPayload:
-    response_text = exc.response.text if isinstance(exc, (APIStatusError, httpx.HTTPStatusError)) else ""
-    raw_body = exc.body if isinstance(exc, APIError) else None
+def _decode_payload(error: BaseException) -> _ServerPayload:
+    response_text = error.response.text if isinstance(error, (APIStatusError, httpx.HTTPStatusError)) else ""
+    raw_body = error.body if isinstance(error, APIError) else None
     is_json = raw_body is not None
     if raw_body is None and response_text:
         try:
@@ -140,26 +149,26 @@ def _decode_payload(exc: BaseException) -> _ServerPayload:
     if isinstance(raw_body, list):
         return _ServerPayload(list_body=raw_body, response_text=response_text, is_json=is_json)
     if isinstance(raw_body, str):
-        return _ServerPayload(str_body=raw_body, response_text=response_text, is_json=is_json)
+        return _ServerPayload(text_body=raw_body, response_text=response_text, is_json=is_json)
     return _ServerPayload(response_text=response_text, is_json=is_json)
 
 
-def _is_formal_overflow(exc: BaseException, payload: _ServerPayload) -> bool:
-    if isinstance(exc, LengthFinishReasonError):
+def _has_explicit_overflow_code(error: BaseException, payload: _ServerPayload) -> bool:
+    if isinstance(error, LengthFinishReasonError):
         return True
-    if isinstance(exc, APIError) and exc.code == _FORMAL_OVERFLOW_CODE:
+    if isinstance(error, APIError) and error.code == _OVERFLOW_ERROR_CODE:
         return True
     body = payload.dict_body
     if body is None:
         return False
-    if body.get("code") == _FORMAL_OVERFLOW_CODE:
+    if body.get("code") == _OVERFLOW_ERROR_CODE:
         return True
-    nested = body.get("error")
-    return isinstance(nested, dict) and nested.get("code") == _FORMAL_OVERFLOW_CODE
+    nested_error = body.get("error")
+    return isinstance(nested_error, dict) and nested_error.get("code") == _OVERFLOW_ERROR_CODE
 
 
-def _has_nonempty_error_body(exc: APIError) -> bool:
-    body = exc.body
+def _has_nonempty_error_body(error: APIError) -> bool:
+    body = error.body
     if body is None:
         return False
     if isinstance(body, str):
@@ -169,67 +178,67 @@ def _has_nonempty_error_body(exc: APIError) -> bool:
     return True
 
 
-def _should_defer_before_retry(exc: BaseException, status_code: int | None) -> bool:
-    if isinstance(exc, ModelBehaviorError):
+def _should_defer_before_retry(error: BaseException, status_code: int | None) -> bool:
+    if isinstance(error, ModelBehaviorError):
         return True
     if status_code is not None and status_code >= _INTERNAL_ERROR_STATUS:
         return True
-    if isinstance(exc, APIError) and not isinstance(exc, APIStatusError):
-        return not _has_nonempty_error_body(exc)
+    if isinstance(error, APIError) and not isinstance(error, APIStatusError):
+        return not _has_nonempty_error_body(error)
     return False
 
 
-def _dict_prose(body: dict, response_text: str) -> str:
+def _extract_dict_error_message(body: dict, response_text: str) -> str:
     if not body:
         return ""
-    err = body.get("error")
+    error_field = body.get("error")
     candidates: list[str] = []
-    if isinstance(err, dict) and isinstance(err.get("message"), str):
-        candidates.append(err["message"])
-    if isinstance(err, str):
-        candidates.append(err)
+    if isinstance(error_field, dict) and isinstance(error_field.get("message"), str):
+        candidates.append(error_field["message"])
+    if isinstance(error_field, str):
+        candidates.append(error_field)
     if isinstance(body.get("message"), str):
         candidates.append(body["message"])
     detail = body.get("detail")
     if isinstance(detail, str):
         candidates.append(detail)
     elif isinstance(detail, list):
-        parts = [
-            item["msg"].strip() if isinstance(item, dict) else item.strip()
-            for item in detail
-            if (isinstance(item, dict) and isinstance(item.get("msg"), str) and item["msg"].strip())
-            or (isinstance(item, str) and item.strip())
+        detail_parts = [
+            entry["msg"].strip() if isinstance(entry, dict) else entry.strip()
+            for entry in detail
+            if (isinstance(entry, dict) and isinstance(entry.get("msg"), str) and entry["msg"].strip())
+            or (isinstance(entry, str) and entry.strip())
         ]
-        if parts:
-            candidates.append(" ".join(parts))
+        if detail_parts:
+            candidates.append(" ".join(detail_parts))
     for text in candidates:
         if text.strip():
             return text
     return response_text if response_text.strip() else json.dumps(body, ensure_ascii=False)
 
 
-def _fallback_message_of(exc: APIError | httpx.HTTPStatusError) -> str:
-    if isinstance(exc, httpx.HTTPStatusError):
+def _extract_fallback_error_message(error: APIError | httpx.HTTPStatusError) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
         return ""
-    if isinstance(exc, APIStatusError):
-        if exc.body is not None and exc.body != "":
+    if isinstance(error, APIStatusError):
+        if error.body is not None and error.body != "":
             return ""
-        prefix = f"Error code: {exc.status_code} - "
-        msg = exc.message.removeprefix(prefix).strip()
-        if not msg or msg in (str(exc.status_code), f"Error code: {exc.status_code}"):
+        prefix = f"Error code: {error.status_code} - "
+        message = error.message.removeprefix(prefix).strip()
+        if not message or message in (str(error.status_code), f"Error code: {error.status_code}"):
             return ""
-        return msg
-    msg = exc.message.strip()
-    if not msg or msg == _STREAM_ERROR_DEFAULT_MSG:
+        return message
+    message = error.message.strip()
+    if not message or message == _STREAM_ERROR_DEFAULT_MESSAGE:
         return ""
-    return msg
+    return message
 
 
-def _payload_prose(payload: _ServerPayload) -> str:
-    if payload.str_body is not None:
-        return payload.str_body if payload.str_body.strip() else ""
+def _extract_payload_error_message(payload: _ServerPayload) -> str:
+    if payload.text_body is not None:
+        return payload.text_body if payload.text_body.strip() else ""
     if payload.dict_body is not None:
-        return _dict_prose(payload.dict_body, payload.response_text)
+        return _extract_dict_error_message(payload.dict_body, payload.response_text)
     if payload.list_body is not None:
         if not payload.list_body:
             return ""
@@ -243,82 +252,64 @@ def _payload_prose(payload: _ServerPayload) -> str:
     return ""
 
 
-def _extract_prose(
-    exc: APIError | httpx.HTTPStatusError | ModelBehaviorError,
+def _extract_error_message(
+    error: APIError | httpx.HTTPStatusError | ModelBehaviorError,
     payload: _ServerPayload,
 ) -> str:
-    if isinstance(exc, ModelBehaviorError):
-        return str(exc)
-    prose = _payload_prose(payload)
-    if prose:
-        return prose
-    return _fallback_message_of(exc)
+    if isinstance(error, ModelBehaviorError):
+        return str(error)
+    error_message = _extract_payload_error_message(payload)
+    if error_message:
+        return error_message
+    return _extract_fallback_error_message(error)
 
 
-def _is_ascii_digit(ch: str) -> bool:
-    return "0" <= ch <= "9"
+def _mask_error_numbers(text: str) -> str:
+    return " ".join(_NUMBER_PATTERN.sub("<NUM>", text).split())
 
 
-def _normalize_error_text(text: str) -> str:
-    out: list[str] = []
-    idx = 0
-    length = len(text)
-    while idx < length:
-        if _is_ascii_digit(text[idx]):
-            out.append("<NUM>")
-            idx += 1
-            while idx < length:
-                if _is_ascii_digit(text[idx]):
-                    idx += 1
-                elif text[idx] in (".", ",") and idx + 1 < length and _is_ascii_digit(text[idx + 1]):
-                    idx += 2
-                else:
-                    break
-        else:
-            out.append(text[idx])
-            idx += 1
-    return " ".join("".join(out).split())
-
-
-async def _classify_normalized(normalized: str, backend: config.Backend | None) -> bool:
+async def _classify_error_template(
+    error_template: str,
+    backend: config.Backend | None,
+) -> bool:
     try:
-        cached = await context_error_store.get(normalized)
-    except (RuntimeError, sqlite3.Error) as exc:
-        print(f"[context.is_overflow] cache read failed: {exc}", file=sys.stderr)
-        raise ClassificationError(f"Overflow cache read failed: {exc}") from exc
+        cached = await context_error_store.get(error_template)
+    except (RuntimeError, sqlite3.Error) as error:
+        print(f"[context.is_overflow] cache read failed: {error}", file=sys.stderr)
+        raise ClassificationError(f"Overflow cache read failed: {error}") from error
     if cached is not None:
         return cached
     try:
         target = backend if backend is not None else config.backend(config.REASON_THINKING, config.REASON)
-    except config.MissingSettingError as exc:
-        print(f"[context.is_overflow] classifier backend missing: {exc}", file=sys.stderr)
-        raise ClassificationError(f"Overflow classifier backend missing: {exc}") from exc
+    except config.MissingSettingError as error:
+        print(f"[context.is_overflow] classifier backend missing: {error}", file=sys.stderr)
+        raise ClassificationError(f"Overflow classifier backend missing: {error}") from error
     raw_text, status = await reason(
-        f"{_CLASSIFIER_PROMPT}{normalized}",
+        f"{_CLASSIFIER_PROMPT}{error_template}",
         thinking=False,
         json_schema=_OVERFLOW_SCHEMA,
         backend=target,
     )
     if status != 0:
-        print(f"[context.is_overflow] classifier failed: {raw_text[:_LOG_PREVIEW_LEN]}", file=sys.stderr)
+        print(f"[context.is_overflow] classifier failed: {raw_text[:_LOG_PREVIEW_LENGTH]}", file=sys.stderr)
         raise ClassificationError(f"Overflow classifier failed: {raw_text}")
-    ok, parsed = checks.parse_json_object(raw_text)
-    if not ok or not isinstance(parsed, dict):
-        print(f"[context.is_overflow] invalid JSON: {raw_text[:_LOG_PREVIEW_LEN]}", file=sys.stderr)
-        raise ClassificationError(f"Overflow classifier returned invalid JSON: {parsed}")
-    verdict = parsed.get("is_context_overflow")
+    parsed_result: checks.JsonObjectResult = checks.parse_json_object(raw_text)
+    if not parsed_result.is_valid or parsed_result.value is None:
+        print(f"[context.is_overflow] invalid JSON: {raw_text[:_LOG_PREVIEW_LENGTH]}", file=sys.stderr)
+        raise ClassificationError(f"Overflow classifier returned invalid JSON: {parsed_result.error}")
+    verdict = parsed_result.value.get("is_context_overflow")
     if not isinstance(verdict, bool):
         print(
-            f"[context.is_overflow] non-boolean verdict: {repr(verdict)[:_LOG_PREVIEW_LEN]}",
+            f"[context.is_overflow] non-boolean verdict: {repr(verdict)[:_LOG_PREVIEW_LENGTH]}",
             file=sys.stderr,
         )
         raise ClassificationError("Overflow classifier returned non-boolean is_context_overflow")
-    now_iso = datetime.now(timezone.utc).isoformat()
+    timestamp_iso = datetime.now(timezone.utc).isoformat()
     try:
-        await context_error_store.put(normalized, verdict, now_iso)
-    except (RuntimeError, sqlite3.Error) as exc:
-        print(f"[context.is_overflow] cache write failed: {exc}", file=sys.stderr)
-        raise ClassificationError(f"Overflow cache write failed: {exc}") from exc
+        await context_error_store.put(error_template, verdict, timestamp_iso)
+    except (RuntimeError, sqlite3.Error) as error:
+        print(f"[context.is_overflow] cache write failed: {error}", file=sys.stderr)
+        raise ClassificationError(f"Overflow cache write failed: {error}") from error
     return verdict
 
 
@@ -344,17 +335,17 @@ async def is_overflow(
     if _is_excluded_error(exc):
         return False
     payload = _decode_payload(exc)
-    if _is_formal_overflow(exc, payload):
+    if _has_explicit_overflow_code(exc, payload):
         return True
-    status_code = _status_code_of(exc)
+    status_code = _extract_status_code(exc)
     if before_retry and _should_defer_before_retry(exc, status_code):
         return False
     assert isinstance(exc, (APIError, httpx.HTTPStatusError, ModelBehaviorError))
-    prose = _extract_prose(exc, payload)
-    if not prose or not any(ch.isalpha() for ch in prose):
+    error_message = _extract_error_message(exc, payload)
+    if not error_message or not any(character.isalpha() for character in error_message):
         return status_code == _PAYLOAD_TOO_LARGE_STATUS
-    normalized = _normalize_error_text(prose)
-    return await _classify_normalized(normalized, backend)
+    error_template = _mask_error_numbers(error_message)
+    return await _classify_error_template(error_template, backend)
 
 
 def extract_reasoning_text(item: dict) -> str:
@@ -391,62 +382,67 @@ def resolve_video_url(file_data: str, filename: str | None = None) -> str | None
     """
     if not file_data:
         return None
-    mime: str | None = None
+    mime_type: str | None = None
     if file_data.startswith(_DATA_URL_PREFIX):
-        head = file_data.split(";", 1)[0]
-        if len(head) > len(_DATA_URL_PREFIX):
-            mime = head[len(_DATA_URL_PREFIX) :]
+        header = file_data.split(";", 1)[0]
+        if len(header) > len(_DATA_URL_PREFIX):
+            mime_type = header[len(_DATA_URL_PREFIX) :]
     elif filename is not None:
-        mime = mimetypes.guess_type(filename)[0]
-    if not is_video_mime(mime):
+        mime_type = mimetypes.guess_type(filename)[0]
+    if not is_video_mime(mime_type):
         return None
     if file_data.startswith(_DATA_URL_PREFIX):
         return file_data
-    return f"data:{mime};base64,{file_data}"
+    return f"data:{mime_type};base64,{file_data}"
 
 
-def _content_part_chars(part: dict, *, text_only: bool, tool_output: bool) -> int:
-    ptype = part.get("type")
-    if ptype in ("input_text", "text"):
+def _count_content_part_characters(
+    part: dict,
+    *,
+    is_text_only: bool,
+    is_tool_output: bool,
+) -> int:
+    part_type = part.get("type")
+    if part_type in ("input_text", "text"):
         text = part.get("text")
         return len(text) if isinstance(text, str) else 0
-    if text_only:
+    if is_text_only:
         return 0
-    if ptype == "input_image":
+    if part_type == "input_image":
         url = part.get("image_url")
         return len(url) if isinstance(url, str) else 0
-    if ptype == "image_url":
-        img = part.get("image_url")
-        url = img.get("url") if isinstance(img, dict) else None
+    if part_type == "image_url":
+        image_object = part.get("image_url")
+        url = image_object.get("url") if isinstance(image_object, dict) else None
         return len(url) if isinstance(url, str) else 0
-    if ptype == "video_url":
-        vid = part.get("video_url")
-        url = vid.get("url") if isinstance(vid, dict) else None
+    if part_type == "video_url":
+        video_object = part.get("video_url")
+        url = video_object.get("url") if isinstance(video_object, dict) else None
         return len(url) if isinstance(url, str) else 0
-    if ptype == "input_audio":
-        audio = part.get("input_audio")
-        data = audio.get("data") if isinstance(audio, dict) else None
-        return len(data) if isinstance(data, str) else 0
-    if ptype == "input_file":
+    if part_type == "input_audio":
+        audio_object = part.get("input_audio")
+        audio_data = audio_object.get("data") if isinstance(audio_object, dict) else None
+        return len(audio_data) if isinstance(audio_data, str) else 0
+    if part_type == "input_file":
         file_data = part.get("file_data")
         if not isinstance(file_data, str) or not file_data:
             return 0
-        if tool_output:
+        if is_tool_output:
             filename = part.get("filename")
             url = resolve_video_url(file_data, filename if isinstance(filename, str) else None)
             return len(url) if url is not None else 0
         return len(file_data)
-    if ptype == "file" and tool_output:
-        file_obj = part.get("file")
-        file_data = file_obj.get("file_data") if isinstance(file_obj, dict) else None
-        filename = file_obj.get("filename") if isinstance(file_obj, dict) else None
+    if part_type == "file" and is_tool_output:
+        file_object = part.get("file")
+        file_data = file_object.get("file_data") if isinstance(file_object, dict) else None
+        filename = file_object.get("filename") if isinstance(file_object, dict) else None
         if isinstance(file_data, str) and file_data:
             url = resolve_video_url(file_data, filename if isinstance(filename, str) else None)
             return len(url) if url is not None else 0
     return 0
 
 
-def _response_output_message_chars(item: dict) -> int:
+def _count_response_output_message_characters(item: dict) -> int:
     content = item.get("content")
     if isinstance(content, str):
         return len(content)
@@ -457,26 +453,26 @@ def _response_output_message_chars(item: dict) -> int:
     for part in content:
         if not isinstance(part, dict):
             continue
-        ptype = part.get("type")
-        if ptype == "output_text" and isinstance(part.get("text"), str):
+        part_type = part.get("type")
+        if part_type == "output_text" and isinstance(part.get("text"), str):
             text_segments.append(part["text"])
-        elif ptype == "refusal" and isinstance(part.get("refusal"), str):
+        elif part_type == "refusal" and isinstance(part.get("refusal"), str):
             last_refusal = part["refusal"]
-    text_len = len("\n".join(text_segments)) if text_segments else 0
-    return text_len + len(last_refusal)
+    text_length = len("\n".join(text_segments)) if text_segments else 0
+    return text_length + len(last_refusal)
 
 
-def _item_chars(item: dict) -> int:
+def _count_item_characters(item: dict) -> int:
     item_type = item.get("type")
     role = item.get("role")
     if item_type == "message" and role == "assistant":
-        return _response_output_message_chars(item)
+        return _count_response_output_message_characters(item)
     if item_type == "function_call":
         name = item.get("name")
-        args = item.get("arguments")
-        name_len = len(name) if isinstance(name, str) else 0
-        args_str = args if isinstance(args, str) and args else _EMPTY_ARGS_FALLBACK
-        return name_len + len(args_str)
+        arguments = item.get("arguments")
+        name_length = len(name) if isinstance(name, str) else 0
+        arguments_text = arguments if isinstance(arguments, str) and arguments else _EMPTY_ARGUMENTS_FALLBACK
+        return name_length + len(arguments_text)
     if item_type == "file_search_call":
         payload = json.dumps({"queries": item.get("queries", []), "status": item.get("status")})
         return len("file_search_call") + len(payload)
@@ -486,9 +482,9 @@ def _item_chars(item: dict) -> int:
             return len(output)
         if isinstance(output, list):
             return sum(
-                _content_part_chars(p, text_only=False, tool_output=True)
-                for p in output
-                if isinstance(p, dict)
+                _count_content_part_characters(part, is_text_only=False, is_tool_output=True)
+                for part in output
+                if isinstance(part, dict)
             )
         return 0
     if role in ("user", "assistant", "system", "developer"):
@@ -496,11 +492,11 @@ def _item_chars(item: dict) -> int:
         if isinstance(content, str):
             return len(content)
         if isinstance(content, list):
-            text_only = role in _TEXT_ONLY_ROLES
+            is_text_only = role in _TEXT_ONLY_ROLES
             return sum(
-                _content_part_chars(p, text_only=text_only, tool_output=False)
-                for p in content
-                if isinstance(p, dict)
+                _count_content_part_characters(part, is_text_only=is_text_only, is_tool_output=False)
+                for part in content
+                if isinstance(part, dict)
             )
     return 0
 
@@ -534,7 +530,7 @@ def count_chars(
         if reasoning_run:
             total += len("\n".join(reasoning_run))
             reasoning_run = []
-        total += _item_chars(item)
+        total += _count_item_characters(item)
     if reasoning_run:
         total += len("\n".join(reasoning_run))
     return total
@@ -562,6 +558,52 @@ async def _measure_candidate(
     return size
 
 
+async def _compact_default_items(
+    message_items: list[dict],
+    baseline_characters: int,
+    system_prompt: str,
+    measure: Callable[[list[dict]], int | Awaitable[int]] | None,
+    is_verbose: bool,
+) -> _DefaultCompactionResult:
+    reasoning_indices = [
+        index
+        for index, item in enumerate(message_items)
+        if isinstance(item, dict) and item.get("type") == "reasoning"
+    ]
+    assistant_message_indices = [
+        index
+        for index, item in enumerate(message_items)
+        if isinstance(item, dict) and _is_assistant_message(item)
+    ]
+    removed_indices: set[int] = set()
+    candidate = message_items
+    remaining_characters = baseline_characters
+    for index in reasoning_indices + assistant_message_indices:
+        removed_indices.add(index)
+        candidate = [
+            item for item_index, item in enumerate(message_items) if item_index not in removed_indices
+        ]
+        if not candidate:
+            break
+        remaining_characters = await _measure_candidate(candidate, system_prompt, measure)
+        if (baseline_characters - remaining_characters) * _HALF_REDUCTION_FACTOR >= baseline_characters:
+            if is_verbose:
+                print(
+                    f"[context.compact] global accepted, chars {baseline_characters} to {remaining_characters}",
+                    flush=True,
+                )
+            return _DefaultCompactionResult(
+                items=candidate,
+                remaining_characters=remaining_characters,
+                is_accepted=True,
+            )
+    return _DefaultCompactionResult(
+        items=candidate,
+        remaining_characters=remaining_characters,
+        is_accepted=False,
+    )
+
+
 async def compact(
     items: str | list[dict],
     *,
@@ -577,13 +619,9 @@ async def compact(
         system_prompt: Instructions sent ahead of the conversation.
         measure: Optional size check called on each candidate item list.
             Must leave input unchanged and give the same size for the same input.
-        compact_hook: Optional callback to shorten remaining items when default
-            shrinking is not enough. Gets a copy of the remaining items and
-            returns a shorter list or None. Must keep instructions, kept call
-            ids and order, full call and output pairs, unknown items, and
-            unfinished calls, without adding calls or bringing back dropped
-            items. Must be safe across runs at the same time, must not save and
-            later change its input or output, and must be async if slow.
+        compact_hook: Optional callback called with a copy of remaining items
+            when default shrinking is not enough. Returns a shorter list or
+            None while keeping instructions, unknown items, and tool call pairs.
         verbose: Whether to print size counts during recovery.
 
     Returns:
@@ -593,64 +631,70 @@ async def compact(
         CompactionError: If the items are empty or cannot shrink by half.
     """
     if isinstance(items, str):
-        normalized: list[dict] = [{"role": "user", "content": items}]
+        message_items: list[dict] = [{"role": "user", "content": items}]
     else:
-        normalized = [dict(item) if isinstance(item, dict) else item for item in items]
-    if not normalized:
+        message_items = [dict(item) if isinstance(item, dict) else item for item in items]
+    if not message_items:
         raise CompactionError("Cannot compact empty message history.")
-    baseline_chars = await _measure_candidate(normalized, system_prompt, measure)
-    if baseline_chars <= 0:
+    baseline_characters = await _measure_candidate(message_items, system_prompt, measure)
+    if baseline_characters <= 0:
         raise CompactionError("Cannot compact message history with zero baseline size.")
-    tier_one = [
-        i for i, item in enumerate(normalized) if isinstance(item, dict) and item.get("type") == "reasoning"
-    ]
-    tier_two = [i for i, item in enumerate(normalized) if isinstance(item, dict) and _is_assistant_message(item)]
-    removed: set[int] = set()
-    candidate = normalized
-    remaining_chars = baseline_chars
-    for index in tier_one + tier_two:
-        removed.add(index)
-        candidate = [item for i, item in enumerate(normalized) if i not in removed]
-        if not candidate:
-            break
-        remaining_chars = await _measure_candidate(candidate, system_prompt, measure)
-        if (baseline_chars - remaining_chars) * _HALF_REDUCTION_FACTOR >= baseline_chars:
-            if verbose:
-                print(f"[context.compact] global accepted, chars {baseline_chars} to {remaining_chars}", flush=True)
-            return candidate
+    default_result = await _compact_default_items(
+        message_items,
+        baseline_characters,
+        system_prompt,
+        measure,
+        verbose,
+    )
+    if default_result.is_accepted:
+        return default_result.items
     if compact_hook is not None:
         if verbose:
-            print(f"[context.compact] global exhausted, chars {baseline_chars} to {remaining_chars if candidate else 0}", flush=True)
-        return await _compact_with_hook(candidate, compact_hook, baseline_chars, system_prompt, measure, verbose)
+            remaining = default_result.remaining_characters if default_result.items else 0
+            print(
+                f"[context.compact] global exhausted, chars {baseline_characters} to {remaining}",
+                flush=True,
+            )
+        return await _compact_with_hook(
+            default_result.items,
+            compact_hook,
+            baseline_characters,
+            system_prompt,
+            measure,
+            verbose,
+        )
     raise CompactionError("Message history could not shrink by at least half.")
 
 
 async def _compact_with_hook(
     items: list[dict],
     hook: CompactHook,
-    baseline_chars: int,
+    baseline_characters: int,
     system_prompt: str,
     measure: Callable[[list[dict]], int | Awaitable[int]] | None,
-    verbose: bool,
+    is_verbose: bool,
 ) -> list[dict]:
     snapshot = await asyncio.to_thread(deepcopy, items)
     try:
         candidate = hook(snapshot)
         if inspect.isawaitable(candidate):
             candidate = await candidate
-    except Exception as exc:
-        raise CompactionError(f"Compaction hook failed with {type(exc)}.") from exc
+    except Exception as error:
+        raise CompactionError(f"Compaction hook failed with {type(error)}.") from error
     if candidate is None:
         raise CompactionError("Compaction hook declined to trim history.")
     if not isinstance(candidate, list) or any(not isinstance(item, dict) for item in candidate):
         raise CompactionError("Compaction hook must return a list of message dictionaries or None.")
     if not items or not candidate:
         raise CompactionError("Compaction hook cannot replace empty message history.")
-    remaining_chars = await _measure_candidate(candidate, system_prompt, measure)
-    if verbose:
-        print(f"[context.compact] hook measured, chars {baseline_chars} to {remaining_chars}", flush=True)
-    if remaining_chars <= 0 or remaining_chars * _HALF_REDUCTION_FACTOR > baseline_chars:
+    remaining_characters = await _measure_candidate(candidate, system_prompt, measure)
+    if is_verbose:
+        print(
+            f"[context.compact] hook measured, chars {baseline_characters} to {remaining_characters}",
+            flush=True,
+        )
+    if remaining_characters <= 0 or remaining_characters * _HALF_REDUCTION_FACTOR > baseline_characters:
         raise CompactionError("Compaction hook could not shrink message history by at least half.")
-    if verbose:
+    if is_verbose:
         print("[context.compact] hook accepted", flush=True)
     return candidate
