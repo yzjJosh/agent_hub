@@ -214,21 +214,21 @@ async def toolcall_client(
     """A test client for the console api, with a tool map carrying the fake tools."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     previous_db_path = store_module.task_store.db_path
-    store_module.init_store(str(tmp_path / "data" / "records.db"))
-    await store_module.task_store.open()
-    record: dict[str, type[Tool]] = dict(registered_tools())
-    monkeypatch.setattr(registry_module, "_TOOLS", record)
-    app = Starlette(routes=[Mount("/api", build_api_routes())])
-    app.add_middleware(ConsoleSecurityMiddleware)
-    app.add_middleware(ConsolePathSanitizer)
-
-    def register(cls: type[Tool]) -> None:
-        record[cls.name] = cls
-
-    def register_outer() -> None:
-        record[_FakeOuterTool.name] = _FakeOuterTool
-
     try:
+        store_module.init_store(str(tmp_path / "data" / "records.db"))
+        await store_module.task_store.open()
+        record: dict[str, type[Tool]] = dict(registered_tools())
+        monkeypatch.setattr(registry_module, "_TOOLS", record)
+        app = Starlette(routes=[Mount("/api", build_api_routes())])
+        app.add_middleware(ConsoleSecurityMiddleware)
+        app.add_middleware(ConsolePathSanitizer)
+
+        def register(cls: type[Tool]) -> None:
+            record[cls.name] = cls
+
+        def register_outer() -> None:
+            record[_FakeOuterTool.name] = _FakeOuterTool
+
         async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield SimpleNamespace(client=c, app=app, register=register,
                                   register_outer=register_outer, data_dir=str(tmp_path / "data"))

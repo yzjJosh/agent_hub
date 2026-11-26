@@ -63,9 +63,9 @@ async def present_env(
     """Point the resource folder, the data folder, and the record store at temp values."""
     resources, data = _env(tmp_path, monkeypatch)
     previous_db_path = store_module.task_store.db_path
-    store_module.init_store(str(data / "records.db"))
-    await store_module.task_store.open()
     try:
+        store_module.init_store(str(data / "records.db"))
+        await store_module.task_store.open()
         yield resources, data
     finally:
         await store_module.task_store.close()

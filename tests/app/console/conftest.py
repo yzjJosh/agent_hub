@@ -28,16 +28,15 @@ async def console_env(
     """Set up the console api for a test and give back the client and the resources folder."""
     resources, data = configure_resource_env(tmp_path, monkeypatch)
     previous_db_path = store_module.task_store.db_path
-    store_module.init_store(str(data / "records.db"))
-    await store_module.task_store.open()
-    app = Starlette(routes=[Mount("/api", build_api_routes())])
-    app.add_middleware(ConsoleSecurityMiddleware)
-    app.add_middleware(ConsolePathSanitizer)
-    client = httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
     try:
-        yield client, resources
+        store_module.init_store(str(data / "records.db"))
+        await store_module.task_store.open()
+        app = Starlette(routes=[Mount("/api", build_api_routes())])
+        app.add_middleware(ConsoleSecurityMiddleware)
+        app.add_middleware(ConsolePathSanitizer)
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            yield client, resources
     finally:
-        await client.aclose()
         await store_module.task_store.close()
         store_module.init_store(previous_db_path)
 
@@ -47,9 +46,9 @@ async def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIt
     """A test client for the console api."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     previous_db_path = store_module.task_store.db_path
-    store_module.init_store(str(tmp_path / "data" / "records.db"))
-    await store_module.task_store.open()
     try:
+        store_module.init_store(str(tmp_path / "data" / "records.db"))
+        await store_module.task_store.open()
         app = Starlette(routes=[Mount("/api", build_api_routes())])
         app.add_middleware(ConsoleSecurityMiddleware)
         app.add_middleware(ConsolePathSanitizer)

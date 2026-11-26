@@ -863,9 +863,9 @@ async def task_store(tmp_path: Path) -> AsyncIterator[TaskRecordStore]:
 async def store_infra(tmp_path: Path) -> AsyncIterator[None]:
     """Point the process-wide stores at a throwaway database for the test."""
     previous_db_path = store_module.task_store.db_path
-    store_module.init_store(str(tmp_path / "records.db"))
-    await store_module.task_store.open()
     try:
+        store_module.init_store(str(tmp_path / "records.db"))
+        await store_module.task_store.open()
         yield
     finally:
         await store_module.task_store.close()

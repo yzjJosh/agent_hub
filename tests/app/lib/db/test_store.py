@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -354,16 +355,16 @@ class TestToolStats:
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
         task, tool = stores
         now = _now()
-        t1 = _iso(now - timedelta(minutes=30))
-        t2 = _iso(now - timedelta(minutes=20))
-        t3 = _iso(now - timedelta(minutes=10))
-        await task.insert_running("f1", None, t1, "runs/f1")
+        failed_started_at = _iso(now - timedelta(minutes=30))
+        cancelled_started_at = _iso(now - timedelta(minutes=20))
+        running_started_at = _iso(now - timedelta(minutes=10))
+        await task.insert_running("f1", None, failed_started_at, "runs/f1")
         await tool.insert("f1", "alpha", None, {})
-        await task.finish("f1", "failed", error="err", ended_at=t2)
-        await task.insert_running("x1", None, t2, "runs/x1")
+        await task.finish("f1", "failed", error="err", ended_at=cancelled_started_at)
+        await task.insert_running("x1", None, cancelled_started_at, "runs/x1")
         await tool.insert("x1", "alpha", None, {})
-        await task.finish("x1", "cancelled", ended_at=t3)
-        await task.insert_running("r1", None, t3, "runs/r1")
+        await task.finish("x1", "cancelled", ended_at=running_started_at)
+        await task.insert_running("r1", None, running_started_at, "runs/r1")
         await tool.insert("r1", "beta", None, {})
         by_tool = {entry.tool_name: entry for entry in await store_module.list_tool_stats()}
         assert by_tool == {
@@ -373,7 +374,7 @@ class TestToolStats:
                 completed=0,
                 failed=1,
                 cancelled=1,
-                last_activity=t2,
+                last_activity=cancelled_started_at,
                 running_since=None,
             ),
             "beta": ToolStats(
@@ -382,8 +383,8 @@ class TestToolStats:
                 completed=0,
                 failed=0,
                 cancelled=0,
-                last_activity=t3,
-                running_since=t3,
+                last_activity=running_started_at,
+                running_since=running_started_at,
             ),
         }
 
@@ -716,7 +717,7 @@ class TestContextErrorStore:
         assert store_module.context_error_store.sweep_sync(data_dir=str(empty_dir)) == []
 
     async def test_store_infra_restores_db_path_and_singletons(self, tmp_path: Path) -> None:
-        before_dir = store_module.task_store.data_dir
+        before_data_directory = store_module.task_store.data_dir
         before_db_path = store_module.task_store.db_path
         before_singletons = (
             store_module.task_store,
@@ -747,7 +748,7 @@ class TestContextErrorStore:
                 await anext(lifecycle)
 
         assert store_module.is_store_open() is False
-        assert store_module.task_store.data_dir == before_dir
+        assert store_module.task_store.data_dir == before_data_directory
         assert store_module.task_store.db_path == before_db_path
         assert (
             store_module.task_store is before_singletons[0]
@@ -758,14 +759,21 @@ class TestContextErrorStore:
         )
 
 
+@dataclass(frozen=True)
+class _ToolTaskSeed:
+    task_id: str
+    started_at: str
+    tool_name: str
+
+
 async def _seed_tool_tasks(
     task: TaskRecordStore,
     tool: ToolRecordStore,
-    entries: tuple[tuple[str, str, str], ...],
+    entries: tuple[_ToolTaskSeed, ...],
 ) -> None:
-    for task_id, started_at, tool_name in entries:
-        await task.insert_running(task_id, None, started_at, f"runs/{task_id}")
-        await tool.insert(task_id, tool_name, None, {"id": task_id})
+    for entry in entries:
+        await task.insert_running(entry.task_id, None, entry.started_at, f"runs/{entry.task_id}")
+        await tool.insert(entry.task_id, entry.tool_name, None, {"id": entry.task_id})
 
 
 class TestTaskQueries:
@@ -773,13 +781,45 @@ class TestTaskQueries:
 
     async def test_is_store_open_tracks_connection_state(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Report open while connected and closed after closing the store."""
         task, _ = stores
         assert store_module.is_store_open() is True
         await task.close()
         assert store_module.is_store_open() is False
 
+    def test_init_store_none_uses_data_dir_and_keeps_singletons(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolve DATA_DIR dynamically when init_store receives None while preserving singletons."""
+        previous_db_path = store_module.task_store.db_path
+        before_singletons = (
+            store_module.task_store,
+            store_module.tool_store,
+            store_module.presentation_store,
+            store_module.agent_store,
+            store_module.context_error_store,
+        )
+        target_data_directory = tmp_path / "dynamic_data"
+        target_data_directory.mkdir()
+        monkeypatch.setenv("DATA_DIR", str(target_data_directory))
+        try:
+            returned_store = store_module.init_store(None)
+            assert returned_store is store_module.task_store
+            assert store_module.task_store.data_dir == str(target_data_directory)
+            assert store_module.task_store.db_path == str(target_data_directory / "records.db")
+            assert (
+                store_module.task_store is before_singletons[0]
+                and store_module.tool_store is before_singletons[1]
+                and store_module.presentation_store is before_singletons[2]
+                and store_module.agent_store is before_singletons[3]
+                and store_module.context_error_store is before_singletons[4]
+            )
+        finally:
+            store_module.init_store(previous_db_path)
+
     async def test_get_store_fingerprint_empty_and_populated(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Return empty markers on a new store and latest timestamps after writes."""
         task, _ = stores
         assert await store_module.get_store_fingerprint() == StoreFingerprint(
             latest_started_at=None,
@@ -806,34 +846,39 @@ class TestTaskQueries:
 
     async def test_list_tool_tasks_paginates_newest_first(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Paginate tool tasks newest first and return an empty page for unknown tools."""
         task, tool = stores
         now = _now()
-        t_old = _iso(now - timedelta(minutes=30))
-        t_tie = _iso(now - timedelta(minutes=20))
-        t_new = _iso(now - timedelta(minutes=10))
+        oldest_timestamp = _iso(now - timedelta(minutes=30))
+        tied_timestamp = _iso(now - timedelta(minutes=20))
+        newest_timestamp = _iso(now - timedelta(minutes=10))
         await _seed_tool_tasks(
             task,
             tool,
             (
-                ("a1", t_old, "search"),
-                ("b1", t_tie, "search"),
-                ("b2", t_tie, "search"),
-                ("c1", t_new, "search"),
-                ("other", t_new, "fetch"),
+                _ToolTaskSeed("a1", oldest_timestamp, "search"),
+                _ToolTaskSeed("b1", tied_timestamp, "search"),
+                _ToolTaskSeed("b2", tied_timestamp, "search"),
+                _ToolTaskSeed("c1", newest_timestamp, "search"),
+                _ToolTaskSeed("other", newest_timestamp, "fetch"),
             ),
         )
 
         first_page = await store_module.list_tool_tasks("search", limit=2, cursor=None)
         assert isinstance(first_page, TaskPage)
         assert [view.task_id for view in first_page.tasks] == ["c1", "b2"]
-        assert first_page.next_cursor == f"{t_tie}|b2"
+        assert first_page.next_cursor == f"{tied_timestamp}|b2"
 
         second_page = await store_module.list_tool_tasks("search", limit=2, cursor=first_page.next_cursor)
         assert [view.task_id for view in second_page.tasks] == ["b1", "a1"]
         assert second_page.next_cursor is None
 
+        empty_page = await store_module.list_tool_tasks("unknown", limit=2, cursor=None)
+        assert empty_page == TaskPage(tasks=[], next_cursor=None)
+
     async def test_list_running_views_returns_running_oldest_first(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Return only running tasks ordered from oldest to newest."""
         task, _ = stores
         now = _now()
         await task.insert_running("r-late", None, _iso(now - timedelta(minutes=5)), "runs/r-late")
@@ -846,6 +891,7 @@ class TestTaskQueries:
 
     async def test_list_started_since_views_filters_and_orders(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Return tasks that started strictly after the cutoff, oldest first."""
         task, _ = stores
         now = _now()
         cutoff = _iso(now - timedelta(minutes=10))
@@ -859,6 +905,7 @@ class TestTaskQueries:
 
     async def test_list_finished_since_views_filters_and_orders(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Return finished tasks with an end time after the cutoff, oldest first."""
         task, _ = stores
         now = _now()
         cutoff = _iso(now - timedelta(minutes=10))
@@ -877,6 +924,7 @@ class TestTaskQueries:
 
     async def test_count_tasks_tracks_inserts_and_deletes(
             self, stores: tuple[TaskRecordStore, ToolRecordStore]) -> None:
+        """Return the total number of persisted tasks across inserts and deletes."""
         task, _ = stores
         assert await store_module.count_tasks() == 0
         now = _iso(_now())

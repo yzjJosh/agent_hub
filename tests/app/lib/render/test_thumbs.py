@@ -604,38 +604,43 @@ def test_live_cdp_doc_thumbnail(
 ) -> None:
     """Real Chrome shoots a doc page and saves it as a thumbnail."""
     previous_db_path = store_module.task_store.db_path
-    (_resources / "sample.md").write_bytes((FIX / "sample.md").read_bytes())
-    server = uvicorn.Server(uvicorn.Config(build_app(), host="127.0.0.1", port=0, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-
-    def _poll_port() -> int:
-        for _ in range(50):
-            if server.started and server.servers:
-                return server.servers[0].sockets[0].getsockname()[1]
-            time.sleep(0.1)
-        raise AssertionError("uvicorn did not start")
-
-    port = _poll_port()
-    monkeypatch.setenv("HTTP_HOST", "127.0.0.1")
-    monkeypatch.setenv("HTTP_PORT", str(port))
-
+    server: uvicorn.Server | None = None
+    thread: threading.Thread | None = None
     key = "b" * 64
-
-    async def run() -> None:
-        await cache_module.write_doc(
-            key, '<div class="md-doc"><h1>CDP target</h1><p>hello</p></div>', None, {"kind": "markdown"})
-        try:
-            thumbs.start_thumbnail_job(key, RenderKind.MARKDOWN, "sample.md")
-            assert await _await_thumb_status(key) == "done"
-        finally:
-            await thumbs.stop_thumbnails()
-
     try:
+        (_resources / "sample.md").write_bytes((FIX / "sample.md").read_bytes())
+        live_server = uvicorn.Server(uvicorn.Config(build_app(), host="127.0.0.1", port=0, log_level="warning"))
+        server = live_server
+        live_thread = threading.Thread(target=live_server.run, daemon=True)
+        thread = live_thread
+        live_thread.start()
+
+        def _poll_port() -> int:
+            for _ in range(50):
+                if live_server.started and live_server.servers:
+                    return live_server.servers[0].sockets[0].getsockname()[1]
+                time.sleep(0.1)
+            raise AssertionError("uvicorn did not start")
+
+        port = _poll_port()
+        monkeypatch.setenv("HTTP_HOST", "127.0.0.1")
+        monkeypatch.setenv("HTTP_PORT", str(port))
+
+        async def run() -> None:
+            await cache_module.write_doc(
+                key, '<div class="md-doc"><h1>CDP target</h1><p>hello</p></div>', None, {"kind": "markdown"})
+            try:
+                thumbs.start_thumbnail_job(key, RenderKind.MARKDOWN, "sample.md")
+                assert await _await_thumb_status(key) == "done"
+            finally:
+                await thumbs.stop_thumbnails()
+
         asyncio.run(run())
     finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(timeout=5)
         store_module.init_store(previous_db_path)
 
     path = os.path.join(cache_module.render_root(), key, "thumb.png")
