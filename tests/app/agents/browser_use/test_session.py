@@ -172,8 +172,8 @@ class TestOpenClose:
     @pytest.mark.parametrize(
         "invoke",
         [
-            pytest.param(lambda s: s.execute_step(_action_ok, None), id="transact"),
-            pytest.param(lambda s: s.execute_step(_action_ok, "tab1", should_monitor_download=True), id="transact_download"),
+            pytest.param(lambda s: s.execute_step(_action_ok, None), id="execute_step"),
+            pytest.param(lambda s: s.execute_step(_action_ok, "tab1", should_monitor_download=True), id="execute_step_download"),
             pytest.param(lambda s: s.get_downloaded_files(), id="get_downloaded_files"),
         ],
     )

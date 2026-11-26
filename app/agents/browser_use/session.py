@@ -167,7 +167,7 @@ class BrowserSession:
         self._manager = await BrowserManager.create(download_dir=self._downloads_dir)
 
     async def close(self) -> None:
-        """Release the browser manager and owned checkpoint store. A second call does nothing."""
+        """Release the browser manager and owned checkpoint store if open."""
         try:
             if self._manager is not None:
                 await self._manager.cleanup()
@@ -480,20 +480,20 @@ class BrowserSession:
         if previous_tab.screenshot_path is None:
             _log_info("_has_target_screen_changed", f"tab {target_id} has no saved screenshot, stale check skipped")
             return False
-        return await self._compare_tab_screenshot(manager, target_id, previous_tab.screenshot_path)
+        return await self._has_tab_screenshot_changed(manager, target_id, previous_tab.screenshot_path)
 
-    async def _compare_tab_screenshot(
+    async def _has_tab_screenshot_changed(
         self,
         manager: BrowserManager,
         target_id: str,
         previous_screenshot_path: str,
     ) -> bool:
-        """Capture a fresh screenshot of the tab and compare it against the saved image."""
+        """Return True when a fresh tab screenshot differs from the saved image."""
         step_directory = self._get_step_directory()
-        await _ensure_directory(step_directory, "_compare_tab_screenshot")
+        await _ensure_directory(step_directory, "_has_tab_screenshot_changed")
         comparison_path = os.path.join(step_directory, f"stale_check_{target_id}.jpg")
         if await self._capture_tab_screenshot(manager, target_id, comparison_path) is None:
-            _log_error("_compare_tab_screenshot", f"tab {target_id} comparison capture failed, stale check skipped")
+            _log_error("_has_tab_screenshot_changed", f"tab {target_id} comparison capture failed, stale check skipped")
             return False
         fresh_bytes = await _read_file_bytes_if_present(comparison_path)
         stored_bytes = await _read_file_bytes_if_present(previous_screenshot_path)
@@ -502,7 +502,7 @@ class BrowserSession:
         has_changed = similarity < _MIN_SCREEN_SIMILARITY
         decision = "skipped" if has_changed else "allowed"
         _log_info(
-            "_compare_tab_screenshot",
+            "_has_tab_screenshot_changed",
             f"tab {target_id} similarity {similarity:.4f} against {_MIN_SCREEN_SIMILARITY}, action {decision}",
         )
         return has_changed
