@@ -1,8 +1,14 @@
-"""Shared setup and helpers for the tts tests."""
+"""Shared setup and helpers for the speech synthesis tests."""
+
+from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from dataclasses import dataclass
+import json
+import os
 from unittest.mock import MagicMock
+
+import httpx
 
 from tests.app.lib.conftest import mock_cli_proc
 
@@ -13,35 +19,111 @@ MOCK_TTS_ENV = {
     "LOCAL_TTS_MODEL": "voxcpm2",
 }
 
-CURL_HTTP_ERROR_EXIT = 22
+FAKE_AUDIO_BYTES = b"fake_audio_data"
 
 LONG_SPLIT_TEXT = "This is a very long text that will be split into multiple segments. " * 20
 
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
-def failing_curl(
-    body: bytes, stderr: str, return_code: int, ok_pieces: int = 0
+
+@dataclass(frozen=True)
+class RecordedSpeechRequest:
+    """One HTTP request captured from the speech client."""
+
+    url: str
+    payload: dict[str, str]
+    headers: dict[str, str]
+    follow_redirects: bool
+
+
+class SpeechHttpRecorder:
+    """Provide mock httpx clients while recording each speech request."""
+
+    def __init__(
+        self,
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> None:
+        self._handler = handler
+        self.requests: list[RecordedSpeechRequest] = []
+
+    def create_client(
+        self,
+        *,
+        follow_redirects: bool = False,
+        timeout: httpx.Timeout | float | None = None,
+    ) -> httpx.AsyncClient:
+        """Build an AsyncClient backed by MockTransport that records requests."""
+
+        def _transport_handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8"))
+            self.requests.append(
+                RecordedSpeechRequest(
+                    url=str(request.url),
+                    payload=payload,
+                    headers=dict(request.headers),
+                    follow_redirects=follow_redirects,
+                )
+            )
+            return self._handler(request)
+
+        return _REAL_ASYNC_CLIENT(
+            transport=httpx.MockTransport(_transport_handler),
+            follow_redirects=follow_redirects,
+            timeout=timeout,
+        )
+
+    @property
+    def payloads(self) -> list[dict[str, str]]:
+        """Return JSON bodies from all recorded speech requests."""
+        return [recorded.payload for recorded in self.requests]
+
+    @property
+    def urls(self) -> list[str]:
+        """Return target URLs from all recorded speech requests."""
+        return [recorded.url for recorded in self.requests]
+
+
+def create_speech_http_recorder(
+    handler: Callable[[httpx.Request], httpx.Response] | None = None,
+) -> SpeechHttpRecorder:
+    """Build a SpeechHttpRecorder that returns fake audio by default."""
+    if handler is None:
+        return SpeechHttpRecorder(
+            lambda _request: httpx.Response(200, content=FAKE_AUDIO_BYTES)
+        )
+    return SpeechHttpRecorder(handler)
+
+
+def create_failing_speech_handler(
+    status_code: int,
+    body: bytes = b"",
+    ok_segments: int = 0,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Build a speech handler that succeeds for ok_segments calls then fails."""
+    call_count = 0
+
+    def _handle_request(_request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= ok_segments:
+            return httpx.Response(200, content=FAKE_AUDIO_BYTES)
+        return httpx.Response(status_code, content=body)
+
+    return _handle_request
+
+
+def create_ffmpeg_subprocess_mock(
+    return_code: int = 0,
+    stderr: str = "",
 ) -> Callable[..., MagicMock]:
-    """Make a stand in for curl that gives audio for the first pieces, then fails.
+    """Build a subprocess side effect for ffmpeg concatenation calls."""
 
-    Args:
-        body: Text the failed call writes to its output file.
-        stderr: Text the failed call gives back on stderr.
-        return_code: Exit code of the failed call.
-        ok_pieces: How many calls get audio before the failed one.
-
-    Returns:
-        A side effect for the create_subprocess_exec mock.
-    """
-    calls = {"curl": 0}
-
-    def _side_effect(*cmd: str, **_kwargs: int) -> MagicMock:
-        out_path = Path(cmd[cmd.index("--output") + 1])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        calls["curl"] += 1
-        if calls["curl"] <= ok_pieces:
-            out_path.write_bytes(b"fake_audio_data")
-            return mock_cli_proc()
-        out_path.write_bytes(body)
+    def _side_effect(*command: str, **_kwargs: int) -> MagicMock:
+        if command and command[0] == "ffmpeg" and return_code == 0:
+            output_path = command[-1]
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            with open(output_path, "wb") as output_handle:
+                output_handle.write(FAKE_AUDIO_BYTES)
         return mock_cli_proc(stderr=stderr, returncode=return_code)
 
     return _side_effect

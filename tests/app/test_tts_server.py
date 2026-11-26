@@ -8,6 +8,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
+from app.lib.tts.tts import TtsError
 from app.tts_server import create_openai_tts_app
 from tests.app.conftest import TaskRecordStore
 
@@ -39,7 +40,7 @@ def _fake_generate(
     audio: bytes = _FAKE_AUDIO,
     error: str | None = None,
     write_file: bool = True,
-) -> Callable[..., Awaitable[tuple[str, int]]]:
+) -> Callable[..., Awaitable[str]]:
     """Build a stand in for the speech maker.
 
     Args:
@@ -48,17 +49,24 @@ def _fake_generate(
         write_file: Whether the output file is written.
 
     Returns:
-        A stand in for the speech maker that gives back a file name and a status.
+        A stand in for the speech maker that gives back an audio file path.
     """
 
     async def fake_generate(
-        _text: str, output_file: str | None = None, **_kwargs: str | bool | None
-    ) -> tuple[str, int]:
+        _text: str,
+        audio_format: str = "opus",
+        is_verbose: bool = False,
+        output_file: str | None = None,
+    ) -> str:
         if error is not None:
-            return error, 1
-        if write_file and output_file is not None:
+            raise TtsError(error)
+        if output_file is None:
+            raise ValueError(
+                f"Expected output_file for format={audio_format!r}, is_verbose={is_verbose}"
+            )
+        if write_file:
             Path(output_file).write_bytes(audio)
-        return output_file, 0
+        return output_file
 
     return fake_generate
 
