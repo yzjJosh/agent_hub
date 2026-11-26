@@ -75,7 +75,7 @@ async def _transact_within(session: BrowserSession, seconds: float) -> Transacti
     """Run one plain transaction, and fail the test when it takes too long."""
     try:
         async with asyncio.timeout(seconds):
-            return await session.transact(_action_ok, None)
+            return await session.execute_step(_action_ok, None)
     except TimeoutError:
         pytest.fail(f"the transaction did not finish in {seconds}s, the tab shots did not run at the same time")
 
@@ -105,14 +105,14 @@ async def _transact_with_colors(
     statuses: list[TransactionStatus] = []
     for color in colors:
         fake_manager.capture_colors[tab] = color
-        statuses.append((await session.transact(_action_ok, target_id)).status)
+        statuses.append((await session.execute_step(_action_ok, target_id)).status)
     return statuses
 
 
 async def _run_transactions(session: BrowserSession, tab: str, count: int) -> None:
     """Run count successful transactions on the given tab."""
     for _ in range(count):
-        result = await session.transact(_action_ok, tab)
+        result = await session.execute_step(_action_ok, tab)
         assert result.status is TransactionStatus.SUCCESS
 
 
@@ -124,7 +124,7 @@ async def _transact_admitted(
 ) -> TransactionResult:
     """Run one transaction, and check the guard let the action run."""
     calls, action = _counting_action()
-    result = await session.transact(action, target_id, new_tab=new_tab)
+    result = await session.execute_step(action, target_id, is_new_tab=new_tab)
     assert result.status is TransactionStatus.SUCCESS
     assert calls == [1]
     return result
@@ -136,7 +136,7 @@ async def _transact_blocked(
 ) -> TransactionResult:
     """Run one transaction, and check the guard held the action back."""
     calls, action = _counting_action()
-    result = await session.transact(action, target_id)
+    result = await session.execute_step(action, target_id)
     assert result.status is TransactionStatus.STALE
     assert calls == []
     return result
@@ -172,8 +172,8 @@ class TestOpenClose:
     @pytest.mark.parametrize(
         "invoke",
         [
-            pytest.param(lambda s: s.transact(_action_ok, None), id="transact"),
-            pytest.param(lambda s: s.transact(_action_ok, "tab1", monitor_download=True), id="transact_download"),
+            pytest.param(lambda s: s.execute_step(_action_ok, None), id="transact"),
+            pytest.param(lambda s: s.execute_step(_action_ok, "tab1", should_monitor_download=True), id="transact_download"),
             pytest.param(lambda s: s.get_downloaded_files(), id="get_downloaded_files"),
         ],
     )
@@ -256,7 +256,7 @@ class TestActionForwarding:
     ) -> None:
         fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        result = await session.transact(build_action(fake_manager), None)
+        result = await session.execute_step(build_action(fake_manager), None)
         assert record(fake_manager) == expected_args
         assert result.status is TransactionStatus.SUCCESS
 
@@ -269,7 +269,7 @@ class TestTransact:
     ) -> None:
         fake_manager.open_tab(title="Shop", url="https://a.com")
         session = await _open_session(str(tmp_path))
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         assert result.status is TransactionStatus.SUCCESS
         assert result.message == ""
         assert result.files == ()
@@ -284,18 +284,18 @@ class TestTransact:
         tab = fake_manager.open_tab()
         fake_manager.download_queue = [{"downloaded": True}, {"downloaded": True}]
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab, monitor_download=True)
+        first = await session.execute_step(_action_ok, tab, should_monitor_download=True)
         assert first.status is TransactionStatus.SUCCESS
-        assert first.files == (str(tmp_path / "txn_0" / "download"),)
+        assert first.files == (str(tmp_path / "step_0" / "download"),)
         await _run_transactions(session, tab, _PAST_OLD_CAP_TRANSACTIONS - 1)
         calls, action = _counting_action()
-        after_two_hundred = await session.transact(action, tab, monitor_download=True)
+        after_two_hundred = await session.execute_step(action, tab, should_monitor_download=True)
         assert after_two_hundred.status is TransactionStatus.SUCCESS
         assert calls == [1]
-        assert after_two_hundred.files == (str(tmp_path / f"txn_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),)
+        assert after_two_hundred.files == (str(tmp_path / f"step_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),)
         assert await session.get_downloaded_files() == [
-            str(tmp_path / "txn_0" / "download"),
-            str(tmp_path / f"txn_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),
+            str(tmp_path / "step_0" / "download"),
+            str(tmp_path / f"step_{_PAST_OLD_CAP_TRANSACTIONS}" / "download"),
         ]
 
     async def test_failed_action_reports_failed(
@@ -304,7 +304,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        result = await session.transact(_action_fail, None)
+        result = await session.execute_step(_action_fail, None)
         assert result.status is TransactionStatus.FAILED
         assert result.message
 
@@ -314,7 +314,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session = await _open_session(str(tmp_path))
-        result = await session.transact(lambda m, tab: m.click_at_relative(tab, _QUARTER_RATIO, _HALF_RATIO), "gone")
+        result = await session.execute_step(lambda m, tab: m.click_at_relative(tab, _QUARTER_RATIO, _HALF_RATIO), "gone")
         assert result.status is TransactionStatus.FAILED
         assert fake_manager.last_click is None
 
@@ -324,10 +324,10 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        result = await session.transact(_action_boom, None)
+        result = await session.execute_step(_action_boom, None)
         assert result.status is TransactionStatus.FAILED
         assert "boom" in result.message
-        again = await session.transact(_action_ok, None)
+        again = await session.execute_step(_action_ok, None)
         assert again.status is TransactionStatus.SUCCESS
 
     async def test_stale_screen_blocks_action(
@@ -337,11 +337,11 @@ class TestTransact:
     ) -> None:
         tab = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         assert first.status is TransactionStatus.SUCCESS
         fake_manager.capture_colors[tab] = _WHITE
         calls, action = _counting_action()
-        second = await session.transact(action, None)
+        second = await session.execute_step(action, None)
         assert second.status is TransactionStatus.STALE
         assert second.message == "screen changed since you last saw it, action not run"
         assert second.files == ()
@@ -354,8 +354,8 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
-        second = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
+        second = await session.execute_step(_action_ok, None)
         assert first.status is TransactionStatus.SUCCESS
         assert second.status is TransactionStatus.SUCCESS
 
@@ -366,7 +366,7 @@ class TestTransact:
     ) -> None:
         tab = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         statuses = [first.status]
         statuses.extend(
             await _transact_with_colors(fake_manager, session, tab, (_WHITE, 0, _WHITE, 0, _WHITE, 0, _WHITE, 0))
@@ -391,7 +391,7 @@ class TestTransact:
         tab_a = fake_manager.open_tab()
         tab_b = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab_b)
+        first = await session.execute_step(_action_ok, tab_b)
         fake_manager.capture_colors[tab_b] = _WHITE
         fake_manager.pages.pop(tab_b)
         second = await _transact_admitted(session, tab_b)
@@ -404,7 +404,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         fake_manager.capture_patches[tab] = (_SMALL_CHANGE_RATIO, _WHITE)
         await _transact_admitted(session, None)
         assert first.status is TransactionStatus.SUCCESS
@@ -415,7 +415,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         fake_manager.capture_patches[tab] = (_LARGE_CHANGE_RATIO, _WHITE)
         await _transact_blocked(session, None)
         assert first.status is TransactionStatus.SUCCESS
@@ -426,7 +426,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         fake_manager.capture_patches[tab] = (_QUARTER_RATIO, _WHITE)
         await _transact_admitted(session, None)
         assert first.status is TransactionStatus.SUCCESS
@@ -437,7 +437,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         fake_manager.capture_patches[tab] = (_THREE_TENTH_RATIO, _WHITE)
         await _transact_blocked(session, None)
         assert first.status is TransactionStatus.SUCCESS
@@ -450,7 +450,7 @@ class TestTransact:
         tab_a = fake_manager.open_tab()
         tab_b = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab_a)
+        first = await session.execute_step(_action_ok, tab_a)
         fake_manager.capture_colors[tab_b] = _WHITE
         await _transact_admitted(session, tab_a)
         assert first.status is TransactionStatus.SUCCESS
@@ -463,10 +463,10 @@ class TestTransact:
         tab_a = fake_manager.open_tab()
         fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab_a)
+        first = await session.execute_step(_action_ok, tab_a)
         fake_manager.capture_colors[tab_a] = _WHITE
         calls, action = _counting_action()
-        second = await session.transact(action, tab_a)
+        second = await session.execute_step(action, tab_a)
         assert first.status is TransactionStatus.SUCCESS
         assert second.status is TransactionStatus.STALE
         assert calls == []
@@ -477,7 +477,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         fake_manager.capture_colors[tab] = _WHITE
         await _transact_admitted(session, None, new_tab=True)
         assert first.status is TransactionStatus.SUCCESS
@@ -488,10 +488,10 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, tab)
+        first = await session.execute_step(_action_ok, tab)
         fake_manager.capture_colors[tab] = _WHITE
         seen, action = _seeing_action()
-        second = await session.transact(action, tab, new_tab=True)
+        second = await session.execute_step(action, tab, is_new_tab=True)
         assert first.status is TransactionStatus.SUCCESS
         assert second.status is TransactionStatus.SUCCESS
         assert seen == [tab]
@@ -502,7 +502,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, tab)
+        first = await session.execute_step(_action_ok, tab)
         blocked = await _transact_with_colors(fake_manager, session, tab, (_WHITE, 0))
         fake_manager.capture_colors[tab] = _WHITE
         await _transact_admitted(session, tab, new_tab=True)
@@ -519,10 +519,10 @@ class TestTransact:
         tab_a = fake_manager.open_tab()
         tab_b = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab_a)
+        first = await session.execute_step(_action_ok, tab_a)
         fake_manager.capture_colors[tab_a] = _WHITE
         fake_manager.capture_colors[tab_b] = _WHITE
-        second = await session.transact(_action_ok, None)
+        second = await session.execute_step(_action_ok, None)
         assert first.status is TransactionStatus.SUCCESS
         assert second.status is TransactionStatus.FAILED
         assert second.message == "action failed: 2 tabs are open, give the target id of the one to act on"
@@ -535,10 +535,10 @@ class TestTransact:
         tab_a = fake_manager.open_tab()
         fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
-        first = await session.transact(_action_ok, tab_a)
+        first = await session.execute_step(_action_ok, tab_a)
         blocked = await _transact_with_colors(fake_manager, session, tab_a, (_WHITE, 0), target_id=tab_a)
         fake_manager.capture_colors[tab_a] = _WHITE
-        failed = await session.transact(_action_ok, None)
+        failed = await session.execute_step(_action_ok, None)
         after = await _transact_with_colors(fake_manager, session, tab_a, (0, _WHITE, 0), target_id=tab_a)
         assert first.status is TransactionStatus.SUCCESS
         assert blocked == [TransactionStatus.STALE, TransactionStatus.STALE]
@@ -552,7 +552,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab_a = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, tab_a)
+        first = await session.execute_step(_action_ok, tab_a)
         tab_b = fake_manager.open_tab()
         fake_manager.capture_colors[tab_a] = _WHITE
         await _transact_admitted(session, tab_b)
@@ -564,7 +564,7 @@ class TestTransact:
         tmp_path: Path,
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        first = await session.transact(_action_ok, None)
+        first = await session.execute_step(_action_ok, None)
         stored = first.snapshot.tabs[tab].screenshot_path
         assert stored == os.path.join(str(tmp_path), "checkpoints", str(first.snapshot.checkpoint_id), "01.jpg")
         os.remove(stored)
@@ -585,7 +585,7 @@ class TestTransact:
             events.append("end")
             return True
 
-        results = await asyncio.gather(session.transact(action, None), session.transact(action, None))
+        results = await asyncio.gather(session.execute_step(action, None), session.execute_step(action, None))
         assert events == ["start", "end", "start", "end"]
         assert all(r.status is TransactionStatus.SUCCESS for r in results)
 
@@ -595,7 +595,7 @@ class TestTabResolution:
         tab = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
         seen, action = _seeing_action()
-        result = await session.transact(action, None)
+        result = await session.execute_step(action, None)
         assert result.status is TransactionStatus.SUCCESS
         assert seen == [tab]
 
@@ -603,7 +603,7 @@ class TestTabResolution:
         assert not fake_manager.list_tab_ids()
         session = await _open_session(str(tmp_path))
         seen, action = _seeing_action()
-        result = await session.transact(action, None)
+        result = await session.execute_step(action, None)
         assert result.status is TransactionStatus.SUCCESS
         assert seen == [None]
 
@@ -614,7 +614,7 @@ class TestTabResolution:
         fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
         calls, action = _counting_action()
-        result = await session.transact(action, None)
+        result = await session.execute_step(action, None)
         assert result.status is TransactionStatus.FAILED
         assert "2 tabs are open, give the target id of the one to act on" in result.message
         assert calls == []
@@ -626,7 +626,7 @@ class TestTabResolution:
         _open_tabs(fake_manager, open_tabs)
         session = await _open_session(str(tmp_path))
         seen, action = _seeing_action()
-        result = await session.transact(action, None, new_tab=True)
+        result = await session.execute_step(action, None, is_new_tab=True)
         assert result.status is TransactionStatus.SUCCESS
         assert seen == [None]
 
@@ -645,7 +645,7 @@ class TestTabResolution:
 
         monkeypatch.setattr(fake_manager, "list_tab_ids", tab_ids_then_open_a_tab)
         seen, action = _seeing_action()
-        result = await session.transact(action, None)
+        result = await session.execute_step(action, None)
         assert result.status is TransactionStatus.SUCCESS
         assert seen == [tab]
 
@@ -653,7 +653,7 @@ class TestTabResolution:
         tab = fake_manager.open_tab()
         session = await _open_session(str(tmp_path))
         seen, action = _seeing_action()
-        result = await session.transact(action, tab)
+        result = await session.execute_step(action, tab)
         assert result.status is TransactionStatus.SUCCESS
         assert seen == [tab]
 
@@ -667,7 +667,7 @@ class TestDownload:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         fake_manager.download_queue.append({"downloaded": True})
         calls, action = _counting_action()
-        result = await session.transact(action, tab, monitor_download=True)
+        result = await session.execute_step(action, tab, should_monitor_download=True)
         reserved = result.files[0]
         assert result.status is TransactionStatus.SUCCESS
         assert result.files == (reserved,)
@@ -690,7 +690,7 @@ class TestDownload:
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         fake_manager.download_queue.append({"downloaded": False})
-        result = await session.transact(_action_ok, tab, monitor_download=True)
+        result = await session.execute_step(_action_ok, tab, should_monitor_download=True)
         assert result.status is TransactionStatus.FAILED
         assert result.files == ()
         assert await session.get_downloaded_files() == []
@@ -702,8 +702,8 @@ class TestDownload:
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         fake_manager.download_queue.extend([{"downloaded": True}, {"downloaded": True}])
-        first = await session.transact(_action_ok, tab, monitor_download=True)
-        second = await session.transact(_action_ok, tab, monitor_download=True)
+        first = await session.execute_step(_action_ok, tab, should_monitor_download=True)
+        second = await session.execute_step(_action_ok, tab, should_monitor_download=True)
         assert await session.get_downloaded_files() == [first.files[0], second.files[0]]
         assert first.files[0] != second.files[0]
 
@@ -715,8 +715,8 @@ class TestDownload:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         fake_manager.download_exception = RuntimeError("dl failed")
         with pytest.raises(RuntimeError, match="dl failed"):
-            await session.transact(_action_ok, tab, monitor_download=True)
-        assert not (tmp_path / "txn_0" / "download").exists()
+            await session.execute_step(_action_ok, tab, should_monitor_download=True)
+        assert not (tmp_path / "step_0" / "download").exists()
 
     async def test_download_refuses_unknown_tab(
         self,
@@ -725,9 +725,9 @@ class TestDownload:
     ) -> None:
         session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         with pytest.raises(KeyError, match="No page found for target_id: gone"):
-            await session.transact(_action_ok, "gone", monitor_download=True)
+            await session.execute_step(_action_ok, "gone", should_monitor_download=True)
         assert fake_manager.last_download is None
-        assert not (tmp_path / "txn_0" / "download").exists()
+        assert not (tmp_path / "step_0" / "download").exists()
 
     async def test_download_blank_target_watches_the_sole_tab(
         self,
@@ -736,7 +736,7 @@ class TestDownload:
     ) -> None:
         session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
         fake_manager.download_queue.append({"downloaded": True})
-        result = await session.transact(_action_ok, "", monitor_download=True)
+        result = await session.execute_step(_action_ok, "", should_monitor_download=True)
         assert result.status is TransactionStatus.SUCCESS
         record = fake_manager.last_download
         if record is None:
@@ -749,7 +749,7 @@ class TestDownload:
         tmp_path: Path,
     ) -> None:
         session = await _open_session(str(tmp_path))
-        result = await session.transact(_action_ok, "", monitor_download=True)
+        result = await session.execute_step(_action_ok, "", should_monitor_download=True)
         assert result.status is TransactionStatus.FAILED
         assert result.message == "action failed: no tab is open, open one with open_url first"
         assert fake_manager.last_download is None
@@ -762,7 +762,7 @@ class TestDownload:
         session = await _open_session(str(tmp_path))
         fake_manager.open_tab()
         fake_manager.open_tab()
-        result = await session.transact(_action_ok, "", monitor_download=True)
+        result = await session.execute_step(_action_ok, "", should_monitor_download=True)
         assert result.status is TransactionStatus.FAILED
         assert "2 tabs are open, give the target id of the one to act on" in result.message
         assert fake_manager.last_download is None
@@ -773,7 +773,7 @@ class TestSnapshot:
         session = await _open_session(str(tmp_path))
         tab_a = fake_manager.open_tab(title="Shop", url="https://a.com")
         tab_b = fake_manager.open_tab(title="Cart", url="https://a.com/cart")
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         run_dir = tmp_path / "checkpoints" / str(result.snapshot.checkpoint_id)
         assert list(result.snapshot.tabs) == [tab_a, tab_b]
         assert result.snapshot.tabs[tab_a].screenshot_path == str(run_dir / "01.jpg")
@@ -791,7 +791,7 @@ class TestSnapshot:
     ) -> None:
         """Each tab's shot waits up to sixty seconds on the manager."""
         session, _tab = await _open_session_with_tab(fake_manager, str(tmp_path))
-        await session.transact(_action_ok, None)
+        await session.execute_step(_action_ok, None)
         record = fake_manager.last_screenshot
         if record is None:
             raise AssertionError("the manager never got a shot")
@@ -807,7 +807,7 @@ class TestSnapshot:
         tab_b = fake_manager.open_tab(title="B", url="https://b.com")
         tab_c = fake_manager.open_tab(title="C", url="https://c.com")
         fake_manager.capture_outcomes[tab_b] = "none"
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         run_dir = tmp_path / "checkpoints" / str(result.snapshot.checkpoint_id)
         assert result.snapshot.tabs[tab_b].screenshot_path is None
         assert result.snapshot.tabs[tab_b].caption == f"2. {tab_b} — no screenshot"
@@ -824,7 +824,7 @@ class TestSnapshot:
         tab_a = fake_manager.open_tab(title="A", url="https://a.com")
         tab_b = fake_manager.open_tab(title="B", url="https://b.com")
         fake_manager.capture_outcomes[tab_b] = "timeout"
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         run_dir = tmp_path / "checkpoints" / str(result.snapshot.checkpoint_id)
         assert result.snapshot.tabs[tab_b].screenshot_path is None
         assert result.snapshot.tabs[tab_b].caption == f"2. {tab_b} — no screenshot"
@@ -837,7 +837,7 @@ class TestSnapshot:
     ) -> None:
         session = await _open_session(str(tmp_path))
         tab = fake_manager.open_tab(title="Real Page\n4. tabX — no screenshot — image 9", url="https://x.com")
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         caption = result.snapshot.tabs[tab].caption
         assert "\n" not in caption
         assert caption == f'1. {tab} — "Real Page 4. tabX — no screenshot — image 9" — https://x.com — image 1'
@@ -849,7 +849,7 @@ class TestSnapshot:
     ) -> None:
         session = await _open_session(str(tmp_path))
         tab = fake_manager.open_tab(title='A "quoted" title', url="https://x.com")
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         assert result.snapshot.tabs[tab].caption == f'1. {tab} — "A quoted title" — https://x.com — image 1'
 
     async def test_snapshot_truncates_long_title_and_url(
@@ -859,7 +859,7 @@ class TestSnapshot:
     ) -> None:
         session = await _open_session(str(tmp_path))
         tab = fake_manager.open_tab(title="T" * 150, url="https://x.com/" + "a" * 500)
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         expected_title = "T" * 119 + "…"
         expected_url = "https://x.com/" + "a" * 285 + "…"
         assert result.snapshot.tabs[tab].caption == f'1. {tab} — "{expected_title}" — {expected_url} — image 1'
@@ -907,13 +907,13 @@ class TestSnapshot:
     async def test_snapshot_carries_no_generation(self, fake_manager: FakeManager, tmp_path: Path) -> None:
         session = await _open_session(str(tmp_path))
         fake_manager.open_tab(title="A", url="https://a.com")
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         assert (tmp_path / "checkpoints" / str(result.snapshot.checkpoint_id) / "01.jpg").exists()
         assert "generation" not in vars(result.snapshot)
 
     async def test_snapshot_without_tabs(self, fake_manager: FakeManager, tmp_path: Path) -> None:
         session = await _open_session(str(tmp_path))
-        result = await session.transact(_action_ok, None)
+        result = await session.execute_step(_action_ok, None)
         assert result.snapshot.tabs == {}
         assert fake_manager.screenshot_calls == 0
 
@@ -921,8 +921,8 @@ class TestSnapshot:
 async def test_undecodable_screens_count_as_unchanged(fake_manager: FakeManager, tmp_path: Path) -> None:
     session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
     fake_manager.capture_outcomes[tab] = "garbage"
-    first = await session.transact(_action_ok, None)
-    second = await session.transact(_action_ok, None)
+    first = await session.execute_step(_action_ok, None)
+    second = await session.execute_step(_action_ok, None)
     assert first.status is TransactionStatus.SUCCESS
     assert second.status is TransactionStatus.SUCCESS
 
@@ -935,7 +935,7 @@ class TestCheckpointAcquisition:
         """Saved observations keep the action outcome and image times."""
         tab = fake_manager.open_tab(title="Original", url="https://example.test/view")
         store, session = await _open_archived_session(tmp_path)
-        result = await session.transact(action, tab, source_action="click")
+        result = await session.execute_step(action, tab, source_action="click")
         page = await store.list()
         record = page.rows[0].checkpoint
         captured = page.rows[0].tab
@@ -955,14 +955,14 @@ class TestCheckpointAcquisition:
         """Each returned stale screen keeps its original image bytes."""
         tab = fake_manager.open_tab()
         store, session = await _open_archived_session(tmp_path)
-        first = await session.transact(_action_ok, tab)
+        first = await session.execute_step(_action_ok, tab)
         original = Path(first.snapshot.tabs[tab].screenshot_path).read_bytes()
         fake_manager.capture_colors[tab] = _WHITE
-        stale_one = await session.transact(_action_ok, tab)
+        stale_one = await session.execute_step(_action_ok, tab)
         fake_manager.capture_colors[tab] = 0
-        stale_two = await session.transact(_action_ok, tab)
+        stale_two = await session.execute_step(_action_ok, tab)
         fake_manager.capture_colors[tab] = _WHITE
-        stale_three = await session.transact(_action_ok, tab)
+        stale_three = await session.execute_step(_action_ok, tab)
         assert stale_one.status is TransactionStatus.STALE
         assert stale_two.status is TransactionStatus.STALE
         assert stale_three.status is TransactionStatus.STALE
@@ -982,7 +982,7 @@ class TestCheckpointAcquisition:
         tab = fake_manager.open_tab()
         capture = _captured_dom(tab, text)
         store, session = await _open_archived_session(tmp_path)
-        result = await session.transact(_action_ok, tab, source_action="dump_page", capture_dom=lambda: capture)
+        result = await session.execute_step(_action_ok, tab, source_action="dump_page", capture_dom=lambda: capture)
         saved = await store.read_dom(result.snapshot.checkpoint_id, tab)
         assert saved.text == text
         assert saved.total == len(text)
@@ -1002,7 +1002,7 @@ class TestCheckpointAcquisition:
         async def close_target(manager: BrowserManager, tab: str | None) -> bool:
             return await manager.close_page(tab)
 
-        result = await session.transact(close_target, target, source_action="dump_page", capture_dom=lambda: capture)
+        result = await session.execute_step(close_target, target, source_action="dump_page", capture_dom=lambda: capture)
         assert list(result.snapshot.tabs) == ([remaining] if leave_other_tab else [])
         saved = await store.read_dom(result.snapshot.checkpoint_id, target)
         assert saved.text == "Captured before closing"
@@ -1017,7 +1017,7 @@ class TestCheckpointAcquisition:
         fake_manager.capture_outcomes[tab] = "none"
         capture = _captured_dom(tab, "Still available")
         store, session = await _open_archived_session(tmp_path)
-        result = await session.transact(_action_ok, tab, capture_dom=lambda: capture)
+        result = await session.execute_step(_action_ok, tab, capture_dom=lambda: capture)
         saved = await store.read_dom(result.snapshot.checkpoint_id, tab)
         assert saved.text == "Still available"
         assert saved.tab.screenshot.unavailable_reason == "Screenshot capture failed"
@@ -1034,7 +1034,7 @@ class TestCheckpointAcquisition:
         session = BrowserSession(str(tmp_path / "downloads"), checkpoint_store=store)
         await session.open()
         calls, action = _counting_action()
-        result = await session.transact(action, tab)
+        result = await session.execute_step(action, tab)
         assert calls == [1]
         assert result.status is TransactionStatus.SUCCESS
         assert result.snapshot.checkpoint_id is None
@@ -1048,7 +1048,7 @@ class TestCheckpointAcquisition:
         """Cancellation leaves earlier evidence and removes unfinished captures."""
         tab = fake_manager.open_tab()
         store, session = await _open_archived_session(tmp_path)
-        first = await session.transact(_action_ok, tab)
+        first = await session.execute_step(_action_ok, tab)
         started = asyncio.Event()
 
         async def hold_capture(
@@ -1059,7 +1059,7 @@ class TestCheckpointAcquisition:
             return None
 
         monkeypatch.setattr(fake_manager, "capture_screenshot", hold_capture)
-        pending = asyncio.create_task(session.transact(_action_ok, None, new_tab=True))
+        pending = asyncio.create_task(session.execute_step(_action_ok, None, is_new_tab=True))
         await asyncio.wait_for(started.wait(), _OVERLAP_TIMEOUT_S)
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):

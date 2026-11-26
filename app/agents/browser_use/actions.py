@@ -208,11 +208,11 @@ class _ActionTool(Tool):
         capture_dom: Callable[[], TabCapture | None] | None = None,
     ) -> ToolResult:
         """Execute one browser action through the session and prefix the local time."""
-        result = await self._session.transact(
+        result = await self._session.execute_step(
             action,
             target_id,
-            new_tab=is_new_tab,
-            monitor_download=should_monitor_download,
+            is_new_tab=is_new_tab,
+            should_monitor_download=should_monitor_download,
             source_action=self.name,
             capture_dom=capture_dom,
         )

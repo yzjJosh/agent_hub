@@ -503,24 +503,24 @@ class FakeSession:
         if self.close_error is not None:
             raise self.close_error
 
-    async def transact(
+    async def execute_step(
         self,
         action: Action,
         target_id: str | None,
         *,
-        new_tab: bool = False,
-        monitor_download: bool = False,
+        is_new_tab: bool = False,
+        should_monitor_download: bool = False,
         source_action: str = "action",
         capture_dom: Callable[[], TabCapture | None] | None = None,
     ) -> TransactionResult:
-        self.transactions.append((action, target_id, monitor_download, new_tab))
+        self.transactions.append((action, target_id, should_monitor_download, is_new_tab))
         self.source_actions.append(source_action)
         if self._manager is None:
             return self._results.pop(0)
         manager = self._manager
         tab = (target_id or "").strip()
         if not tab:
-            if new_tab:
+            if is_new_tab:
                 tab = None
             else:
                 open_tabs = manager.list_tab_ids()

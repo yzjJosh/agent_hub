@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import Literal
 
 from app.agents.research.collector import CollectEvidence, CollectionLedger
 from app.agents.research.evidence import EvidenceStore, SearchEvidence
 from app.agents.research.models import ResearchResult, Review
-from app.agents.research.references import process_references
+from app.agents.research.references import format_references
 from app.agents.research.researcher import run_researcher
 from app.agents.research.reviewer import run_reviewer
 from app.tools.read_media_or_doc import read_media_or_doc_tool
@@ -71,7 +72,7 @@ async def _run_pipeline(
     previous_draft: str | None = None
     draft: str | None = None
     review: Review | None = None
-    status: str = "max_iterations"
+    status: Literal["complete", "max_iterations"] = "max_iterations"
 
     for iteration in range(1, max_iterations + 1):
         draft = await run_researcher(
@@ -90,7 +91,7 @@ async def _run_pipeline(
             break
         previous_draft = draft
 
-    final_report = await process_references(draft or "", ledger.registry)
+    final_report = await format_references(draft or "", ledger.registry)
     return ResearchResult(
         report=final_report,
         status=status,
