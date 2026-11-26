@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from app.agents.browser_use.checkpoint_store import CaptureInterval, CheckpointStore, DomCapture, TabCapture
 from app.agents.browser_use.models import TransactionResult, TransactionStatus
@@ -18,8 +19,22 @@ _QUARTER_RATIO = 0.25
 _TENTH_RATIO = 0.1
 _FIFTH_RATIO = 0.2
 _HALF_RATIO = 0.5
+_THREE_QUARTER_RATIO = 0.75
 _THREE_TENTH_RATIO = 0.3
 _WHITE = 255
+_MID_GRAY = 128
+_DARK_PIXEL_LIMIT = 40
+_BRIGHT_PIXEL_FLOOR = 215
+_VIVID_RED_FLOOR = 200
+_VIVID_GREEN_LIMIT = 60
+_VIVID_BLUE_LIMIT = 100
+_CURSOR_TIP_MARGIN = 4
+_CURSOR_TIP_REACH = 24
+_TOP_LEFT_BOX_WIDTH = 20
+_TOP_LEFT_BOX_HEIGHT = 28
+_BOTTOM_RIGHT_BOX_START = 252
+_CANVAS_EDGE = 255
+_CANVAS_SIZE = 256
 _SMALL_CHANGE_RATIO = 0.125
 _LARGE_CHANGE_RATIO = 0.5
 _THREE_TABS = 3
@@ -195,6 +210,12 @@ class TestActionForwarding:
                 lambda f: f.last_click,
                 ("tab1", _QUARTER_RATIO, _HALF_RATIO),
                 id="click",
+            ),
+            pytest.param(
+                lambda f: lambda m, tab: m.move_mouse_to_relative("tab1", _QUARTER_RATIO, _HALF_RATIO, verbose=True),
+                lambda f: f.last_move_mouse,
+                ("tab1", _QUARTER_RATIO, _HALF_RATIO, True),
+                id="move_mouse",
             ),
             pytest.param(
                 lambda f: lambda m, tab: m.type_text_at_relative("tab1", _TENTH_RATIO, _FIFTH_RATIO, "hello"),
@@ -1080,3 +1101,214 @@ async def _open_archived_session(directory: Path) -> tuple[CheckpointStore, Brow
     session = BrowserSession(str(directory), checkpoint_store=store)
     await session.open()
     return store, session
+
+
+def _read_rgb_screenshot(path: str | None) -> Image.Image:
+    """Open a saved screenshot as an RGB image."""
+    if path is None:
+        raise AssertionError("expected screenshot path")
+    with Image.open(path) as opened:
+        return opened.convert("RGB")
+
+
+def _list_rgb_pixels(image: Image.Image) -> list[tuple[int, int, int]]:
+    """Return every RGB pixel in an image, row by row."""
+    return [
+        image.getpixel((x, y))
+        for y in range(image.height)
+        for x in range(image.width)
+    ]
+
+
+def _list_pixels_near_cursor_tip(image: Image.Image, tip_x: int, tip_y: int) -> list[tuple[int, int, int]]:
+    """Collect RGB pixels in the box around an arrow tip."""
+    left = max(0, tip_x - _CURSOR_TIP_MARGIN)
+    top = max(0, tip_y - _CURSOR_TIP_MARGIN)
+    right = min(image.width, tip_x + _CURSOR_TIP_REACH)
+    bottom = min(image.height, tip_y + _CURSOR_TIP_REACH)
+    return _list_rgb_pixels(image.crop((left, top, right, bottom)))
+
+
+class TestMouseCursorOverlay:
+    """Tests for drawing the mouse pointer arrow onto tab screenshots."""
+
+    async def test_tab_without_mouse_activity_saves_unmodified_screenshot(
+        self, fake_manager: FakeManager, tmp_path: Path
+    ) -> None:
+        """Before any mouse move or click, the saved screenshot has no cursor overlay."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_colors[tab] = _MID_GRAY
+
+        result = await session.execute_step(_action_ok, tab)
+
+        image = _read_rgb_screenshot(result.snapshot.tabs[tab].screenshot_path)
+        assert image.size == (_CANVAS_SIZE, _CANVAS_SIZE)
+        assert set(_list_rgb_pixels(image)) == {(_MID_GRAY, _MID_GRAY, _MID_GRAY)}
+
+    @pytest.mark.parametrize(
+        "background",
+        [pytest.param(0, id="dark_background"), pytest.param(_WHITE, id="light_background")],
+    )
+    async def test_mouse_move_draws_high_contrast_arrow_at_hotspot(
+        self, fake_manager: FakeManager, tmp_path: Path, background: int
+    ) -> None:
+        """Moving the mouse draws red fill with dark and bright border pixels near the spot."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_colors[tab] = background
+        center_spot = round(_HALF_RATIO * _CANVAS_SIZE)
+
+        result = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(target, _HALF_RATIO, _HALF_RATIO),
+            tab,
+        )
+
+        image = _read_rgb_screenshot(result.snapshot.tabs[tab].screenshot_path)
+        background_rgb = (background, background, background)
+        assert image.getpixel((0, 0)) == background_rgb
+        assert image.getpixel((_CANVAS_EDGE, 0)) == background_rgb
+        assert image.getpixel((0, _CANVAS_EDGE)) == background_rgb
+        assert image.getpixel((_CANVAS_EDGE, _CANVAS_EDGE)) == background_rgb
+
+        center_pixels = _list_pixels_near_cursor_tip(image, center_spot, center_spot)
+        assert any(pixel != background_rgb for pixel in center_pixels)
+        assert any(
+            red > _VIVID_RED_FLOOR and green < _VIVID_GREEN_LIMIT and blue < _VIVID_BLUE_LIMIT
+            for red, green, blue in center_pixels
+        )
+        assert any(
+            red < _DARK_PIXEL_LIMIT and green < _DARK_PIXEL_LIMIT and blue < _DARK_PIXEL_LIMIT
+            for red, green, blue in center_pixels
+        )
+        assert any(
+            red > _BRIGHT_PIXEL_FLOOR and green > _BRIGHT_PIXEL_FLOOR and blue > _BRIGHT_PIXEL_FLOOR
+            for red, green, blue in center_pixels
+        )
+
+    async def test_moving_mouse_relocates_arrow_on_next_step(
+        self, fake_manager: FakeManager, tmp_path: Path
+    ) -> None:
+        """Moving the mouse to a new spot moves the drawn arrow on the next screenshot."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_colors[tab] = _MID_GRAY
+        background_rgb = (_MID_GRAY, _MID_GRAY, _MID_GRAY)
+        first_spot = round(_QUARTER_RATIO * _CANVAS_SIZE)
+        second_spot = round(_THREE_QUARTER_RATIO * _CANVAS_SIZE)
+
+        first = await session.execute_step(
+            lambda manager, target: manager.click_at_relative(target, _QUARTER_RATIO, _QUARTER_RATIO),
+            tab,
+        )
+        first_image = _read_rgb_screenshot(first.snapshot.tabs[tab].screenshot_path)
+        assert any(pixel != background_rgb for pixel in _list_pixels_near_cursor_tip(first_image, first_spot, first_spot))
+        assert set(_list_pixels_near_cursor_tip(first_image, second_spot, second_spot)) == {background_rgb}
+
+        second = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(
+                target, _THREE_QUARTER_RATIO, _THREE_QUARTER_RATIO
+            ),
+            tab,
+        )
+        second_image = _read_rgb_screenshot(second.snapshot.tabs[tab].screenshot_path)
+        assert set(_list_pixels_near_cursor_tip(second_image, first_spot, first_spot)) == {background_rgb}
+        assert any(pixel != background_rgb for pixel in _list_pixels_near_cursor_tip(second_image, second_spot, second_spot))
+
+    @pytest.mark.parametrize(
+        ("x_ratio", "y_ratio", "cursor_box", "untouched_pixel"),
+        [
+            pytest.param(
+                0.0,
+                0.0,
+                (0, 0, _TOP_LEFT_BOX_WIDTH, _TOP_LEFT_BOX_HEIGHT),
+                (_CANVAS_EDGE, _CANVAS_EDGE),
+                id="top_left",
+            ),
+            pytest.param(
+                1.0,
+                1.0,
+                (_BOTTOM_RIGHT_BOX_START, _BOTTOM_RIGHT_BOX_START, _CANVAS_SIZE, _CANVAS_SIZE),
+                (0, 0),
+                id="bottom_right",
+            ),
+        ],
+    )
+    async def test_extreme_boundary_positions_clip_cleanly(
+        self,
+        fake_manager: FakeManager,
+        tmp_path: Path,
+        x_ratio: float,
+        y_ratio: float,
+        cursor_box: tuple[int, int, int, int],
+        untouched_pixel: tuple[int, int],
+    ) -> None:
+        """Corner mouse positions clip cleanly without changing screenshot dimensions."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_colors[tab] = _MID_GRAY
+        background_rgb = (_MID_GRAY, _MID_GRAY, _MID_GRAY)
+
+        result = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(target, x_ratio, y_ratio),
+            tab,
+        )
+
+        assert result.status is TransactionStatus.SUCCESS
+        image = _read_rgb_screenshot(result.snapshot.tabs[tab].screenshot_path)
+        assert image.size == (_CANVAS_SIZE, _CANVAS_SIZE)
+        assert image.getpixel(untouched_pixel) == background_rgb
+        assert any(pixel != background_rgb for pixel in _list_rgb_pixels(image.crop(cursor_box)))
+
+    async def test_multiple_tabs_keep_independent_cursor_overlays(
+        self, fake_manager: FakeManager, tmp_path: Path
+    ) -> None:
+        """Moving the mouse in one tab draws no cursor on an untouched second tab."""
+        session = await _open_session(str(tmp_path))
+        tab_a = fake_manager.open_tab(title="First", url="https://first.example")
+        tab_b = fake_manager.open_tab(title="Second", url="https://second.example")
+        fake_manager.capture_colors[tab_a] = _MID_GRAY
+        fake_manager.capture_colors[tab_b] = _MID_GRAY
+        background_rgb = (_MID_GRAY, _MID_GRAY, _MID_GRAY)
+        center_spot = round(_HALF_RATIO * _CANVAS_SIZE)
+
+        result = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(target, _HALF_RATIO, _HALF_RATIO),
+            tab_a,
+        )
+
+        assert result.status is TransactionStatus.SUCCESS
+        image_a = _read_rgb_screenshot(result.snapshot.tabs[tab_a].screenshot_path)
+        image_b = _read_rgb_screenshot(result.snapshot.tabs[tab_b].screenshot_path)
+        assert any(pixel != background_rgb for pixel in _list_pixels_near_cursor_tip(image_a, center_spot, center_spot))
+        assert set(_list_rgb_pixels(image_b)) == {background_rgb}
+
+    async def test_corrupt_screenshot_keeps_saved_file_when_cursor_draw_fails(
+        self, fake_manager: FakeManager, tmp_path: Path
+    ) -> None:
+        """Unreadable screenshot bytes do not fail the step when a mouse spot exists."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_outcomes[tab] = "garbage"
+
+        result = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(target, _HALF_RATIO, _HALF_RATIO),
+            tab,
+        )
+
+        assert result.status is TransactionStatus.SUCCESS
+        tab_snapshot = result.snapshot.tabs[tab]
+        assert tab_snapshot.screenshot_error == ""
+        screenshot_path = tab_snapshot.screenshot_path or ""
+        assert screenshot_path.endswith("01.jpg")
+        assert Path(screenshot_path).read_bytes() == b"jpg"
+
+    async def test_stale_guard_admits_follow_up_action_after_mouse_move(
+        self, fake_manager: FakeManager, tmp_path: Path
+    ) -> None:
+        """The stale screen guard admits the next action when the page stays unchanged."""
+        session, tab = await _open_session_with_tab(fake_manager, str(tmp_path))
+        fake_manager.capture_colors[tab] = _WHITE
+
+        first = await session.execute_step(
+            lambda manager, target: manager.move_mouse_to_relative(target, _HALF_RATIO, _HALF_RATIO),
+            tab,
+        )
+        assert first.status is TransactionStatus.SUCCESS
+
+        await _transact_admitted(session, tab)

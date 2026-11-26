@@ -65,6 +65,8 @@ class FakeManager:
         self.cleanup_calls: int = 0
         self.creates: int = 0
         self.downloads_dir: str | None = None
+        self.mouse_positions: dict[str, tuple[float, float]] = {}
+        self.last_move_mouse: tuple[str, float, float, bool] | None = None
         self.last_click: tuple[str, float, float] | None = None
         self.last_type_text: tuple[str, float, float, str] | None = None
         self.last_replace_input_text: tuple[str, float, float, str, str] | None = None
@@ -93,22 +95,42 @@ class FakeManager:
         """Give back the ids of the open tabs."""
         return list(self.pages)
 
+    def get_mouse_position_relative(self, target_id: str) -> tuple[float, float] | None:
+        """Give back the latest mouse spot for an open tab."""
+        if target_id not in self.pages:
+            return None
+        return self.mouse_positions.get(target_id)
+
+    def _record_mouse_position(self, target_id: str, x: float, y: float) -> None:
+        """Save the latest mouse spot for a tab, clamped from 0 to 1."""
+        self.mouse_positions[target_id] = (max(0.0, min(1.0, x)), max(0.0, min(1.0, y)))
+
+    async def move_mouse_to_relative(self, target_id: str, x: float, y: float, verbose: bool = False) -> bool:
+        if target_id not in self.pages or not (0.0 <= x <= 1.0) or not (0.0 <= y <= 1.0):
+            return False
+        self.last_move_mouse = (target_id, x, y, verbose)
+        self._record_mouse_position(target_id, x, y)
+        return True
+
     async def click_at_relative(self, target_id: str, x: float, y: float) -> bool:
         if target_id not in self.pages:
             return False
         self.last_click = (target_id, x, y)
+        self._record_mouse_position(target_id, x, y)
         return True
 
     async def type_text_at_relative(self, target_id: str, x: float, y: float, text: str) -> bool:
         if target_id not in self.pages:
             return False
         self.last_type_text = (target_id, x, y, text)
+        self._record_mouse_position(target_id, x, y)
         return True
 
     async def replace_input_text_at_relative(self, target_id: str, x: float, y: float, old_text: str, new_text: str) -> bool:
         if target_id not in self.pages:
             return False
         self.last_replace_input_text = (target_id, x, y, old_text, new_text)
+        self._record_mouse_position(target_id, x, y)
         return True
 
     async def scroll_by_relative(self, target_id: str, dx: float, dy: float) -> bool:
@@ -140,6 +162,7 @@ class FakeManager:
             return False
         self.last_close_page = target_id
         self.pages.pop(target_id, None)
+        self.mouse_positions.pop(target_id, None)
         return True
 
     async def solve_captcha(self, target_id: str, max_steps: int) -> bool:

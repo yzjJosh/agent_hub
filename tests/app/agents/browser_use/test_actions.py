@@ -429,6 +429,15 @@ class TestActionTools:
         assert "Give it with y" in anchor_x.description
         assert "Give it with x" in anchor_y.description
 
+    async def test_move_mouse_and_click_docs_name_pointer_aiming_before_click(self) -> None:
+        session = FakeSession([])
+        tools = _build_tools(session)
+        move_mouse = find_tool("move_mouse", tools)
+        click = find_tool("click", tools)
+        assert "hover over a control and reveal a tooltip or a menu" in move_mouse.description
+        assert "aim and adjust coordinates until the pointer tip sits inside a target before calling click" in move_mouse.description
+        assert "at the exact x and y coordinates where move_mouse just confirmed the pointer tip sits inside the target" in click.description
+
     @pytest.mark.parametrize("name", _NON_POSITION_PARAMS_BY_TOOL)
     @pytest.mark.parametrize(
         "position_x,position_y,fraction_x,fraction_y",

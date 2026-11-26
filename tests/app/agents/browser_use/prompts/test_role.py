@@ -149,6 +149,36 @@ class TestBuildRolePrompt:
         assert "Do not repeat an executed action to repair" in prompt
         assert "never silently dropped to fit the provider context limit" in prompt
 
+    def test_prompt_describes_the_mouse_pointer_arrow_on_screenshots(self) -> None:
+        prompt = build_role_prompt((StubTool(),))
+        assert "shows the mouse pointer as a red arrow with black and white borders pointing up and to the left." in prompt
+        assert "Only the sharp top-left tip of the red arrow is the exact mouse spot" in prompt
+        assert "the entire arrow body and tail extend down and to the right from that tip." in prompt
+        assert (
+            "if any part of the red arrow sticks up above a control's top border, "
+            "the tip is still above that control"
+        ) in prompt
+        assert (
+            "while the lower-right body and tail may naturally hang past the control's bottom or right border."
+        ) in prompt
+
+    def test_prompt_instructs_aiming_and_post_click_verification_with_arrow_tip(self) -> None:
+        prompt = build_role_prompt((StubTool(),))
+        assert "Before calling click, always call move_mouse first to aim at the target control" in prompt
+        assert "No part of the red arrow may stick up above the control's top border" in prompt
+        assert "sits inside all four borders of the control." in prompt
+        assert "placeholder text inside an input box, place the sharp top-left tip on that text" in prompt
+        assert "Trust where the drawn arrow sits relative to the control in the screenshot" in prompt
+        assert "If any part of the red arrow sticks up above the control's top border, increase y and call move_mouse again." in prompt
+        assert "Repeat move_mouse and check each new screenshot until the sharp top-left tip clearly sits inside the control." in prompt
+        assert "Never call click with new or adjusted coordinates that you have not first verified with move_mouse." in prompt
+        assert "Once move_mouse shows the sharp top-left tip inside the control, call click with those exact same x and y coordinates." in prompt
+        assert "Because click reports success even when empty page space was clicked" in prompt
+        assert "Clicking empty space outside a control does not click that control." in prompt
+        assert "confirm the box gained a focus outline or text cursor." in prompt
+        assert "the click succeeded even when the lower-right body and tail hang past the bottom or right border, so do not click again." in prompt
+        assert "aim again with move_mouse until the tip sits inside before calling click again." in prompt
+
 
 class TestRoleOutputJsonSchema:
     def test_schema_matches_role_output_contract(self) -> None:

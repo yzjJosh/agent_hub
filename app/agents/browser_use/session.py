@@ -10,9 +10,11 @@ import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import lru_cache
 from uuid import uuid4
 
 import aiofiles
+from PIL import Image, ImageDraw
 
 from app.agents.browser_use.checkpoint_store import (
     Artifact,
@@ -40,6 +42,27 @@ _CONTROL_CHARACTERS_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _SPACE_RUN_PATTERN = re.compile(r"\s+")
 _CHECKPOINT_UNAVAILABLE_MESSAGE = (
     "Checkpoint unavailable, do not repeat an executed action to repair the archive."
+)
+_CURSOR_DRAW_SCALE = 4
+_CURSOR_IMAGE_WIDTH = 20
+_CURSOR_IMAGE_HEIGHT = 26
+_CURSOR_TIP_OFFSET = 3
+_CURSOR_OUTER_BORDER_WIDTH = 20
+_CURSOR_INNER_BORDER_WIDTH = 10
+_CURSOR_OUTER_BORDER_COLOR = (255, 255, 255, 255)
+_CURSOR_INNER_BORDER_COLOR = (0, 0, 0, 255)
+_CURSOR_FILL_COLOR = (255, 20, 60, 255)
+_CURSOR_TRANSPARENT = (0, 0, 0, 0)
+_CURSOR_JPEG_QUALITY = 92
+_CURSOR_JPEG_SUBSAMPLING = 0
+_CURSOR_ARROW_VERTICES: tuple[tuple[float, float], ...] = (
+    (0.0, 0.0),
+    (0.0, 17.0),
+    (4.2, 12.8),
+    (7.2, 19.5),
+    (9.8, 18.3),
+    (6.8, 11.6),
+    (12.2, 12.2),
 )
 
 
@@ -124,6 +147,86 @@ def _remove_file_if_present_sync(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+@lru_cache(maxsize=1)
+def _build_cursor_arrow_image() -> Image.Image:
+    """Build a red mouse arrow image with black and white borders."""
+    canvas_width = _CURSOR_IMAGE_WIDTH * _CURSOR_DRAW_SCALE
+    canvas_height = _CURSOR_IMAGE_HEIGHT * _CURSOR_DRAW_SCALE
+    arrow_image = Image.new("RGBA", (canvas_width, canvas_height), _CURSOR_TRANSPARENT)
+    draw = ImageDraw.Draw(arrow_image)
+    points = [
+        (
+            (vertex_x + _CURSOR_TIP_OFFSET) * _CURSOR_DRAW_SCALE,
+            (vertex_y + _CURSOR_TIP_OFFSET) * _CURSOR_DRAW_SCALE,
+        )
+        for vertex_x, vertex_y in _CURSOR_ARROW_VERTICES
+    ]
+    closed_points = [*points, points[0]]
+    draw.line(
+        closed_points,
+        fill=_CURSOR_OUTER_BORDER_COLOR,
+        width=_CURSOR_OUTER_BORDER_WIDTH,
+        joint="curve",
+    )
+    draw.line(
+        closed_points,
+        fill=_CURSOR_INNER_BORDER_COLOR,
+        width=_CURSOR_INNER_BORDER_WIDTH,
+        joint="curve",
+    )
+    draw.polygon(points, fill=_CURSOR_FILL_COLOR)
+    return arrow_image.resize((_CURSOR_IMAGE_WIDTH, _CURSOR_IMAGE_HEIGHT), Image.Resampling.LANCZOS)
+
+
+def _paste_cursor_onto_canvas(canvas: Image.Image, mouse_position: tuple[float, float]) -> None:
+    """Draw the mouse arrow onto an image at the given relative window spot."""
+    width, height = canvas.size
+    if width <= 0 or height <= 0:
+        return
+    x_ratio, y_ratio = mouse_position
+    tip_x = max(0, min(width - 1, round(max(0.0, min(1.0, x_ratio)) * width)))
+    tip_y = max(0, min(height - 1, round(max(0.0, min(1.0, y_ratio)) * height)))
+    arrow_image = _build_cursor_arrow_image()
+    paste_x = tip_x - _CURSOR_TIP_OFFSET
+    paste_y = tip_y - _CURSOR_TIP_OFFSET
+    left = max(0, paste_x)
+    top = max(0, paste_y)
+    right = min(width, paste_x + arrow_image.width)
+    bottom = min(height, paste_y + arrow_image.height)
+    if left >= right or top >= bottom:
+        return
+    arrow_crop_box = (left - paste_x, top - paste_y, right - paste_x, bottom - paste_y)
+    combined_region = Image.alpha_composite(
+        canvas.crop((left, top, right, bottom)),
+        arrow_image.crop(arrow_crop_box),
+    )
+    canvas.paste(combined_region, (left, top))
+
+
+def _draw_mouse_cursor_sync(path: str, mouse_position: tuple[float, float]) -> None:
+    """Draw the mouse arrow onto a saved screenshot file."""
+    try:
+        with Image.open(path) as opened:
+            image_format = opened.format or "JPEG"
+            width, height = opened.size
+            if width <= 0 or height <= 0:
+                return
+            canvas = opened.convert("RGBA")
+        _paste_cursor_onto_canvas(canvas, mouse_position)
+        rgb_image = canvas.convert("RGB")
+        if image_format == "JPEG":
+            rgb_image.save(
+                path,
+                format=image_format,
+                quality=_CURSOR_JPEG_QUALITY,
+                subsampling=_CURSOR_JPEG_SUBSAMPLING,
+            )
+        else:
+            rgb_image.save(path, format=image_format)
+    except (OSError, ValueError) as error:
+        _log_error("_draw_mouse_cursor_sync", f"cursor draw failed for {path}, {error}")
 
 
 class BrowserSession:
@@ -574,9 +677,9 @@ class BrowserSession:
         target_id: str,
         screenshot_path: str,
     ) -> str | None:
-        """Capture one viewport screenshot and wait for the page to settle."""
+        """Capture one viewport screenshot and draw the mouse pointer when present."""
         try:
-            return await manager.capture_screenshot(
+            saved_path = await manager.capture_screenshot(
                 target_id,
                 screenshot_path,
                 full_page=False,
@@ -590,6 +693,12 @@ class BrowserSession:
                 should_include_traceback=True,
             )
             return None
+        if saved_path is None:
+            return None
+        mouse_position = manager.get_mouse_position_relative(target_id)
+        if mouse_position is not None:
+            await asyncio.to_thread(_draw_mouse_cursor_sync, saved_path, mouse_position)
+        return saved_path
 
     def _format_tab_caption(
         self,

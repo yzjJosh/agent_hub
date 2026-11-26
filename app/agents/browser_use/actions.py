@@ -293,7 +293,8 @@ class _OpenUrlTool(_ActionTool):
 class _ClickTool(_ActionTool):
     name: ClassVar[str] = "click"
     description: ClassVar[str] = (
-        "Click a point on a tab's screen. Use to press buttons, links, and other controls."
+        "Click a point on a tab's screen. Use to press buttons, links, and other controls "
+        "at the exact x and y coordinates where move_mouse just confirmed the pointer tip sits inside the target."
     )
     summary: ClassVar[str] = "Click a point on a tab's screen"
     params: ClassVar[tuple[Param, ...]] = (*_COORDINATE_PARAMS, _TARGET_ID_PARAM)
@@ -347,7 +348,8 @@ class _MoveMouseTool(_ActionTool):
     name: ClassVar[str] = "move_mouse"
     description: ClassVar[str] = (
         "Move the mouse to a point on a tab's screen without clicking. "
-        "Use to hover over a control and reveal a tooltip or a menu."
+        "Use to hover over a control and reveal a tooltip or a menu, "
+        "or to aim and adjust coordinates until the pointer tip sits inside a target before calling click."
     )
     summary: ClassVar[str] = "Move the mouse to a point on a tab's screen"
     params: ClassVar[tuple[Param, ...]] = (*_COORDINATE_PARAMS, _TARGET_ID_PARAM)

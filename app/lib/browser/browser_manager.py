@@ -143,11 +143,11 @@ class Viewport:
 
 @dataclass
 class _PageState:
-    """Per-tab session, identifier, and cached clamp viewport."""
-
+    """Tab session, identifier, cached window size, and mouse spot."""
     session: CDPSession | None
     guid: str
     clamp_viewport: Viewport | None = None
+    mouse_ratio: tuple[float, float] | None = None
 
 
 def _install_mouse_viewport_clamp() -> None:
@@ -515,6 +515,9 @@ class BrowserManager:
             print(f"[BrowserManager.set_viewport_size] {width}x{height}", flush=True)
         try:
             await page.set_viewport_size({"width": width, "height": height})
+            state = self._get_page_state(target_id)
+            if state is not None:
+                state.clamp_viewport = None
             return True
         except Exception as exc:
             print(f"[BrowserManager.set_viewport_size] Error: {exc}", file=sys.stderr)
@@ -572,7 +575,7 @@ class BrowserManager:
         except Exception as exc:
             print(f"[BrowserManager.get_page_viewport] window size read failed: {exc}", file=sys.stderr)
             window_width, window_height = 0.0, 0.0
-        return Viewport(
+        viewport = Viewport(
             client_width=view["clientWidth"],
             client_height=view["clientHeight"],
             page_x=view["pageX"],
@@ -582,6 +585,15 @@ class BrowserManager:
             window_width=window_width,
             window_height=window_height,
         )
+        state = self._get_page_state(target_id)
+        if state is not None:
+            state.clamp_viewport = viewport
+        return viewport
+
+    def _get_page_state(self, target_id: str) -> _PageState | None:
+        """Return the tracked state for a tab, or None when missing."""
+        page = self._pages.get(target_id)
+        return self._page_states.get(page) if page is not None else None
 
     def _get_page_session(self, page: Page) -> CDPSession | None:
         """Return the attached session for a tracked page."""
@@ -590,10 +602,7 @@ class BrowserManager:
 
     async def _get_clamp_viewport(self, target_id: str) -> Viewport | None:
         """Read and cache the window size used by the mouse clamp for one tab."""
-        page = self._pages.get(target_id)
-        if page is None:
-            return None
-        state: _PageState | None = self._page_states.get(page)
+        state = self._get_page_state(target_id)
         if state is None:
             return None
         viewport = state.clamp_viewport
@@ -687,6 +696,7 @@ class BrowserManager:
                     flush=True,
                 )
             await page.mouse.move(clamped_x, clamped_y)
+            self._record_mouse_position(target_id, clamped_x, clamped_y, viewport)
             if verbose:
                 print("[BrowserManager.move_mouse_to] Success", flush=True)
             return True
@@ -728,6 +738,36 @@ class BrowserManager:
             print(f"[BrowserManager.move_mouse_to_relative] Error: {exc}", file=sys.stderr)
             return False
 
+    def get_mouse_position_relative(self, target_id: str) -> tuple[float, float] | None:
+        """Return the last mouse spot in a tab as a fraction of the window.
+
+        Args:
+            target_id: The tab to read.
+
+        Returns:
+            How far across and down from 0 to 1, or None when unknown or unmoved.
+        """
+        state = self._get_page_state(target_id)
+        return state.mouse_ratio if state is not None else None
+
+    def _record_mouse_position(
+        self, target_id: str, viewport_x: float, viewport_y: float, viewport: Viewport
+    ) -> None:
+        """Save the latest mouse spot in a tab as a window fraction."""
+        width = viewport.usable_width
+        height = viewport.usable_height
+        if width <= 0 or height <= 0:
+            return
+        state = self._get_page_state(target_id)
+        if state is None:
+            return
+        clamped_x = _clamp_to_window_axis(viewport_x, width)
+        clamped_y = _clamp_to_window_axis(viewport_y, height)
+        state.mouse_ratio = (
+            max(0.0, min(1.0, clamped_x / width)),
+            max(0.0, min(1.0, clamped_y / height)),
+        )
+
     async def click_at(self, target_id: str, x: float, y: float, verbose: bool = False) -> bool:
         """Click a spot on the page.
 
@@ -763,6 +803,7 @@ class BrowserManager:
             if verbose:
                 print(f"[BrowserManager.click_at] Clicking viewport ({viewport_x}, {viewport_y})", flush=True)
             await page.mouse.click(viewport_x, viewport_y)
+            self._record_mouse_position(target_id, viewport_x, viewport_y, viewport)
             if verbose:
                 print("[BrowserManager.click_at] Success", flush=True)
             return True
@@ -1730,6 +1771,11 @@ class BrowserManager:
         return False
 
 
+def _clamp_to_window_axis(coordinate: float, axis_size: float) -> float:
+    """Pull one coordinate inside a positive window dimension."""
+    return max(0, min(coordinate, axis_size - 1))
+
+
 async def _clamp_mouse_params(manager: BrowserManager, target_id: str, params: dict) -> None:
     """Pull mouse coordinates back inside the window bounds."""
     viewport = await manager._get_clamp_viewport(target_id)
@@ -1738,9 +1784,11 @@ async def _clamp_mouse_params(manager: BrowserManager, target_id: str, params: d
     width = viewport.usable_width
     height = viewport.usable_height
     if "x" in params and width > 0:
-        params["x"] = max(0, min(params["x"], width - 1))
+        params["x"] = _clamp_to_window_axis(params["x"], width)
     if "y" in params and height > 0:
-        params["y"] = max(0, min(params["y"], height - 1))
+        params["y"] = _clamp_to_window_axis(params["y"], height)
+    if "x" in params and "y" in params:
+        manager._record_mouse_position(target_id, float(params["x"]), float(params["y"]), viewport)
 
 
 async def _await_page_call[T](call: Awaitable[T], name: str, timeout: float = _PAGE_CALL_TIMEOUT_S) -> T:

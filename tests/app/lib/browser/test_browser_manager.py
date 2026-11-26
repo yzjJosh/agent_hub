@@ -4342,3 +4342,178 @@ class TestScrollTimeouts:
             await task
         assert cancelled.is_set()
         page.mouse.wheel.assert_awaited_once()
+
+
+_QUARTER_WINDOW_RATIO = 0.25
+
+
+def _wire_mouse_to_channel(page: AsyncMock) -> SimpleNamespace:
+    """Route a fake page's mouse moves and clicks through the installed channel hook."""
+    channel = _fake_channel(page)
+
+    async def _move(x: float, y: float) -> dict:
+        return await bm_module.Channel.send(channel, "mouseMove", None, {"x": x, "y": y})
+
+    async def _click(x: float, y: float) -> dict:
+        return await bm_module.Channel.send(channel, "mouseClick", None, {"x": x, "y": y})
+
+    page.mouse.move = AsyncMock(side_effect=_move)
+    page.mouse.click = AsyncMock(side_effect=_click)
+    return channel
+
+
+class TestBrowserManagerMousePosition:
+    """Tests for tracking each tab's current mouse spot as a window fraction."""
+
+    async def test_unknown_and_unmoved_tabs_return_none(self: Self) -> None:
+        """Unknown tabs and freshly opened tabs have no recorded mouse spot."""
+        mgr, _, tab = await _make_manager()
+
+        assert mgr.get_mouse_position_relative("nonexistent") is None
+        assert mgr.get_mouse_position_relative(tab) is None
+
+    async def test_move_mouse_to_and_relative_update_position_with_clamping(self: Self) -> None:
+        """Moving the mouse updates the tab's relative spot and clamps inside the window."""
+        mgr, _, tab = await _make_manager()
+
+        assert await mgr.move_mouse_to(tab, _HALF_VIEWPORT_WIDTH, _HALF_VIEWPORT_HEIGHT) is True
+        assert mgr.get_mouse_position_relative(tab) == (_CENTER_RATIO, _CENTER_RATIO)
+
+        assert await mgr.move_mouse_to(tab, -_HALF_VIEWPORT_WIDTH, _BEYOND_VIEWPORT_Y) is True
+        assert mgr.get_mouse_position_relative(tab) == (0.0, (_VIEWPORT_HEIGHT - 1) / _VIEWPORT_HEIGHT)
+
+        assert await mgr.move_mouse_to_relative(tab, _QUARTER_WINDOW_RATIO, _THREE_QUARTER_RATIO) is True
+        assert mgr.get_mouse_position_relative(tab) == (_QUARTER_WINDOW_RATIO, _THREE_QUARTER_RATIO)
+
+    async def test_repeated_edge_moves_and_clicks_stay_consistent_with_channel_clamp(
+        self, tmp_path: Path
+    ) -> None:
+        """Repeated edge moves and clicks over a live channel keep the clamped window spot."""
+        page = _fake_page()
+        _wire_mouse_to_channel(page)
+        mgr = await _clamped_manager(tmp_path, page, _layout_session())
+        try:
+            tab = await mgr.open_page()
+            expected_edge_spot = (
+                (_VIEWPORT_WIDTH - 1) / _VIEWPORT_WIDTH,
+                (_VIEWPORT_HEIGHT - 1) / _VIEWPORT_HEIGHT,
+            )
+
+            assert await mgr.move_mouse_to_relative(tab, 1.0, 1.0) is True
+            assert mgr.get_mouse_position_relative(tab) == expected_edge_spot
+            assert await mgr.move_mouse_to_relative(tab, 1.0, 1.0) is True
+            assert mgr.get_mouse_position_relative(tab) == expected_edge_spot
+
+            assert await mgr.click_at_relative(tab, 1.0, 1.0) is True
+            assert mgr.get_mouse_position_relative(tab) == expected_edge_spot
+            assert await mgr.click_at_relative(tab, 1.0, 1.0) is True
+            assert mgr.get_mouse_position_relative(tab) == expected_edge_spot
+        finally:
+            await mgr.cleanup()
+
+    async def test_viewport_resize_refreshes_mouse_position_window_dimensions(
+        self, tmp_path: Path
+    ) -> None:
+        """Resizing the window refreshes the dimensions used to record mouse spots."""
+        page = _fake_page()
+        window_size = [_VIEWPORT_WIDTH, _VIEWPORT_HEIGHT]
+        page.evaluate = AsyncMock(side_effect=lambda _script: list(window_size))
+        channel = _wire_mouse_to_channel(page)
+        session = MagicMock()
+
+        async def _send(method: str, _params: Optional[dict] = None) -> dict:
+            if method == "Page.getLayoutMetrics":
+                return {
+                    "cssVisualViewport": {
+                        "clientWidth": window_size[0],
+                        "clientHeight": window_size[1],
+                        "pageX": 0.0,
+                        "pageY": 0.0,
+                    },
+                    "cssContentSize": {"width": window_size[0], "height": window_size[1]},
+                }
+            return {}
+
+        session.send = AsyncMock(side_effect=_send)
+        session.detach = AsyncMock()
+        mgr = await _clamped_manager(tmp_path, page, session)
+        try:
+            tab = await mgr.open_page()
+            await _send_mouse_event(page, "mouseMove")
+            assert mgr.get_mouse_position_relative(tab) == (
+                (_VIEWPORT_WIDTH - 1) / _VIEWPORT_WIDTH,
+                (_VIEWPORT_HEIGHT - 1) / _VIEWPORT_HEIGHT,
+            )
+
+            window_size[:] = [_SET_VIEWPORT_WIDTH, _SET_VIEWPORT_HEIGHT]
+            assert await mgr.set_viewport_size(tab, _SET_VIEWPORT_WIDTH, _SET_VIEWPORT_HEIGHT) is True
+            await bm_module.Channel.send(
+                channel,
+                "mouseMove",
+                None,
+                {"x": _SET_VIEWPORT_WIDTH * _CENTER_RATIO, "y": _SET_VIEWPORT_HEIGHT * _CENTER_RATIO},
+            )
+            assert mgr.get_mouse_position_relative(tab) == (_CENTER_RATIO, _CENTER_RATIO)
+
+            window_size[:] = [_MOUSE_TEST_WIDTH, _MOUSE_TEST_HEIGHT]
+            assert await mgr.move_mouse_to_relative(tab, 1.0, 1.0) is True
+            assert mgr.get_mouse_position_relative(tab) == (
+                (_MOUSE_TEST_WIDTH - 1) / _MOUSE_TEST_WIDTH,
+                (_MOUSE_TEST_HEIGHT - 1) / _MOUSE_TEST_HEIGHT,
+            )
+        finally:
+            await mgr.cleanup()
+
+    async def test_click_at_and_click_at_relative_update_position_with_scroll_offset(self: Self) -> None:
+        """Clicking on a scrolled page records the mouse spot inside the visible window."""
+        session = _layout_session(page_x=_SCROLLED_VIEWPORT_PAGE_X, page_y=_SCROLLED_VIEWPORT_PAGE_Y)
+        mgr, _, tab = await _make_manager(session=session)
+
+        page_x = _SCROLLED_VIEWPORT_PAGE_X + _HALF_VIEWPORT_WIDTH
+        page_y = _SCROLLED_VIEWPORT_PAGE_Y + _HALF_VIEWPORT_HEIGHT
+        assert await mgr.click_at(tab, page_x, page_y) is True
+        assert mgr.get_mouse_position_relative(tab) == (_CENTER_RATIO, _CENTER_RATIO)
+
+        assert await mgr.click_at_relative(
+            tab, _QUARTER_WINDOW_RATIO, _THREE_QUARTER_RATIO, viewport=_scrolled_viewport()
+        ) is True
+        assert mgr.get_mouse_position_relative(tab) == (_QUARTER_WINDOW_RATIO, _THREE_QUARTER_RATIO)
+
+    async def test_channel_clamp_hook_tracks_tabs_independently_and_clears_on_close(
+        self, tmp_path: Path
+    ) -> None:
+        """Low-level mouse moves and clicks update only their own tab and clear on close."""
+        page_a = _fake_page()
+        page_b = _fake_page()
+        context = MagicMock()
+        context.new_page = AsyncMock(side_effect=[page_a, page_b])
+        context.new_cdp_session = AsyncMock(side_effect=[_layout_session(), _layout_session()])
+        mgr = await _created_manager(context, str(tmp_path))
+        try:
+            tab_a = await mgr.open_page()
+            tab_b = await mgr.open_page()
+            assert mgr.get_mouse_position_relative(tab_a) is None
+            assert mgr.get_mouse_position_relative(tab_b) is None
+
+            await bm_module.Channel.send(
+                _fake_channel(page_a),
+                "mouseMove",
+                None,
+                {"x": _HALF_VIEWPORT_WIDTH, "y": _HALF_VIEWPORT_HEIGHT},
+            )
+            assert mgr.get_mouse_position_relative(tab_a) == (_CENTER_RATIO, _CENTER_RATIO)
+            assert mgr.get_mouse_position_relative(tab_b) is None
+
+            await _send_mouse_event(page_b, "mouseClick")
+            expected_clamped = (
+                (_VIEWPORT_WIDTH - 1) / _VIEWPORT_WIDTH,
+                (_VIEWPORT_HEIGHT - 1) / _VIEWPORT_HEIGHT,
+            )
+            assert mgr.get_mouse_position_relative(tab_b) == expected_clamped
+            assert mgr.get_mouse_position_relative(tab_a) == (_CENTER_RATIO, _CENTER_RATIO)
+
+            assert await mgr.close_page(tab_a) is True
+            assert mgr.get_mouse_position_relative(tab_a) is None
+            assert mgr.get_mouse_position_relative(tab_b) == expected_clamped
+        finally:
+            await mgr.cleanup()
