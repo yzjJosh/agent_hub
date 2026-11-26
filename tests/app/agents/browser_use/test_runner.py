@@ -32,7 +32,7 @@ from tests.app.agents.browser_use.conftest import (
     find_tool,
     set_thinking_backend,
 )
-from tests.app.conftest import is_llm_available, skip_if_no_chrome
+from tests.app.conftest import skip_if_no_chrome
 
 _LIVE_TIMEOUT_SECONDS = 600
 _EXPECTED_MAX_TURNS = 180
@@ -384,7 +384,6 @@ class TestLiveRunner:
         assert result.files == ()
         assert list(resources_dir.iterdir()) == []
 
-    @pytest.mark.skipif(not is_llm_available(), reason="LLM server not available")
     @pytest.mark.timeout(_LIVE_TIMEOUT_SECONDS)
     @pytest.mark.parametrize(
         ("element_id", "element_label"),
@@ -417,7 +416,6 @@ class TestLiveRunner:
         last_click = clicks[-1]
         box = last_click["boxes"][element_id]
         click_report = f"click at ({last_click['x']}, {last_click['y']}), {element_id} box {box}"
-        print(click_report)
         assert box["left"] <= last_click["x"] <= box["right"], click_report
         assert box["top"] <= last_click["y"] <= box["bottom"], click_report
         assert result.status == "completed", result.summary
