@@ -32,7 +32,7 @@ VIEWER_STYLESHEET_LINKS = (
 _BYTES_PER_KILOBYTE = 1024
 _BYTES_PER_MEGABYTE = 1024 * 1024
 
-_PRE_STATE_SCRIPT = (
+_INITIAL_THEME_SCRIPT = (
     '<script>(function(){var r=document.documentElement,t="light",s=null;'
     'try{t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}catch(e){t="light";}'
     'try{s=JSON.parse(localStorage.getItem("agent-console-theme"));}catch(e){s=null;}'
@@ -150,7 +150,7 @@ def build_page(
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        f"<title>{escape_html(title)}</title>{_PRE_STATE_SCRIPT}{VIEWER_STYLESHEET_LINKS}</head>"
+        f"<title>{escape_html(title)}</title>{_INITIAL_THEME_SCRIPT}{VIEWER_STYLESHEET_LINKS}</head>"
         f'<body class="{body_class}">{top_html}{main_html}{footer_html}'
         '<script type="module" src="/assets/js/view-page.js"></script></body></html>'
     )

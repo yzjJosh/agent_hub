@@ -96,13 +96,13 @@ async def view_result(request: Request) -> Response:
     task_view = await store_module.get_task_view(task_id)
     if task_view is None:
         return await serve_fallback_file(request, f"result/{task_id}", _render_result_expired_page(), view_file)
-    run_dir = os.path.join(store_module.task_store.data_dir, task_view.run_dir)
+    run_directory = os.path.join(store_module.task_store.data_dir, task_view.run_dir)
     requested_kind = _parse_kind_query(request.query_params.get("kind"))
     declared_kind = RenderKind(task_view.render_type) if task_view.render_type is not None else None
     try:
         feed = await build_result_feed(
             task_id,
-            run_dir,
+            run_directory,
             kind=requested_kind,
             declared_kind=declared_kind,
             full=True,

@@ -83,6 +83,17 @@ def test_build_top_bar_includes_brand_and_actions() -> None:
     assert bar_html.endswith("</div></header>")
 
 
+def test_build_top_bar_supports_zero_and_multiple_actions() -> None:
+    """Render an empty action container for zero actions and concatenate multiple actions in order."""
+    empty_bar_html = build_top_bar()
+    assert empty_bar_html.endswith('<div class="vp-actions"></div></header>')
+
+    first_action = '<a class="vp-download" href="/download">Download</a>'
+    second_action = build_theme_button()
+    multi_bar_html = build_top_bar(first_action, second_action)
+    assert multi_bar_html.endswith(f'<div class="vp-actions">{first_action}{second_action}</div></header>')
+
+
 def test_build_solo_download_cluster_renders_download_link() -> None:
     """Render the solo download cluster with the provided download link."""
     cluster_html = build_solo_download_cluster("/api/tasks/abc123/result/download")
@@ -114,6 +125,12 @@ def test_build_page_includes_footer_by_default() -> None:
     page_html = build_page("Default Title", "", '<main class="vp-main"></main>')
     assert 'class="vp-footer"' in page_html
     assert 'class="view-page"' in page_html
+
+
+def test_build_page_escapes_special_characters_in_title() -> None:
+    """Escape HTML special characters in the document title."""
+    page_html = build_page('Report <"draft"> & notes', "", '<main class="vp-main"></main>')
+    assert "<title>Report &lt;&quot;draft&quot;&gt; &amp; notes</title>" in page_html
 
 
 @pytest.mark.parametrize(
@@ -148,8 +165,8 @@ async def test_serve_fallback_file_returns_not_found_for_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Return a plain 404 response when the matching resource path is a directory."""
-    resources_dir, _ = configure_resource_env(tmp_path, monkeypatch)
-    (resources_dir / "result" / "folder").mkdir(parents=True)
+    resources_directory, _ = configure_resource_env(tmp_path, monkeypatch)
+    (resources_directory / "result" / "folder").mkdir(parents=True)
     missing_response = PlainTextResponse("Expired", status_code=200)
     opener = _RecordingFileOpener()
     response = await serve_fallback_file(
@@ -168,8 +185,8 @@ async def test_serve_fallback_file_delegates_to_open_file_for_existing_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Delegate to open_file with a rewritten request when a matching resource file exists."""
-    resources_dir, _ = configure_resource_env(tmp_path, monkeypatch)
-    target_file = resources_dir / "result" / "notes.txt"
+    resources_directory, _ = configure_resource_env(tmp_path, monkeypatch)
+    target_file = resources_directory / "result" / "notes.txt"
     target_file.parent.mkdir(parents=True)
     target_file.write_text("hello", encoding="utf-8")
     missing_response = PlainTextResponse("Expired", status_code=200)
