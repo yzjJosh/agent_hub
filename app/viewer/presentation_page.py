@@ -24,7 +24,14 @@ from app.viewer.file_page import (
     render_text_well_html,
     view_file,
 )
-from app.viewer.view_chrome import delegate_miss, esc, fmt_size, page, theme_btn, top_bar
+from app.viewer.layout import (
+    build_page,
+    build_theme_button,
+    build_top_bar,
+    escape_html,
+    format_byte_size,
+    serve_fallback_file,
+)
 
 __all__ = ["view_presentation"]
 
@@ -91,11 +98,11 @@ def _find_content_descriptor(files: list[_PresentationFile], content_path: str) 
 
 
 def _render_presentation_toolbar(descriptor: dict, download_href: str) -> str:
-    open_href = f"/view/{esc(quote(descriptor['path'], safe='/'))}"
+    open_href = f"/view/{escape_html(quote(descriptor['path'], safe='/'))}"
     return (
         '<div class="well-topbar">'
-        f'<span class="chip">{esc(descriptor["kind_label"])}</span>'
-        f'<span class="well-note">{fmt_size(descriptor["size"])}</span>'
+        f'<span class="chip">{escape_html(descriptor["kind_label"])}</span>'
+        f'<span class="well-note">{format_byte_size(descriptor["size"])}</span>'
         '<span class="well-actions">'
         f'<a class="vp-icon-btn" href="{open_href}" target="_blank" '
         'title="Open full-screen" aria-label="Open full-screen">'
@@ -108,7 +115,7 @@ def _render_presentation_toolbar(descriptor: dict, download_href: str) -> str:
 
 def _render_missing_body_section(content_path: str) -> str:
     return (
-        f'<div class="vp-well vp-presentation-body" data-path="{esc(content_path)}">'
+        f'<div class="vp-well vp-presentation-body" data-path="{escape_html(content_path)}">'
         '<div class="vp-body-gone">'
         '<span class="vp-state-ic" data-vp-icon="box"></span>'
         '<p class="vp-body-gone-title">The message content is no longer available</p>'
@@ -123,7 +130,7 @@ def _render_presentation_native_inner(descriptor: dict) -> str:
         return f'<div class="img-stage"><img src="{descriptor["url"]}" alt=""></div>'
     if kind == "video":
         return f'<div class="media-stage"><video controls src="{descriptor["url"]}"></video></div>'
-    return f'<div class="audio-card" data-src="{descriptor["url"]}" data-name="{esc(descriptor["name"])}"></div>'
+    return f'<div class="audio-card" data-src="{descriptor["url"]}" data-name="{escape_html(descriptor["name"])}"></div>'
 
 
 def _render_presentation_body_section(content_path: str, descriptor: dict | None) -> str | None:
@@ -133,7 +140,7 @@ def _render_presentation_body_section(content_path: str, descriptor: dict | None
     if mode == "unsupported":
         return None
     download_href = build_download_href(content_path)
-    extra_attributes = f' data-path="{esc(content_path)}" data-dl-href="{download_href}"'
+    extra_attributes = f' data-path="{escape_html(content_path)}" data-dl-href="{download_href}"'
     toolbar = _render_presentation_toolbar(descriptor, download_href)
     well_html = render_text_well_html(
         descriptor,
@@ -165,11 +172,11 @@ def _render_presentation_card(file_item: _PresentationFile) -> str:
         return (
             '<div class="thumb-card vp-card-gone"><div class="thumb-1610">'
             '<span class="thumb-glyph" data-vp-icon="box"></span></div>'
-            f'<div class="thumb-name">{esc(file_name)}</div>'
+            f'<div class="thumb-name">{escape_html(file_name)}</div>'
             '<div class="thumb-meta">no longer available</div></div>'
         )
     download_href = build_download_href(file_item.resource_path)
-    view_href = f"/view/{esc(quote(file_item.resource_path, safe='/'))}"
+    view_href = f"/view/{escape_html(quote(file_item.resource_path, safe='/'))}"
     thumbnail_html = (
         f'<img class="thumb-img" src="{cache.build_thumbnail_url(file_item.resource_path)}">'
         if file_item.thumbnail_status == "done"
@@ -177,9 +184,9 @@ def _render_presentation_card(file_item: _PresentationFile) -> str:
     )
     return (
         f'<div class="thumb-card"><div class="thumb-1610">{thumbnail_html}</div>'
-        f'<div class="thumb-name">{esc(file_name)}</div>'
-        f'<div class="thumb-meta">{fmt_size(file_item.size)} · {esc(file_item.label)}</div>'
-        f'<a class="vp-card-open" href="{view_href}" aria-label="Open {esc(file_name)}"></a>'
+        f'<div class="thumb-name">{escape_html(file_name)}</div>'
+        f'<div class="thumb-meta">{format_byte_size(file_item.size)} · {escape_html(file_item.label)}</div>'
+        f'<a class="vp-card-open" href="{view_href}" aria-label="Open {escape_html(file_name)}"></a>'
         f'<div class="thumb-actions"><a class="vp-icon-btn" href="{download_href}" title="Download">'
         '<span data-vp-icon="download"></span></a></div></div>'
     )
@@ -204,7 +211,7 @@ def _render_presentation_header(
         else ""
     )
     if title:
-        heading = f'<h1 class="vp-presentation-title">{esc(title)}</h1>'
+        heading = f'<h1 class="vp-presentation-title">{escape_html(title)}</h1>'
         sender = " by your agent"
     elif grid_count:
         heading = f'<h1 class="vp-presentation-head">{grid_count} files from your agent</h1>'
@@ -212,7 +219,7 @@ def _render_presentation_header(
     else:
         heading = '<h1 class="vp-presentation-head">Files from your agent</h1>'
         sender = ""
-    return f'{heading}<div class="vp-presentation-sub">Shared {esc(presented_time)}{sender}{availability_note}</div>'
+    return f'{heading}<div class="vp-presentation-sub">Shared {escape_html(presented_time)}{sender}{availability_note}</div>'
 
 
 def _render_files_section(grid_cards: list[str], grid_count: int, *, has_body: bool) -> str:
@@ -237,10 +244,10 @@ async def view_presentation(request: Request) -> Response:
     """
     presentation_id = request.path_params["id"]
     if not _PRESENTATION_ID_PATTERN.fullmatch(presentation_id):
-        return await delegate_miss(request, f"presentation/{presentation_id}", render_expired_page(), view_file)
+        return await serve_fallback_file(request, f"presentation/{presentation_id}", render_expired_page(), view_file)
     presentation = await store_module.presentation_store.get(presentation_id)
     if presentation is None:
-        return await delegate_miss(request, f"presentation/{presentation_id}", render_expired_page(), view_file)
+        return await serve_fallback_file(request, f"presentation/{presentation_id}", render_expired_page(), view_file)
     files = [await _load_presentation_file(resource_path) for resource_path in presentation.files]
     present_count = sum(1 for file_item in files if file_item.is_present)
     if present_count == 0:
@@ -260,9 +267,9 @@ async def view_presentation(request: Request) -> Response:
     title = (presentation.title or "").strip()
     header_html = _render_presentation_header(title, presented_time, grid_count, present_grid_count)
     files_html = _render_files_section(grid_cards, grid_count, has_body=has_body)
-    top_html = top_bar(theme_btn())
+    top_html = build_top_bar(build_theme_button())
     main_html = (
         '<main class="vp-main vp-presentation"><div class="vp-doccol">'
         f'{header_html}{body_html or ""}{files_html}</div></main>'
     )
-    return HTMLResponse(page(title or "Files from your agent", top_html, main_html))
+    return HTMLResponse(build_page(title or "Files from your agent", top_html, main_html))

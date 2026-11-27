@@ -11,7 +11,13 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, PlainTextResponse, Response
 
 from app.lib.render.descriptor import build_descriptor, resolve_view
-from app.viewer.view_chrome import esc, page, theme_btn, top_bar
+from app.viewer.layout import (
+    build_page,
+    build_solo_download_cluster,
+    build_theme_button,
+    build_top_bar,
+    escape_html,
+)
 
 __all__ = [
     "build_download_href",
@@ -50,7 +56,7 @@ def build_download_href(resource_path: str) -> str:
     Returns:
         The link to download the file.
     """
-    return f"/dav/dl?path={esc(quote(resource_path, safe='/'))}"
+    return f"/dav/dl?path={escape_html(quote(resource_path, safe='/'))}"
 
 
 def render_expired_page() -> Response:
@@ -59,7 +65,7 @@ def render_expired_page() -> Response:
     Returns:
         An HTML response with the expired link notice.
     """
-    top_html = top_bar(theme_btn())
+    top_html = build_top_bar(build_theme_button())
     main_html = (
         '<main class="vp-main vp-expired">'
         '<div class="vp-expired-inner">'
@@ -70,7 +76,7 @@ def render_expired_page() -> Response:
         '<button class="btn ghost" data-vp-back>Go back</button>'
         "</div></main>"
     )
-    return HTMLResponse(page("Link no longer valid", top_html, main_html))
+    return HTMLResponse(build_page("Link no longer valid", top_html, main_html))
 
 
 def render_text_well_html(
@@ -98,7 +104,7 @@ def render_text_well_html(
             f'{prefix_html}{descriptor["fragment"]}</div>'
         )
     if mode == "raw":
-        inner_html = descriptor["fragment"] if descriptor["fragment"] is not None else esc(descriptor["note"])
+        inner_html = descriptor["fragment"] if descriptor["fragment"] is not None else escape_html(descriptor["note"])
         return f'<div class="vp-well{extra_class} vp-well-raw"{extra_attributes}>{prefix_html}{inner_html}</div>'
     return None
 
@@ -112,7 +118,7 @@ def render_pdf_container_html(descriptor: dict) -> str:
     Returns:
         The HTML container element for the PDF viewer.
     """
-    return f'<div class="vp-frame vp-pdf" data-pdf-src="{esc(descriptor["url"])}"></div>'
+    return f'<div class="vp-frame vp-pdf" data-pdf-src="{escape_html(descriptor["url"])}"></div>'
 
 
 def render_converting_html() -> str:
@@ -136,9 +142,9 @@ def render_convert_failed_html(descriptor: dict, download_href: str) -> str:
     """
     return (
         '<div class="vp-convert-failed"><p>Couldn\'t convert this file</p>'
-        f'<p class="vp-err">{esc(descriptor["error"])}</p>'
+        f'<p class="vp-err">{escape_html(descriptor["error"])}</p>'
         '<div class="vp-state-actions">'
-        f'<button class="btn ghost" data-vp-retry="/api/view/{esc(descriptor["path"])}/retry">Retry</button>'
+        f'<button class="btn ghost" data-vp-retry="/api/view/{escape_html(descriptor["path"])}/retry">Retry</button>'
         f'<a class="btn ghost" href="{download_href}">Download</a></div></div>'
     )
 
@@ -156,7 +162,7 @@ def _render_unsupported_card_html(descriptor: dict, download_href: str) -> str:
     return (
         '<div class="vp-unsupported"><div class="vp-state-card">'
         '<span class="vp-state-ic" data-vp-icon="box"></span>'
-        f'<h1 class="vp-state-title">{esc(descriptor["name"])}</h1>'
+        f'<h1 class="vp-state-title">{escape_html(descriptor["name"])}</h1>'
         '<p class="vp-state-sub">This file type can\'t be previewed — download it to view.</p>'
         '<div class="vp-state-actions">'
         f'<a class="btn ghost" href="{download_href}">Download</a>'
@@ -208,11 +214,14 @@ async def view_file(request: Request) -> Response:
         return render_expired_page()
     descriptor = await build_descriptor(resource_path, full_path)
     download_href = build_download_href(descriptor["path"])
-    top_cluster = (
-        f'<div class="vp-solo-cluster"><a class="vp-solo-dl" href="{download_href}" '
-        'title="Download" aria-label="Download"><span data-vp-icon="download"></span></a></div>'
-    )
+    top_cluster = build_solo_download_cluster(download_href)
     main_html = f'<main class="vp-main">{_render_file_body(descriptor)}</main>'
     return HTMLResponse(
-        page(descriptor["name"], top_cluster, main_html, footer=False, body_cls="view-page vp-solo")
+        build_page(
+            descriptor["name"],
+            top_cluster,
+            main_html,
+            should_include_footer=False,
+            body_class="view-page vp-solo",
+        )
     )

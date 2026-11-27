@@ -13,7 +13,7 @@ from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse, R
 
 from app.lib.render import cache
 from app.viewer.file_page import view_file
-from app.viewer.view_chrome import STATIC_HEAD, delegate_miss
+from app.viewer.layout import VIEWER_STYLESHEET_LINKS, serve_fallback_file
 
 __all__ = ["view_doc", "view_doc_asset"]
 
@@ -39,7 +39,7 @@ def _compose_doc_page(fragment: str, *, is_thumbnail: bool) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
         "<title>Document</title>"
         '<script>document.documentElement.setAttribute("data-theme","light");</script>'
-        f"{STATIC_HEAD}{override}</head>"
+        f"{VIEWER_STYLESHEET_LINKS}{override}</head>"
         '<body class="view-page doc-page"><main class="vp-main"><div class="vp-doccol">'
         f"{fragment}</div></main></body></html>"
     )
@@ -75,7 +75,7 @@ async def view_doc(request: Request) -> Response:
     is_valid_key = _DOC_KEY_PATTERN.fullmatch(key) is not None
     entry = await cache.read_doc(key) if is_valid_key else None
     if entry is None:
-        return await delegate_miss(request, f"doc/{key}", _build_plain_not_found(), view_file)
+        return await serve_fallback_file(request, f"doc/{key}", _build_plain_not_found(), view_file)
     is_thumbnail = request.query_params.get("thumb") == "1"
     return HTMLResponse(_compose_doc_page(entry.html, is_thumbnail=is_thumbnail))
 
@@ -94,5 +94,5 @@ async def view_doc_asset(request: Request) -> Response:
     is_valid_key = _DOC_KEY_PATTERN.fullmatch(key) is not None
     asset = await asyncio.to_thread(_resolve_doc_asset_sync, key, asset_name) if is_valid_key else None
     if asset is None:
-        return await delegate_miss(request, f"doc/{key}/{asset_name}", _build_plain_not_found(), view_file)
+        return await serve_fallback_file(request, f"doc/{key}/{asset_name}", _build_plain_not_found(), view_file)
     return FileResponse(asset.path, media_type=asset.media_type)

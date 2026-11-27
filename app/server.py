@@ -29,7 +29,7 @@ from app.tts_server import create_openai_tts_app
 from app.viewer.doc_page import view_doc, view_doc_asset
 from app.viewer.file_page import view_file
 from app.viewer.presentation_page import view_presentation
-from app.viewer.result_page import view_result_page
+from app.viewer.result_page import view_result
 
 __all__ = ["build_app", "mcp"]
 
@@ -117,7 +117,7 @@ def build_app() -> Starlette:
     outer.routes.append(Route("/view/presentation/{id}", view_presentation))
     outer.routes.append(Route("/view/doc/{key}/{asset:path}", view_doc_asset))
     outer.routes.append(Route("/view/doc/{key}", view_doc))
-    outer.routes.append(Route("/view/result/{task_id}", view_result_page))
+    outer.routes.append(Route("/view/result/{task_id}", view_result))
     outer.routes.append(Route("/view/{path:path}", view_file))
     outer.routes.append(Route("/", _root_redirect))
     outer.routes.append(Route("/websockify", _websockify_not_found))
